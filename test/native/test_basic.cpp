@@ -61,7 +61,7 @@ TEST(status_error) {
 TEST(status_in_progress) {
   Status st = Status{Err::IN_PROGRESS, 0, "In progress"};
   ASSERT_FALSE(st.ok());
-  ASSERT_TRUE(st.inProgress());
+  ASSERT_EQ(st.code, Err::IN_PROGRESS);
 }
 
 TEST(config_defaults) {

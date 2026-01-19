@@ -13,7 +13,7 @@
 
 #include <stdint.h>
 
-#include "examples/common/I2cTransport.h"
+#include "common/I2cTransport.h"
 
 namespace board {
 

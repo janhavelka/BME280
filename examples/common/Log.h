@@ -10,7 +10,7 @@
 
 #include <Arduino.h>
 
-#include "examples/common/BuildConfig.h"
+#include "common/BuildConfig.h"
 
 // Compile-time validation
 #if LOG_LEVEL < 0 || LOG_LEVEL > 4

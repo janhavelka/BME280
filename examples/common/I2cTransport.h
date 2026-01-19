@@ -12,6 +12,19 @@ namespace transport {
 using BME280::Status;
 using BME280::Err;
 
+/// Initialize Wire for examples
+/// @param sda SDA pin
+/// @param scl SCL pin
+/// @param freqHz I2C clock frequency
+/// @param timeoutMs Wire timeout in milliseconds
+/// @return true if initialized
+inline bool initWire(int sda, int scl, uint32_t freqHz, uint32_t timeoutMs) {
+  Wire.begin(sda, scl);
+  Wire.setClock(freqHz);
+  Wire.setTimeOut(timeoutMs);
+  return true;
+}
+
 /// I2C write callback using Wire library
 /// @param addr I2C device address (7-bit)
 /// @param data Data buffer to write

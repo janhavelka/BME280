@@ -2,6 +2,7 @@
 /// @brief Main driver class for BME280
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include "BME280/Status.h"
 #include "BME280/Config.h"
@@ -16,6 +17,27 @@ enum class DriverState : uint8_t {
   READY,     ///< Operational, consecutiveFailures == 0
   DEGRADED,  ///< 1 <= consecutiveFailures < offlineThreshold
   OFFLINE    ///< consecutiveFailures >= offlineThreshold
+};
+
+/// Measurement result (float)
+struct Measurement {
+  float temperatureC = 0.0f; ///< Temperature in Celsius
+  float pressurePa = 0.0f;   ///< Pressure in Pascals
+  float humidityPct = 0.0f;  ///< Relative humidity in percent
+};
+
+/// Raw ADC values
+struct RawSample {
+  int32_t adcT = 0; ///< Raw temperature ADC (20-bit)
+  int32_t adcP = 0; ///< Raw pressure ADC (20-bit)
+  int32_t adcH = 0; ///< Raw humidity ADC (16-bit)
+};
+
+/// Fixed-point compensated values (no float)
+struct CompensatedSample {
+  int32_t tempC_x100 = 0;        ///< Temperature * 100 (e.g., 2534 = 25.34 degC)
+  uint32_t pressurePa = 0;       ///< Pressure in Pa
+  uint32_t humidityPct_x1024 = 0; ///< Humidity * 1024 (Q22.10 format)
 };
 
 /// BME280 driver class
@@ -85,14 +107,73 @@ public:
   uint32_t totalSuccess() const { return _totalSuccess; }
   
   // =========================================================================
-  // Device-Specific API
+  // Measurement API
   // =========================================================================
   
-  // TODO: Add your device-specific methods here
-  // Examples:
-  // Status readValue(int16_t& value);
-  // Status writeConfig(uint8_t config);
-  // Status setMode(Mode mode);
+  /// Request a measurement (non-blocking)
+  /// In FORCED mode: triggers measurement if idle
+  /// In NORMAL mode: marks intent to read next available
+  /// Returns IN_PROGRESS if measurement started, BUSY if already measuring
+  Status requestMeasurement();
+
+  /// Check if measurement is ready to read
+  bool measurementReady() const { return _measurementReady; }
+
+  /// Get measurement result (float)
+  /// Returns MEASUREMENT_NOT_READY if not available
+  /// Clears ready flag after successful read
+  Status getMeasurement(Measurement& out);
+
+  /// Get raw ADC values
+  Status getRawSample(RawSample& out) const;
+
+  /// Get fixed-point compensated values
+  Status getCompensatedSample(CompensatedSample& out) const;
+
+  // =========================================================================
+  // Configuration
+  // =========================================================================
+
+  /// Set operating mode (SLEEP, FORCED, NORMAL)
+  Status setMode(Mode mode);
+
+  /// Get current mode
+  Status getMode(Mode& out) const;
+
+  /// Set oversampling for temperature
+  Status setOversamplingT(Oversampling osrs);
+
+  /// Set oversampling for pressure
+  Status setOversamplingP(Oversampling osrs);
+
+  /// Set oversampling for humidity
+  Status setOversamplingH(Oversampling osrs);
+
+  /// Set IIR filter coefficient
+  Status setFilter(Filter filter);
+
+  /// Set standby time (normal mode only)
+  Status setStandby(Standby standby);
+
+  /// Soft reset device
+  Status softReset();
+
+  /// Read chip ID
+  Status readChipId(uint8_t& id);
+
+  /// Read status register
+  Status readStatus(uint8_t& status);
+
+  /// Check if device is currently measuring
+  Status isMeasuring(bool& measuring);
+
+  // =========================================================================
+  // Timing
+  // =========================================================================
+
+  /// Estimate max measurement time based on current oversampling
+  /// Returns time in milliseconds
+  uint32_t estimateMeasurementTimeMs() const;
 
 private:
   // =========================================================================
@@ -122,6 +203,15 @@ private:
   
   /// Write registers (uses tracked path)
   Status writeRegs(uint8_t startReg, const uint8_t* buf, size_t len);
+
+  /// Read single register (uses tracked path)
+  Status readRegister(uint8_t reg, uint8_t& value);
+
+  /// Write single register (uses tracked path)
+  Status writeRegister(uint8_t reg, uint8_t value);
+
+  /// Read single register (raw path)
+  Status _readRegisterRaw(uint8_t reg, uint8_t& value);
   
   // =========================================================================
   // Health Management
@@ -130,6 +220,16 @@ private:
   /// Update health counters and state based on operation result
   /// Called ONLY from tracked transport wrappers
   Status _updateHealth(const Status& st);
+
+  // =========================================================================
+  // Internal
+  // =========================================================================
+
+  Status _applyConfig();
+  Status _readCalibration();
+  Status _validateCalibration();
+  Status _readRawData();
+  Status _compensate();
   
   // =========================================================================
   // State
@@ -146,6 +246,34 @@ private:
   uint8_t _consecutiveFailures = 0;
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
+
+  // Calibration data
+  uint16_t _digT1 = 0;
+  int16_t _digT2 = 0;
+  int16_t _digT3 = 0;
+  uint16_t _digP1 = 0;
+  int16_t _digP2 = 0;
+  int16_t _digP3 = 0;
+  int16_t _digP4 = 0;
+  int16_t _digP5 = 0;
+  int16_t _digP6 = 0;
+  int16_t _digP7 = 0;
+  int16_t _digP8 = 0;
+  int16_t _digP9 = 0;
+  uint8_t _digH1 = 0;
+  int16_t _digH2 = 0;
+  uint8_t _digH3 = 0;
+  int16_t _digH4 = 0;
+  int16_t _digH5 = 0;
+  int8_t _digH6 = 0;
+
+  // Measurement state
+  bool _measurementRequested = false;
+  bool _measurementReady = false;
+  uint32_t _measurementStartMs = 0;
+  int32_t _tFine = 0;
+  RawSample _rawSample;
+  CompensatedSample _compSample;
 };
 
 } // namespace BME280
