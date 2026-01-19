@@ -1,34 +1,35 @@
 {
-  "name": "esp32-platformio-library-template",
+  "name": "BME280",
   "version": "0.1.0",
-  "description": "Robust ESP32 Arduino + PlatformIO single-library template with begin/tick/end lifecycle and Status error model.",
+  "description": "Production-grade BME280 environmental sensor driver.",
   "keywords": [
+    "bme280",
+    "sensor",
+    "temperature",
+    "pressure",
+    "humidity",
+    "i2c",
     "esp32",
-    "esp32-s2",
-    "esp32-s3",
     "arduino",
-    "platformio",
-    "embedded",
-    "library-template",
-    "non-blocking"
+    "platformio"
   ],
   "authors": [
     {
-      "name": "Your Name",
-      "email": "your.email@example.com",
-      "url": "https://github.com/YOUR_USERNAME",
+      "name": "Jan Havelka",
+      "email": "info@thymos.cz",
+      "url": "https://www.thymos.cz",
       "maintainer": true
     }
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/esp32-platformio-library-template.git"
+    "url": "https://www.thymos.cz/BME280.git"
   },
   "license": "MIT",
-  "homepage": "https://github.com/YOUR_USERNAME/esp32-platformio-library-template",
+  "homepage": "https://www.thymos.cz",
   "frameworks": ["arduino"],
   "platforms": ["espressif32"],
-  "headers": ["YourLibrary/YourLib.h"],
+  "headers": ["BME280/BME280.h"],
   "build": {
     "includeDir": "include",
     "srcDir": "src"

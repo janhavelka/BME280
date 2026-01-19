@@ -5,12 +5,12 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include "{NAMESPACE}/Status.h"
+#include "BME280/Status.h"
 
 namespace transport {
 
-using {NAMESPACE}::Status;
-using {NAMESPACE}::Err;
+using BME280::Status;
+using BME280::Err;
 
 /// I2C write callback using Wire library
 /// @param addr I2C device address (7-bit)

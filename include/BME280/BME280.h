@@ -1,14 +1,14 @@
-/// @file {DEVICE}.h
-/// @brief Main driver class for {DEVICE_NAME}
+/// @file BME280.h
+/// @brief Main driver class for BME280
 #pragma once
 
 #include <cstdint>
-#include "{NAMESPACE}/Status.h"
-#include "{NAMESPACE}/Config.h"
-#include "{NAMESPACE}/CommandTable.h"
-#include "{NAMESPACE}/Version.h"
+#include "BME280/Status.h"
+#include "BME280/Config.h"
+#include "BME280/CommandTable.h"
+#include "BME280/Version.h"
 
-namespace {NAMESPACE} {
+namespace BME280 {
 
 /// Driver state for health monitoring
 enum class DriverState : uint8_t {
@@ -18,8 +18,8 @@ enum class DriverState : uint8_t {
   OFFLINE    ///< consecutiveFailures >= offlineThreshold
 };
 
-/// {DEVICE_NAME} driver class
-class {DEVICE} {
+/// BME280 driver class
+class BME280 {
 public:
   // =========================================================================
   // Lifecycle
@@ -148,4 +148,4 @@ private:
   uint32_t _totalSuccess = 0;
 };
 
-} // namespace {NAMESPACE}
+} // namespace BME280

@@ -1,5 +1,5 @@
 /// @file main.cpp
-/// @brief Basic bringup example for {DEVICE_NAME}
+/// @brief Basic bringup example for BME280
 /// @note This is an EXAMPLE, not part of the library
 
 #include <Arduino.h>
@@ -8,13 +8,13 @@
 #include "common/I2cTransport.h"
 #include "common/I2cScanner.h"
 
-#include "{NAMESPACE}/{DEVICE}.h"
+#include "BME280/BME280.h"
 
 // ============================================================================
 // Globals
 // ============================================================================
 
-{NAMESPACE}::{DEVICE} device;
+BME280::BME280 device;
 bool verboseMode = false;
 
 // ============================================================================
@@ -22,8 +22,8 @@ bool verboseMode = false;
 // ============================================================================
 
 /// Convert error code to string
-const char* errToStr({NAMESPACE}::Err err) {
-  using namespace {NAMESPACE};
+const char* errToStr(BME280::Err err) {
+  using namespace BME280;
   switch (err) {
     case Err::OK:                return "OK";
     case Err::NOT_INITIALIZED:   return "NOT_INITIALIZED";
@@ -32,6 +32,10 @@ const char* errToStr({NAMESPACE}::Err err) {
     case Err::TIMEOUT:           return "TIMEOUT";
     case Err::INVALID_PARAM:     return "INVALID_PARAM";
     case Err::DEVICE_NOT_FOUND:  return "DEVICE_NOT_FOUND";
+    case Err::CHIP_ID_MISMATCH:  return "CHIP_ID_MISMATCH";
+    case Err::CALIBRATION_INVALID: return "CALIBRATION_INVALID";
+    case Err::MEASUREMENT_NOT_READY: return "MEASUREMENT_NOT_READY";
+    case Err::COMPENSATION_ERROR: return "COMPENSATION_ERROR";
     case Err::BUSY:              return "BUSY";
     case Err::IN_PROGRESS:       return "IN_PROGRESS";
     default:                     return "UNKNOWN";
@@ -39,8 +43,8 @@ const char* errToStr({NAMESPACE}::Err err) {
 }
 
 /// Convert driver state to string
-const char* stateToStr({NAMESPACE}::DriverState st) {
-  using namespace {NAMESPACE};
+const char* stateToStr(BME280::DriverState st) {
+  using namespace BME280;
   switch (st) {
     case DriverState::UNINIT:   return "UNINIT";
     case DriverState::READY:    return "READY";
@@ -51,7 +55,7 @@ const char* stateToStr({NAMESPACE}::DriverState st) {
 }
 
 /// Print status details
-void printStatus(const {NAMESPACE}::Status& st) {
+void printStatus(const BME280::Status& st) {
   Serial.printf("  Status: %s (code=%u, detail=%ld)\n", 
                 errToStr(st.code), 
                 static_cast<unsigned>(st.code), 
@@ -70,7 +74,7 @@ void printDriverHealth() {
   Serial.printf("  Total success: %lu\n", static_cast<unsigned long>(device.totalSuccess()));
   Serial.printf("  Last OK at: %lu ms\n", static_cast<unsigned long>(device.lastOkMs()));
   Serial.printf("  Last error at: %lu ms\n", static_cast<unsigned long>(device.lastErrorMs()));
-  if (device.lastError().code != {NAMESPACE}::Err::OK) {
+  if (device.lastError().code != BME280::Err::OK) {
     Serial.printf("  Last error: %s\n", errToStr(device.lastError().code));
   }
 }
@@ -134,7 +138,7 @@ void setup() {
   board::initSerial();
   delay(100);
   
-  LOGI("=== {DEVICE_NAME} Bringup Example ===");
+  LOGI("=== BME280 Bringup Example ===");
   
   // Initialize I2C
   if (!board::initI2c()) {
@@ -147,10 +151,10 @@ void setup() {
   i2c::scan();
   
   // Configure driver
-  {NAMESPACE}::Config cfg;
+  BME280::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cAddress = 0x00;  // TODO: Set your device address
+  cfg.i2cAddress = 0x76;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.offlineThreshold = 5;
   

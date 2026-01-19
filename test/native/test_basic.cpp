@@ -1,5 +1,5 @@
 /// @file test_basic.cpp
-/// @brief Basic unit tests for {DEVICE_NAME} driver
+/// @brief Basic unit tests for BME280 driver
 
 #include <cstdio>
 #include <cassert>
@@ -13,10 +13,10 @@ SerialClass Serial;
 TwoWire Wire;
 
 // Include driver
-#include "{NAMESPACE}/Status.h"
-#include "{NAMESPACE}/Config.h"
+#include "BME280/Status.h"
+#include "BME280/Config.h"
 
-using namespace {NAMESPACE};
+using namespace BME280;
 
 // ============================================================================
 // Test Helpers
@@ -68,8 +68,15 @@ TEST(config_defaults) {
   Config cfg;
   ASSERT_EQ(cfg.i2cWrite, nullptr);
   ASSERT_EQ(cfg.i2cWriteRead, nullptr);
+  ASSERT_EQ(cfg.i2cAddress, 0x76);
   ASSERT_EQ(cfg.i2cTimeoutMs, 50);
   ASSERT_EQ(cfg.offlineThreshold, 5);
+  ASSERT_EQ(static_cast<uint8_t>(cfg.osrsT), static_cast<uint8_t>(Oversampling::X1));
+  ASSERT_EQ(static_cast<uint8_t>(cfg.osrsP), static_cast<uint8_t>(Oversampling::X1));
+  ASSERT_EQ(static_cast<uint8_t>(cfg.osrsH), static_cast<uint8_t>(Oversampling::X1));
+  ASSERT_EQ(static_cast<uint8_t>(cfg.filter), static_cast<uint8_t>(Filter::OFF));
+  ASSERT_EQ(static_cast<uint8_t>(cfg.standby), static_cast<uint8_t>(Standby::MS_125));
+  ASSERT_EQ(static_cast<uint8_t>(cfg.mode), static_cast<uint8_t>(Mode::FORCED));
 }
 
 // ============================================================================
@@ -77,7 +84,7 @@ TEST(config_defaults) {
 // ============================================================================
 
 int main() {
-  printf("\n=== {DEVICE_NAME} Unit Tests ===\n\n");
+  printf("\n=== BME280 Unit Tests ===\n\n");
   
   RUN_TEST(status_ok);
   RUN_TEST(status_error);
