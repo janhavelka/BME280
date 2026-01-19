@@ -4,10 +4,10 @@ Production-grade BME280 I2C driver for ESP32 (Arduino/PlatformIO).
 
 ## Features
 
-- **Injected I2C transport** — no Wire dependency in library code
-- **Health monitoring** — automatic state tracking (READY/DEGRADED/OFFLINE)
-- **Deterministic behavior** — no unbounded loops, no heap allocations
-- **Non-blocking architecture** — tick-based state machine for async operations
+- **Injected I2C transport** - no Wire dependency in library code
+- **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
+- **Deterministic behavior** - no unbounded loops, no heap allocations
+- **Non-blocking architecture** - tick-based state machine for async operations
 
 ## Installation
 
@@ -17,7 +17,7 @@ Add to `platformio.ini`:
 
 ```ini
 lib_deps = 
-  https://www.thymos.cz/BME280.git
+  https://github.com/janhavelka/BME280.git
 ```
 
 ### Manual
@@ -112,32 +112,32 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 
 ### Lifecycle
 
-- `Status begin(const Config& config)` — Initialize driver
-- `void tick(uint32_t nowMs)` — Process pending operations
-- `void end()` — Shutdown driver
+- `Status begin(const Config& config)` - Initialize driver
+- `void tick(uint32_t nowMs)` - Process pending operations
+- `void end()` - Shutdown driver
 
 ### Diagnostics
 
-- `Status probe()` — Check device presence (no health tracking)
-- `Status recover()` — Attempt recovery from DEGRADED/OFFLINE
+- `Status probe()` - Check device presence (no health tracking)
+- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE
 
 ### State
 
-- `DriverState state()` — Current driver state
-- `bool isOnline()` — True if READY or DEGRADED
+- `DriverState state()` - Current driver state
+- `bool isOnline()` - True if READY or DEGRADED
 
 ### Health
 
-- `uint32_t lastOkMs()` — Timestamp of last success
-- `uint32_t lastErrorMs()` — Timestamp of last failure
-- `Status lastError()` — Most recent error
-- `uint8_t consecutiveFailures()` — Failures since last success
-- `uint32_t totalFailures()` — Lifetime failure count
-- `uint32_t totalSuccess()` — Lifetime success count
+- `uint32_t lastOkMs()` - Timestamp of last success
+- `uint32_t lastErrorMs()` - Timestamp of last failure
+- `Status lastError()` - Most recent error
+- `uint8_t consecutiveFailures()` - Failures since last success
+- `uint32_t totalFailures()` - Lifetime failure count
+- `uint32_t totalSuccess()` - Lifetime success count
 
 ## Examples
 
-- `01_basic_bringup_cli/` — Interactive CLI for testing
+- `01_basic_bringup_cli/` - Interactive CLI for testing
 
 ## License
 

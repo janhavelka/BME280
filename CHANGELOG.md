@@ -8,14 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Initial library template structure
-- `begin(Config) -> Status`, `tick(now_ms)`, `end()` API pattern
-- Status/Err type with static error messages
-- Config injection pattern (no hardcoded pins)
-- Basic CLI example (`01_basic_bringup_cli`)
-- Compile-only skeleton example (`00_compile_only`)
-- GitHub Actions CI for ESP32-S2 and ESP32-S3
-- Doxygen-style documentation in public headers
+- Nothing yet
 
 ### Changed
 - Nothing yet
@@ -32,11 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Nothing yet
 
-## [0.1.0] - 2026-01-10
+## [0.1.0] - 2026-01-19
 
 ### Added
-- Initial release with template structure
-- ESP32-S2 and ESP32-S3 support
+- Production BME280 driver with injected I2C transport
+- Health monitoring and tracked transport wrappers
+- Basic CLI example (`01_basic_bringup_cli`)
+- Doxygen-style documentation in public headers
 
-[Unreleased]: https://www.thymos.cz/BME280/compare/v0.1.0...HEAD
-[0.1.0]: https://www.thymos.cz/BME280/releases/tag/v0.1.0
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/janhavelka/BME280/releases/tag/v0.1.0
