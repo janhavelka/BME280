@@ -428,6 +428,46 @@ Status BME280::setStandby(Standby standby) {
   return writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
 }
 
+Status BME280::getOversamplingT(Oversampling& out) const {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  out = _config.osrsT;
+  return Status::Ok();
+}
+
+Status BME280::getOversamplingP(Oversampling& out) const {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  out = _config.osrsP;
+  return Status::Ok();
+}
+
+Status BME280::getOversamplingH(Oversampling& out) const {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  out = _config.osrsH;
+  return Status::Ok();
+}
+
+Status BME280::getFilter(Filter& out) const {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  out = _config.filter;
+  return Status::Ok();
+}
+
+Status BME280::getStandby(Standby& out) const {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  out = _config.standby;
+  return Status::Ok();
+}
+
 Status BME280::softReset() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
@@ -476,6 +516,27 @@ Status BME280::readStatus(uint8_t& status) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
   return readRegister(cmd::REG_STATUS, status);
+}
+
+Status BME280::readCtrlHum(uint8_t& value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  return readRegister(cmd::REG_CTRL_HUM, value);
+}
+
+Status BME280::readCtrlMeas(uint8_t& value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  return readRegister(cmd::REG_CTRL_MEAS, value);
+}
+
+Status BME280::readConfig(uint8_t& value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  return readRegister(cmd::REG_CONFIG, value);
 }
 
 Status BME280::isMeasuring(bool& measuring) {

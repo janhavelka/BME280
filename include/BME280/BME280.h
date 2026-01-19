@@ -155,6 +155,21 @@ public:
   /// Set standby time (normal mode only)
   Status setStandby(Standby standby);
 
+  /// Get oversampling for temperature
+  Status getOversamplingT(Oversampling& out) const;
+
+  /// Get oversampling for pressure
+  Status getOversamplingP(Oversampling& out) const;
+
+  /// Get oversampling for humidity
+  Status getOversamplingH(Oversampling& out) const;
+
+  /// Get IIR filter coefficient
+  Status getFilter(Filter& out) const;
+
+  /// Get standby time
+  Status getStandby(Standby& out) const;
+
   /// Soft reset device
   Status softReset();
 
@@ -163,6 +178,15 @@ public:
 
   /// Read status register
   Status readStatus(uint8_t& status);
+
+  /// Read ctrl_hum register
+  Status readCtrlHum(uint8_t& value);
+
+  /// Read ctrl_meas register
+  Status readCtrlMeas(uint8_t& value);
+
+  /// Read config register
+  Status readConfig(uint8_t& value);
 
   /// Check if device is currently measuring
   Status isMeasuring(bool& measuring);
