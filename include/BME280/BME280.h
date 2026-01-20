@@ -40,6 +40,38 @@ struct CompensatedSample {
   uint32_t humidityPct_x1024 = 0; ///< Humidity * 1024 (Q22.10 format)
 };
 
+/// Cached calibration coefficients from the device
+struct Calibration {
+  // Temperature
+  uint16_t digT1 = 0;
+  int16_t digT2 = 0;
+  int16_t digT3 = 0;
+  // Pressure
+  uint16_t digP1 = 0;
+  int16_t digP2 = 0;
+  int16_t digP3 = 0;
+  int16_t digP4 = 0;
+  int16_t digP5 = 0;
+  int16_t digP6 = 0;
+  int16_t digP7 = 0;
+  int16_t digP8 = 0;
+  int16_t digP9 = 0;
+  // Humidity
+  uint8_t digH1 = 0;
+  int16_t digH2 = 0;
+  uint8_t digH3 = 0;
+  int16_t digH4 = 0;
+  int16_t digH5 = 0;
+  int8_t digH6 = 0;
+};
+
+/// Raw calibration register blocks
+struct CalibrationRaw {
+  uint8_t tp[cmd::REG_CALIB_TP_LEN] = {};
+  uint8_t h1 = 0;
+  uint8_t h[cmd::REG_CALIB_H_LEN] = {};
+};
+
 /// BME280 driver class
 class BME280 {
 public:
@@ -129,6 +161,12 @@ public:
 
   /// Get fixed-point compensated values
   Status getCompensatedSample(CompensatedSample& out) const;
+
+  /// Get cached calibration coefficients
+  Status getCalibration(Calibration& out) const;
+
+  /// Read raw calibration registers from the device
+  Status readCalibrationRaw(CalibrationRaw& out);
 
   // =========================================================================
   // Configuration

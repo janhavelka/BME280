@@ -310,6 +310,53 @@ Status BME280::getCompensatedSample(CompensatedSample& out) const {
   return Status::Ok();
 }
 
+Status BME280::getCalibration(Calibration& out) const {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+
+  out.digT1 = _digT1;
+  out.digT2 = _digT2;
+  out.digT3 = _digT3;
+
+  out.digP1 = _digP1;
+  out.digP2 = _digP2;
+  out.digP3 = _digP3;
+  out.digP4 = _digP4;
+  out.digP5 = _digP5;
+  out.digP6 = _digP6;
+  out.digP7 = _digP7;
+  out.digP8 = _digP8;
+  out.digP9 = _digP9;
+
+  out.digH1 = _digH1;
+  out.digH2 = _digH2;
+  out.digH3 = _digH3;
+  out.digH4 = _digH4;
+  out.digH5 = _digH5;
+  out.digH6 = _digH6;
+
+  return Status::Ok();
+}
+
+Status BME280::readCalibrationRaw(CalibrationRaw& out) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+
+  Status st = readRegs(cmd::REG_CALIB_TP_START, out.tp, sizeof(out.tp));
+  if (!st.ok()) {
+    return st;
+  }
+
+  st = readRegs(cmd::REG_CALIB_H1, &out.h1, 1);
+  if (!st.ok()) {
+    return st;
+  }
+
+  return readRegs(cmd::REG_CALIB_H_START, out.h, sizeof(out.h));
+}
+
 Status BME280::setMode(Mode mode) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");

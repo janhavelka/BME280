@@ -185,6 +185,66 @@ void printMeasurement(const BME280::Measurement& m) {
                 m.temperatureC, m.pressurePa, m.humidityPct);
 }
 
+void printCalibration() {
+  BME280::Calibration calib;
+  BME280::Status st = device.getCalibration(calib);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.println("=== Calibration (Cached) ===");
+  Serial.printf("  T1=%u T2=%d T3=%d\n",
+                static_cast<unsigned>(calib.digT1),
+                static_cast<int>(calib.digT2),
+                static_cast<int>(calib.digT3));
+  Serial.printf("  P1=%u P2=%d P3=%d P4=%d P5=%d P6=%d P7=%d P8=%d P9=%d\n",
+                static_cast<unsigned>(calib.digP1),
+                static_cast<int>(calib.digP2),
+                static_cast<int>(calib.digP3),
+                static_cast<int>(calib.digP4),
+                static_cast<int>(calib.digP5),
+                static_cast<int>(calib.digP6),
+                static_cast<int>(calib.digP7),
+                static_cast<int>(calib.digP8),
+                static_cast<int>(calib.digP9));
+  Serial.printf("  H1=%u H2=%d H3=%u H4=%d H5=%d H6=%d\n",
+                static_cast<unsigned>(calib.digH1),
+                static_cast<int>(calib.digH2),
+                static_cast<unsigned>(calib.digH3),
+                static_cast<int>(calib.digH4),
+                static_cast<int>(calib.digH5),
+                static_cast<int>(calib.digH6));
+}
+
+void printCalibrationRaw() {
+  BME280::CalibrationRaw raw;
+  BME280::Status st = device.readCalibrationRaw(raw);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.println("=== Calibration (Raw Registers) ===");
+  Serial.print("  TP: ");
+  for (size_t i = 0; i < sizeof(raw.tp); ++i) {
+    Serial.printf("%02X", raw.tp[i]);
+    if (i + 1 < sizeof(raw.tp)) {
+      Serial.print(' ');
+    }
+  }
+  Serial.println();
+  Serial.printf("  H1: %02X\n", raw.h1);
+  Serial.print("  H: ");
+  for (size_t i = 0; i < sizeof(raw.h); ++i) {
+    Serial.printf("%02X", raw.h[i]);
+    if (i + 1 < sizeof(raw.h)) {
+      Serial.print(' ');
+    }
+  }
+  Serial.println();
+}
+
 void printVerboseState() {
   Serial.printf("  Verbose: %s\n", verboseMode ? "ON" : "OFF");
 }
@@ -582,6 +642,7 @@ void printHelp() {
   Serial.println("  filter [0..4]              - Set or show IIR filter");
   Serial.println("  standby [0..7]             - Set or show standby time");
   Serial.println("  settings                  - Show chip + internal settings");
+  Serial.println("  calib [raw]              - Show cached or raw calibration coefficients");
   Serial.println("  status                  - Read status register");
   Serial.println("  chipid                  - Read chip ID");
   Serial.println("  reset                   - Soft reset device");
@@ -624,6 +685,16 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "settings" || cmd == "cfg") {
     printAllSettings();
+    return;
+  }
+
+  if (cmd == "calib raw") {
+    printCalibrationRaw();
+    return;
+  }
+
+  if (cmd == "calib") {
+    printCalibration();
     return;
   }
 
@@ -869,8 +940,10 @@ void loop() {
     if (st.code != BME280::Err::IN_PROGRESS && st.code != BME280::Err::BUSY) {
       noteStressError(st);
       stressStats.attempts++;
-      stressRemaining = 0;
-      finishStressStats();
+      stressRemaining--;
+      if (stressRemaining == 0) {
+        finishStressStats();
+      }
     }
   }
 
