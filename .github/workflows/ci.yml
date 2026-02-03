@@ -13,10 +13,8 @@ jobs:
     strategy:
       matrix:
         environment:
-          - ex_cli_s3
-          - ex_cli_s2
-          - ex_compile_only_s3
-          - ex_compile_only_s2
+          - ex_bringup_s3
+          - ex_bringup_s2
       fail-fast: false
 
     steps:

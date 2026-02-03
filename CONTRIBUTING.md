@@ -7,7 +7,7 @@ Thank you for considering contributing to this project!
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/my-feature`
 3. Make your changes
-4. Ensure examples build: `pio run -e ex_cli_s3 -e ex_cli_s2`
+4. Ensure examples build: `pio run -e ex_bringup_s3 -e ex_bringup_s2`
 5. Commit with a clear message: `git commit -m "feat: add X"`
 6. Push and open a Pull Request
 
