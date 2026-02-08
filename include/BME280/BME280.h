@@ -145,7 +145,7 @@ public:
   /// Request a measurement (non-blocking)
   /// In FORCED mode: triggers measurement if idle
   /// In NORMAL mode: marks intent to read next available
-  /// Returns IN_PROGRESS if measurement started, BUSY if already measuring
+  /// Returns IN_PROGRESS if measurement started, BUSY if already measuring or OFFLINE
   Status requestMeasurement();
 
   /// Check if measurement is ready to read

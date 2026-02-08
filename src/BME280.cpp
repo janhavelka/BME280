@@ -14,7 +14,13 @@ namespace {
 
 static constexpr size_t MAX_WRITE_LEN = 16;
 static constexpr uint32_t RESET_TIMEOUT_MS = 10;
+static constexpr uint16_t RESET_MAX_POLLS = 255;
 static constexpr uint32_t MEASUREMENT_MARGIN_US = 1000;
+static constexpr int64_t HUMIDITY_MAX_X4096 = 419430400;
+
+static bool deadlineReached(uint32_t nowMs, uint32_t deadlineMs) {
+  return static_cast<int32_t>(nowMs - deadlineMs) >= 0;
+}
 
 static uint8_t osrsToReg(Oversampling osrs) {
   return static_cast<uint8_t>(osrs) & 0x07;
@@ -161,30 +167,48 @@ void BME280::tick(uint32_t nowMs) {
     return;
   }
 
+  if (_driverState == DriverState::OFFLINE) {
+    _measurementRequested = false;
+    return;
+  }
+
   if (_config.mode == Mode::SLEEP) {
+    _measurementRequested = false;
     return;
   }
 
   if (_config.mode == Mode::FORCED) {
     const uint32_t deadline = _measurementStartMs + estimateMeasurementTimeMs();
-    if (static_cast<int32_t>(nowMs - deadline) < 0) {
+    const bool deadlineFromTick = deadlineReached(nowMs, deadline);
+    const bool deadlineFromMillis = deadlineReached(millis(), deadline);
+    if (!deadlineFromTick && !deadlineFromMillis) {
       return;
     }
   }
 
   bool measuring = false;
   Status st = isMeasuring(measuring);
-  if (!st.ok() || measuring) {
+  if (!st.ok()) {
+    if (_driverState == DriverState::OFFLINE) {
+      _measurementRequested = false;
+    }
+    return;
+  }
+  if (measuring) {
     return;
   }
 
   st = _readRawData();
   if (!st.ok()) {
+    if (_driverState == DriverState::OFFLINE) {
+      _measurementRequested = false;
+    }
     return;
   }
 
   st = _compensate();
   if (!st.ok()) {
+    _measurementRequested = false;
     return;
   }
 
@@ -195,6 +219,12 @@ void BME280::tick(uint32_t nowMs) {
 void BME280::end() {
   _initialized = false;
   _driverState = DriverState::UNINIT;
+  _measurementRequested = false;
+  _measurementReady = false;
+  _measurementStartMs = 0;
+  _tFine = 0;
+  _rawSample = RawSample{};
+  _compSample = CompensatedSample{};
 }
 
 Status BME280::probe() {
@@ -234,6 +264,9 @@ Status BME280::recover() {
 Status BME280::requestMeasurement() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_driverState == DriverState::OFFLINE) {
+    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
   }
   if (_config.mode == Mode::SLEEP) {
     return Status::Error(Err::INVALID_PARAM, "Device is in sleep mode");
@@ -365,13 +398,17 @@ Status BME280::setMode(Mode mode) {
     return Status::Error(Err::INVALID_PARAM, "Invalid mode");
   }
 
-  if (mode == Mode::SLEEP) {
-    _measurementRequested = false;
+  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, mode);
+  Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  if (!st.ok()) {
+    return st;
   }
 
   _config.mode = mode;
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
-  return writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  if (mode == Mode::SLEEP) {
+    _measurementRequested = false;
+  }
+  return Status::Ok();
 }
 
 Status BME280::getMode(Mode& out) const {
@@ -390,9 +427,13 @@ Status BME280::setOversamplingT(Oversampling osrs) {
     return Status::Error(Err::INVALID_PARAM, "Invalid oversampling");
   }
 
+  const uint8_t ctrlMeas = buildCtrlMeas(osrs, _config.osrsP, _config.mode);
+  Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  if (!st.ok()) {
+    return st;
+  }
   _config.osrsT = osrs;
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
-  return writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  return Status::Ok();
 }
 
 Status BME280::setOversamplingP(Oversampling osrs) {
@@ -403,9 +444,13 @@ Status BME280::setOversamplingP(Oversampling osrs) {
     return Status::Error(Err::INVALID_PARAM, "Invalid oversampling");
   }
 
+  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, osrs, _config.mode);
+  Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  if (!st.ok()) {
+    return st;
+  }
   _config.osrsP = osrs;
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
-  return writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  return Status::Ok();
 }
 
 Status BME280::setOversamplingH(Oversampling osrs) {
@@ -416,15 +461,20 @@ Status BME280::setOversamplingH(Oversampling osrs) {
     return Status::Error(Err::INVALID_PARAM, "Invalid oversampling");
   }
 
-  _config.osrsH = osrs;
-  const uint8_t ctrlHum = buildCtrlHum(_config.osrsH);
+  const uint8_t ctrlHum = buildCtrlHum(osrs);
   Status st = writeRegister(cmd::REG_CTRL_HUM, ctrlHum);
   if (!st.ok()) {
     return st;
   }
 
   const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
-  return writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  if (!st.ok()) {
+    return st;
+  }
+
+  _config.osrsH = osrs;
+  return Status::Ok();
 }
 
 Status BME280::setFilter(Filter filter) {
@@ -435,8 +485,7 @@ Status BME280::setFilter(Filter filter) {
     return Status::Error(Err::INVALID_PARAM, "Invalid filter");
   }
 
-  _config.filter = filter;
-  const uint8_t config = buildConfig(_config.standby, _config.filter);
+  const uint8_t config = buildConfig(_config.standby, filter);
   const uint8_t ctrlMeasSleep = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP);
   const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
 
@@ -446,9 +495,19 @@ Status BME280::setFilter(Filter filter) {
   }
   st = writeRegister(cmd::REG_CONFIG, config);
   if (!st.ok()) {
+    const Status restoreSt = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+    if (!restoreSt.ok()) {
+      return restoreSt;
+    }
     return st;
   }
-  return writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  if (!st.ok()) {
+    return st;
+  }
+
+  _config.filter = filter;
+  return Status::Ok();
 }
 
 Status BME280::setStandby(Standby standby) {
@@ -459,8 +518,7 @@ Status BME280::setStandby(Standby standby) {
     return Status::Error(Err::INVALID_PARAM, "Invalid standby");
   }
 
-  _config.standby = standby;
-  const uint8_t config = buildConfig(_config.standby, _config.filter);
+  const uint8_t config = buildConfig(standby, _config.filter);
   const uint8_t ctrlMeasSleep = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP);
   const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
 
@@ -470,9 +528,19 @@ Status BME280::setStandby(Standby standby) {
   }
   st = writeRegister(cmd::REG_CONFIG, config);
   if (!st.ok()) {
+    const Status restoreSt = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+    if (!restoreSt.ok()) {
+      return restoreSt;
+    }
     return st;
   }
-  return writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  if (!st.ok()) {
+    return st;
+  }
+
+  _config.standby = standby;
+  return Status::Ok();
 }
 
 Status BME280::getOversamplingT(Oversampling& out) const {
@@ -520,24 +588,33 @@ Status BME280::softReset() {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
+  _measurementRequested = false;
+  _measurementReady = false;
+  _measurementStartMs = 0;
+
   Status st = writeRegister(cmd::REG_RESET, cmd::RESET_VALUE);
   if (!st.ok()) {
     return st;
   }
 
   const uint32_t deadline = millis() + RESET_TIMEOUT_MS;
-  while (true) {
+  bool resetDone = false;
+  for (uint16_t poll = 0; poll < RESET_MAX_POLLS; ++poll) {
     uint8_t status = 0;
     st = readRegister(cmd::REG_STATUS, status);
     if (!st.ok()) {
       return st;
     }
     if ((status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
+      resetDone = true;
       break;
     }
-    if (static_cast<int32_t>(millis() - deadline) >= 0) {
+    if (deadlineReached(millis(), deadline)) {
       return Status::Error(Err::TIMEOUT, "Reset timeout");
     }
+  }
+  if (!resetDone) {
+    return Status::Error(Err::TIMEOUT, "Reset polling limit reached", RESET_MAX_POLLS);
   }
 
   st = _readCalibration();
@@ -623,6 +700,9 @@ uint32_t BME280::estimateMeasurementTimeMs() const {
 
 Status BME280::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
                                 uint8_t* rxBuf, size_t rxLen) {
+  if (txBuf == nullptr || txLen == 0 || (rxLen > 0 && rxBuf == nullptr)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+  }
   if (_config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C write-read not set");
   }
@@ -631,6 +711,9 @@ Status BME280::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
 }
 
 Status BME280::_i2cWriteRaw(const uint8_t* buf, size_t len) {
+  if (buf == nullptr || len == 0) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+  }
   if (_config.i2cWrite == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C write not set");
   }
@@ -868,21 +951,30 @@ Status BME280::_compensate() {
   pVar1 = (static_cast<int64_t>(_digP9) * (p >> 13) * (p >> 13)) >> 25;
   pVar2 = (static_cast<int64_t>(_digP8) * p) >> 19;
   p = ((p + pVar1 + pVar2) >> 8) + (static_cast<int64_t>(_digP7) << 4);
-  _compSample.pressurePa = static_cast<uint32_t>(p >> 8);
+  int64_t pressurePa = p >> 8;
+  if (pressurePa < 0) {
+    pressurePa = 0;
+  } else if (pressurePa > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+    pressurePa = static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+  }
+  _compSample.pressurePa = static_cast<uint32_t>(pressurePa);
 
-  int32_t h = _tFine - 76800;
-  h = (((((adcH << 14) - (static_cast<int32_t>(_digH4) << 20) -
-          (static_cast<int32_t>(_digH5) * h)) + 16384) >> 15) *
-       (((((((h * static_cast<int32_t>(_digH6)) >> 10) *
-            (((h * static_cast<int32_t>(_digH3)) >> 11) + 32768)) >> 10) +
-           2097152) * static_cast<int32_t>(_digH2) + 8192) >> 14));
-  h = (h - (((((h >> 15) * (h >> 15)) >> 7) *
-             static_cast<int32_t>(_digH1)) >> 4));
+  int64_t h = static_cast<int64_t>(_tFine) - 76800;
+  const int64_t hTerm1 = (static_cast<int64_t>(adcH) << 14) -
+                         (static_cast<int64_t>(_digH4) << 20) -
+                         (static_cast<int64_t>(_digH5) * h) + 16384;
+  int64_t hTerm2 = ((((h * static_cast<int64_t>(_digH6)) >> 10) *
+                     (((h * static_cast<int64_t>(_digH3)) >> 11) + 32768)) >> 10) +
+                   2097152;
+  hTerm2 = ((hTerm2 * static_cast<int64_t>(_digH2)) + 8192) >> 14;
+  h = (hTerm1 >> 15) * hTerm2;
+  h = h - (((((h >> 15) * (h >> 15)) >> 7) *
+            static_cast<int64_t>(_digH1)) >> 4);
   if (h < 0) {
     h = 0;
   }
-  if (h > 419430400) {
-    h = 419430400;
+  if (h > HUMIDITY_MAX_X4096) {
+    h = HUMIDITY_MAX_X4096;
   }
   _compSample.humidityPct_x1024 = static_cast<uint32_t>(h >> 12);
 
