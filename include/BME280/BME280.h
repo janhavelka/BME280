@@ -237,6 +237,12 @@ public:
   /// Returns time in milliseconds
   uint32_t estimateMeasurementTimeMs() const;
 
+  /// Get the configured standby interval in milliseconds (rounded up)
+  uint32_t getStandbyTimeMs() const;
+
+  /// Estimate full normal-mode cycle time (measurement + standby) in ms
+  uint32_t estimateNormalCycleMs() const;
+
 private:
   // =========================================================================
   // Transport Wrappers

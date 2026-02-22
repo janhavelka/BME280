@@ -179,9 +179,7 @@ void BME280::tick(uint32_t nowMs) {
 
   if (_config.mode == Mode::FORCED) {
     const uint32_t deadline = _measurementStartMs + estimateMeasurementTimeMs();
-    const bool deadlineFromTick = deadlineReached(nowMs, deadline);
-    const bool deadlineFromMillis = deadlineReached(millis(), deadline);
-    if (!deadlineFromTick && !deadlineFromMillis) {
+    if (!deadlineReached(nowMs, deadline)) {
       return;
     }
   }
@@ -217,6 +215,16 @@ void BME280::tick(uint32_t nowMs) {
 }
 
 void BME280::end() {
+  if (_initialized) {
+    // Best-effort: put device to sleep to save power.
+    // Uses raw I2C to avoid health tracking during shutdown.
+    const uint8_t payload[2] = {
+      cmd::REG_CTRL_MEAS,
+      buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP)
+    };
+    (void)_i2cWriteRaw(payload, sizeof(payload));
+  }
+
   _initialized = false;
   _driverState = DriverState::UNINIT;
   _measurementRequested = false;
@@ -256,6 +264,13 @@ Status BME280::recover() {
   }
   if (chipId != cmd::CHIP_ID_BME280) {
     return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
+  }
+
+  // Re-apply configuration: after a power glitch or external reset
+  // device registers revert to defaults.
+  st = _applyConfig();
+  if (!st.ok()) {
+    return st;
   }
 
   return Status::Ok();
@@ -495,10 +510,8 @@ Status BME280::setFilter(Filter filter) {
   }
   st = writeRegister(cmd::REG_CONFIG, config);
   if (!st.ok()) {
-    const Status restoreSt = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
-    if (!restoreSt.ok()) {
-      return restoreSt;
-    }
+    // Best-effort restore: always return the original config-write error.
+    (void)writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
     return st;
   }
   st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
@@ -528,10 +541,8 @@ Status BME280::setStandby(Standby standby) {
   }
   st = writeRegister(cmd::REG_CONFIG, config);
   if (!st.ok()) {
-    const Status restoreSt = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
-    if (!restoreSt.ok()) {
-      return restoreSt;
-    }
+    // Best-effort restore: always return the original config-write error.
+    (void)writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
     return st;
   }
   st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
@@ -597,21 +608,22 @@ Status BME280::softReset() {
     return st;
   }
 
+  // Poll for reset completion using RAW reads.
+  // During POR (~2 ms) the device may NACK — this is expected.
+  // Raw path avoids inflating health-failure counters.
   const uint32_t deadline = millis() + RESET_TIMEOUT_MS;
   bool resetDone = false;
   for (uint16_t poll = 0; poll < RESET_MAX_POLLS; ++poll) {
-    uint8_t status = 0;
-    st = readRegister(cmd::REG_STATUS, status);
-    if (!st.ok()) {
-      return st;
-    }
-    if ((status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
-      resetDone = true;
-      break;
-    }
     if (deadlineReached(millis(), deadline)) {
       return Status::Error(Err::TIMEOUT, "Reset timeout");
     }
+    uint8_t status = 0;
+    st = _readRegisterRaw(cmd::REG_STATUS, status);
+    if (st.ok() && (status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
+      resetDone = true;
+      break;
+    }
+    // I2C error or im_update still set — keep polling
   }
   if (!resetDone) {
     return Status::Error(Err::TIMEOUT, "Reset polling limit reached", RESET_MAX_POLLS);
@@ -696,6 +708,24 @@ uint32_t BME280::estimateMeasurementTimeMs() const {
   timeUs += MEASUREMENT_MARGIN_US;
 
   return (timeUs + 999U) / 1000U;
+}
+
+uint32_t BME280::getStandbyTimeMs() const {
+  switch (_config.standby) {
+    case Standby::MS_0_5:  return 1;    // rounded up from 0.5
+    case Standby::MS_62_5: return 63;   // rounded up from 62.5
+    case Standby::MS_125:  return 125;
+    case Standby::MS_250:  return 250;
+    case Standby::MS_500:  return 500;
+    case Standby::MS_1000: return 1000;
+    case Standby::MS_10:   return 10;
+    case Standby::MS_20:   return 20;
+    default:               return 125;  // safe fallback
+  }
+}
+
+uint32_t BME280::estimateNormalCycleMs() const {
+  return estimateMeasurementTimeMs() + getStandbyTimeMs();
 }
 
 Status BME280::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
@@ -921,9 +951,24 @@ Status BME280::_readRawData() {
 }
 
 Status BME280::_compensate() {
+  const bool tempSkipped  = (_config.osrsT == Oversampling::SKIP);
+  const bool pressSkipped = (_config.osrsP == Oversampling::SKIP);
+  const bool humSkipped   = (_config.osrsH == Oversampling::SKIP);
+
+  // Temperature compensation is required for pressure and humidity.
+  if (tempSkipped) {
+    if (!pressSkipped || !humSkipped) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Temperature required for P/H compensation");
+    }
+    // All channels skipped — nothing to compute.
+    _tFine = 0;
+    _compSample = CompensatedSample{};
+    return Status::Ok();
+  }
+
+  // --- Temperature (Bosch int32 reference) ---
   const int32_t adcT = _rawSample.adcT;
-  const int32_t adcP = _rawSample.adcP;
-  const int32_t adcH = _rawSample.adcH;
 
   int32_t var1 = (((adcT >> 3) - (static_cast<int32_t>(_digT1) << 1)) *
                   static_cast<int32_t>(_digT2)) >> 11;
@@ -934,49 +979,63 @@ Status BME280::_compensate() {
   _tFine = var1 + var2;
   _compSample.tempC_x100 = (_tFine * 5 + 128) >> 8;
 
-  int64_t pVar1 = static_cast<int64_t>(_tFine) - 128000;
-  int64_t pVar2 = pVar1 * pVar1 * static_cast<int64_t>(_digP6);
-  pVar2 = pVar2 + ((pVar1 * static_cast<int64_t>(_digP5)) << 17);
-  pVar2 = pVar2 + (static_cast<int64_t>(_digP4) << 35);
-  pVar1 = ((pVar1 * pVar1 * static_cast<int64_t>(_digP3)) >> 8) +
-          ((pVar1 * static_cast<int64_t>(_digP2)) << 12);
-  pVar1 = (((static_cast<int64_t>(1) << 47) + pVar1) *
-           static_cast<int64_t>(_digP1)) >> 33;
-  if (pVar1 == 0) {
-    return Status::Error(Err::COMPENSATION_ERROR, "Pressure div by zero");
+  // --- Pressure (Bosch int64 reference) ---
+  if (pressSkipped) {
+    _compSample.pressurePa = 0;
+  } else {
+    const int32_t adcP = _rawSample.adcP;
+
+    int64_t pVar1 = static_cast<int64_t>(_tFine) - 128000;
+    int64_t pVar2 = pVar1 * pVar1 * static_cast<int64_t>(_digP6);
+    pVar2 = pVar2 + ((pVar1 * static_cast<int64_t>(_digP5)) << 17);
+    pVar2 = pVar2 + (static_cast<int64_t>(_digP4) << 35);
+    pVar1 = ((pVar1 * pVar1 * static_cast<int64_t>(_digP3)) >> 8) +
+            ((pVar1 * static_cast<int64_t>(_digP2)) << 12);
+    pVar1 = (((static_cast<int64_t>(1) << 47) + pVar1) *
+             static_cast<int64_t>(_digP1)) >> 33;
+    if (pVar1 == 0) {
+      return Status::Error(Err::COMPENSATION_ERROR, "Pressure div by zero");
+    }
+
+    int64_t p = 1048576 - static_cast<int64_t>(adcP);
+    p = (((p << 31) - pVar2) * 3125) / pVar1;
+    pVar1 = (static_cast<int64_t>(_digP9) * (p >> 13) * (p >> 13)) >> 25;
+    pVar2 = (static_cast<int64_t>(_digP8) * p) >> 19;
+    p = ((p + pVar1 + pVar2) >> 8) + (static_cast<int64_t>(_digP7) << 4);
+    int64_t pressurePa = p >> 8;
+    if (pressurePa < 0) {
+      pressurePa = 0;
+    } else if (pressurePa > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+      pressurePa = static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+    }
+    _compSample.pressurePa = static_cast<uint32_t>(pressurePa);
   }
 
-  int64_t p = 1048576 - static_cast<int64_t>(adcP);
-  p = (((p << 31) - pVar2) * 3125) / pVar1;
-  pVar1 = (static_cast<int64_t>(_digP9) * (p >> 13) * (p >> 13)) >> 25;
-  pVar2 = (static_cast<int64_t>(_digP8) * p) >> 19;
-  p = ((p + pVar1 + pVar2) >> 8) + (static_cast<int64_t>(_digP7) << 4);
-  int64_t pressurePa = p >> 8;
-  if (pressurePa < 0) {
-    pressurePa = 0;
-  } else if (pressurePa > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
-    pressurePa = static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
-  }
-  _compSample.pressurePa = static_cast<uint32_t>(pressurePa);
+  // --- Humidity (Bosch int32 reference, widened to int64 for safety) ---
+  if (humSkipped) {
+    _compSample.humidityPct_x1024 = 0;
+  } else {
+    const int32_t adcH = _rawSample.adcH;
 
-  int64_t h = static_cast<int64_t>(_tFine) - 76800;
-  const int64_t hTerm1 = (static_cast<int64_t>(adcH) << 14) -
-                         (static_cast<int64_t>(_digH4) << 20) -
-                         (static_cast<int64_t>(_digH5) * h) + 16384;
-  int64_t hTerm2 = ((((h * static_cast<int64_t>(_digH6)) >> 10) *
-                     (((h * static_cast<int64_t>(_digH3)) >> 11) + 32768)) >> 10) +
-                   2097152;
-  hTerm2 = ((hTerm2 * static_cast<int64_t>(_digH2)) + 8192) >> 14;
-  h = (hTerm1 >> 15) * hTerm2;
-  h = h - (((((h >> 15) * (h >> 15)) >> 7) *
-            static_cast<int64_t>(_digH1)) >> 4);
-  if (h < 0) {
-    h = 0;
+    int64_t h = static_cast<int64_t>(_tFine) - 76800;
+    const int64_t hTerm1 = (static_cast<int64_t>(adcH) << 14) -
+                           (static_cast<int64_t>(_digH4) << 20) -
+                           (static_cast<int64_t>(_digH5) * h) + 16384;
+    int64_t hTerm2 = ((((h * static_cast<int64_t>(_digH6)) >> 10) *
+                       (((h * static_cast<int64_t>(_digH3)) >> 11) + 32768)) >> 10) +
+                     2097152;
+    hTerm2 = ((hTerm2 * static_cast<int64_t>(_digH2)) + 8192) >> 14;
+    h = (hTerm1 >> 15) * hTerm2;
+    h = h - (((((h >> 15) * (h >> 15)) >> 7) *
+              static_cast<int64_t>(_digH1)) >> 4);
+    if (h < 0) {
+      h = 0;
+    }
+    if (h > HUMIDITY_MAX_X4096) {
+      h = HUMIDITY_MAX_X4096;
+    }
+    _compSample.humidityPct_x1024 = static_cast<uint32_t>(h >> 12);
   }
-  if (h > HUMIDITY_MAX_X4096) {
-    h = HUMIDITY_MAX_X4096;
-  }
-  _compSample.humidityPct_x1024 = static_cast<uint32_t>(h >> 12);
 
   return Status::Ok();
 }

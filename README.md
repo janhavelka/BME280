@@ -119,7 +119,7 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 ### Diagnostics
 
 - `Status probe()` - Check device presence (no health tracking)
-- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE
+- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE (re-applies config)
 
 ### State
 
@@ -134,6 +134,12 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 - `uint8_t consecutiveFailures()` - Failures since last success
 - `uint32_t totalFailures()` - Lifetime failure count
 - `uint32_t totalSuccess()` - Lifetime success count
+
+### Timing
+
+- `uint32_t estimateMeasurementTimeMs()` - Max measurement time for current oversampling
+- `uint32_t getStandbyTimeMs()` - Configured standby interval in ms
+- `uint32_t estimateNormalCycleMs()` - Full normal-mode cycle (measurement + standby)
 
 ## Examples
 
