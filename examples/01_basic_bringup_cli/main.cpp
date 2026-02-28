@@ -65,6 +65,8 @@ uint32_t pendingStartMs = 0;
 int stressRemaining = 0;
 StressStats stressStats;
 
+void cancelPending();
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -98,6 +100,35 @@ const char* stateToStr(BME280::DriverState st) {
     case DriverState::OFFLINE:  return "OFFLINE";
     default:                    return "UNKNOWN";
   }
+}
+
+const char* stateColor(BME280::DriverState st, bool online, uint8_t consecutiveFailures) {
+  if (st == BME280::DriverState::UNINIT) {
+    return LOG_COLOR_RESET;
+  }
+  return LOG_COLOR_STATE(online, consecutiveFailures);
+}
+
+const char* goodIfZeroColor(uint32_t value) {
+  return (value == 0U) ? LOG_COLOR_GREEN : LOG_COLOR_RED;
+}
+
+const char* goodIfNonZeroColor(uint32_t value) {
+  return (value > 0U) ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW;
+}
+
+const char* onOffColor(bool enabled) {
+  return enabled ? LOG_COLOR_GREEN : LOG_COLOR_RESET;
+}
+
+const char* skipCountColor(uint32_t value) {
+  return (value > 0U) ? LOG_COLOR_YELLOW : LOG_COLOR_RESET;
+}
+
+const char* successRateColor(float pct) {
+  if (pct >= 99.9f) return LOG_COLOR_GREEN;
+  if (pct >= 80.0f) return LOG_COLOR_YELLOW;
+  return LOG_COLOR_RED;
 }
 
 const char* modeToStr(BME280::Mode mode) {
@@ -158,31 +189,132 @@ const char* standbyToStr(uint8_t value) {
 }
 
 void printStatus(const BME280::Status& st) {
-  Serial.printf("  Status: %s (code=%u, detail=%ld)\n",
+  Serial.printf("  Status: %s%s%s (code=%u, detail=%ld)\n",
+                LOG_COLOR_RESULT(st.ok()),
                 errToStr(st.code),
+                LOG_COLOR_RESET,
                 static_cast<unsigned>(st.code),
                 static_cast<long>(st.detail));
   if (st.msg && st.msg[0]) {
-    Serial.printf("  Message: %s\n", st.msg);
+    Serial.printf("  Message: %s%s%s\n", LOG_COLOR_YELLOW, st.msg, LOG_COLOR_RESET);
   }
 }
 
 void printDriverHealth() {
-  Serial.println("=== Driver State ===");
-  Serial.printf("  State: %s\n", stateToStr(device.state()));
-  Serial.printf("  Consecutive failures: %u\n", device.consecutiveFailures());
-  Serial.printf("  Total failures: %lu\n", static_cast<unsigned long>(device.totalFailures()));
-  Serial.printf("  Total success: %lu\n", static_cast<unsigned long>(device.totalSuccess()));
-  Serial.printf("  Last OK at: %lu ms\n", static_cast<unsigned long>(device.lastOkMs()));
-  Serial.printf("  Last error at: %lu ms\n", static_cast<unsigned long>(device.lastErrorMs()));
-  if (device.lastError().code != BME280::Err::OK) {
-    Serial.printf("  Last error: %s\n", errToStr(device.lastError().code));
+  const uint32_t now = millis();
+  const uint32_t totalOk = device.totalSuccess();
+  const uint32_t totalFail = device.totalFailures();
+  const uint32_t total = totalOk + totalFail;
+  const float successRate = (total > 0U)
+                                ? (100.0f * static_cast<float>(totalOk) / static_cast<float>(total))
+                                : 0.0f;
+  const BME280::Status lastErr = device.lastError();
+  const BME280::DriverState st = device.state();
+  const bool online = device.isOnline();
+
+  Serial.println("=== Driver Health ===");
+  Serial.printf("  State: %s%s%s\n",
+                stateColor(st, online, device.consecutiveFailures()),
+                stateToStr(st),
+                LOG_COLOR_RESET);
+  Serial.printf("  Online: %s%s%s\n",
+                online ? LOG_COLOR_GREEN : LOG_COLOR_RED,
+                log_bool_str(online),
+                LOG_COLOR_RESET);
+  Serial.printf("  Consecutive failures: %s%u%s\n",
+                goodIfZeroColor(device.consecutiveFailures()),
+                device.consecutiveFailures(),
+                LOG_COLOR_RESET);
+  Serial.printf("  Total success: %s%lu%s\n",
+                goodIfNonZeroColor(totalOk),
+                static_cast<unsigned long>(totalOk),
+                LOG_COLOR_RESET);
+  Serial.printf("  Total failures: %s%lu%s\n",
+                goodIfZeroColor(totalFail),
+                static_cast<unsigned long>(totalFail),
+                LOG_COLOR_RESET);
+  Serial.printf("  Success rate: %s%.1f%%%s\n",
+                successRateColor(successRate),
+                successRate,
+                LOG_COLOR_RESET);
+
+  const uint32_t lastOkMs = device.lastOkMs();
+  if (lastOkMs > 0U) {
+    Serial.printf("  Last OK: %lu ms ago (at %lu ms)\n",
+                  static_cast<unsigned long>(now - lastOkMs),
+                  static_cast<unsigned long>(lastOkMs));
+  } else {
+    Serial.println("  Last OK: never");
+  }
+
+  const uint32_t lastErrorMs = device.lastErrorMs();
+  if (lastErrorMs > 0U) {
+    Serial.printf("  Last error: %lu ms ago (at %lu ms)\n",
+                  static_cast<unsigned long>(now - lastErrorMs),
+                  static_cast<unsigned long>(lastErrorMs));
+  } else {
+    Serial.println("  Last error: never");
+  }
+
+  if (!lastErr.ok()) {
+    Serial.printf("  Error code: %s%s%s\n",
+                  LOG_COLOR_RED,
+                  errToStr(lastErr.code),
+                  LOG_COLOR_RESET);
+    Serial.printf("  Error detail: %ld\n", static_cast<long>(lastErr.detail));
+    if (lastErr.msg && lastErr.msg[0]) {
+      Serial.printf("  Error msg: %s\n", lastErr.msg);
+    }
   }
 }
 
 void printMeasurement(const BME280::Measurement& m) {
   Serial.printf("Temp: %.2f C, Pressure: %.2f Pa, Humidity: %.2f %%\n",
                 m.temperatureC, m.pressurePa, m.humidityPct);
+}
+
+void printRawSample() {
+  BME280::RawSample raw;
+  const BME280::Status st = device.getRawSample(raw);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  Serial.printf("Raw ADC: T=%ld P=%ld H=%ld\n",
+                static_cast<long>(raw.adcT),
+                static_cast<long>(raw.adcP),
+                static_cast<long>(raw.adcH));
+}
+
+void printCompensatedSample() {
+  BME280::CompensatedSample sample;
+  const BME280::Status st = device.getCompensatedSample(sample);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  const float humidityPct =
+      static_cast<float>(sample.humidityPct_x1024) / 1024.0f;
+  Serial.printf("Compensated: T=%ld x0.01C, P=%lu Pa, RH=%.2f %%\n",
+                static_cast<long>(sample.tempC_x100),
+                static_cast<unsigned long>(sample.pressurePa),
+                humidityPct);
+}
+
+void printTimingInfo() {
+  bool measuring = false;
+  const BME280::Status st = device.isMeasuring(measuring);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  Serial.printf("Measuring: %s\n", measuring ? "YES" : "NO");
+  Serial.printf("Estimated measurement time: %lu ms\n",
+                static_cast<unsigned long>(device.estimateMeasurementTimeMs()));
+  Serial.printf("Configured standby: %lu ms\n",
+                static_cast<unsigned long>(device.getStandbyTimeMs()));
+  Serial.printf("Estimated normal cycle: %lu ms\n",
+                static_cast<unsigned long>(device.estimateNormalCycleMs()));
 }
 
 void printCalibration() {
@@ -246,7 +378,10 @@ void printCalibrationRaw() {
 }
 
 void printVerboseState() {
-  Serial.printf("  Verbose: %s\n", verboseMode ? "ON" : "OFF");
+  Serial.printf("  Verbose: %s%s%s\n",
+                onOffColor(verboseMode),
+                verboseMode ? "ON" : "OFF",
+                LOG_COLOR_RESET);
 }
 
 bool readChipSettings(ChipSettings& out) {
@@ -515,8 +650,14 @@ void finishStressStats() {
   Serial.println("=== Stress Summary ===");
   Serial.printf("  Target: %d\n", stressStats.target);
   Serial.printf("  Attempts: %d\n", stressStats.attempts);
-  Serial.printf("  Success: %d\n", stressStats.success);
-  Serial.printf("  Errors: %lu\n", static_cast<unsigned long>(stressStats.errors));
+  Serial.printf("  Success: %s%d%s\n",
+                goodIfNonZeroColor(static_cast<uint32_t>(stressStats.success)),
+                stressStats.success,
+                LOG_COLOR_RESET);
+  Serial.printf("  Errors: %s%lu%s\n",
+                goodIfZeroColor(stressStats.errors),
+                static_cast<unsigned long>(stressStats.errors),
+                LOG_COLOR_RESET);
   Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(durationMs));
   if (durationMs > 0) {
     const float rate = 1000.0f * static_cast<float>(stressStats.attempts) /
@@ -544,6 +685,307 @@ void finishStressStats() {
       Serial.printf("  Message: %s\n", stressStats.lastError.msg);
     }
   }
+}
+
+BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t timeoutMs = 500) {
+  BME280::Status st = device.requestMeasurement();
+  if (st.code != BME280::Err::IN_PROGRESS && st.code != BME280::Err::BUSY) {
+    return st;
+  }
+
+  const uint32_t start = millis();
+  while ((millis() - start) < timeoutMs) {
+    device.tick(millis());
+    if (device.measurementReady()) {
+      return device.getMeasurement(out);
+    }
+    delay(1);
+  }
+  return BME280::Status::Error(BME280::Err::TIMEOUT, "measurement timeout", timeoutMs);
+}
+
+void runStressMix(int count) {
+  struct OpStats {
+    const char* name;
+    uint32_t ok;
+    uint32_t fail;
+  };
+  OpStats stats[] = {
+      {"measure", 0, 0},
+      {"readStatus", 0, 0},
+      {"readChipId", 0, 0},
+      {"readCalRaw", 0, 0},
+      {"setMode", 0, 0},
+      {"setFilter", 0, 0},
+      {"setStandby", 0, 0},
+  };
+  const int opCount = static_cast<int>(sizeof(stats) / sizeof(stats[0]));
+
+  cancelPending();
+  const uint32_t succBefore = device.totalSuccess();
+  const uint32_t failBefore = device.totalFailures();
+  const uint32_t startMs = millis();
+
+  for (int i = 0; i < count; ++i) {
+    const int op = i % opCount;
+    BME280::Status st = BME280::Status::Ok();
+
+    switch (op) {
+      case 0: {
+        BME280::Measurement m;
+        st = performMeasurementBlocking(m);
+        break;
+      }
+      case 1: {
+        uint8_t status = 0;
+        st = device.readStatus(status);
+        break;
+      }
+      case 2: {
+        uint8_t id = 0;
+        st = device.readChipId(id);
+        if (st.ok() && id != BME280::cmd::CHIP_ID_BME280) {
+          st = BME280::Status::Error(BME280::Err::CHIP_ID_MISMATCH, "unexpected chip id", id);
+        }
+        break;
+      }
+      case 3: {
+        BME280::CalibrationRaw raw;
+        st = device.readCalibrationRaw(raw);
+        break;
+      }
+      case 4: {
+        const BME280::Mode mode =
+            ((i / opCount) % 2 == 0) ? BME280::Mode::FORCED : BME280::Mode::SLEEP;
+        st = device.setMode(mode);
+        break;
+      }
+      case 5: {
+        st = device.setFilter(static_cast<BME280::Filter>((i / opCount) % 5));
+        break;
+      }
+      case 6: {
+        st = device.setStandby(static_cast<BME280::Standby>((i / opCount) % 8));
+        break;
+      }
+      default:
+        break;
+    }
+
+    if (st.ok()) {
+      stats[op].ok++;
+    } else {
+      stats[op].fail++;
+      if (verboseMode) {
+        Serial.printf("  [%d] %s failed: %s\n", i, stats[op].name, errToStr(st.code));
+      }
+    }
+  }
+
+  const uint32_t elapsed = millis() - startMs;
+  uint32_t okTotal = 0;
+  uint32_t failTotal = 0;
+  for (int i = 0; i < opCount; ++i) {
+    okTotal += stats[i].ok;
+    failTotal += stats[i].fail;
+  }
+
+  Serial.println("=== stress_mix summary ===");
+  const float successPct =
+      (count > 0) ? (100.0f * static_cast<float>(okTotal) / static_cast<float>(count)) : 0.0f;
+  Serial.printf("  Total: %sok=%lu%s %sfail=%lu%s (%s%.2f%%%s)\n",
+                goodIfNonZeroColor(okTotal),
+                static_cast<unsigned long>(okTotal),
+                LOG_COLOR_RESET,
+                goodIfZeroColor(failTotal),
+                static_cast<unsigned long>(failTotal),
+                LOG_COLOR_RESET,
+                successRateColor(successPct),
+                successPct,
+                LOG_COLOR_RESET);
+  Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(elapsed));
+  if (elapsed > 0) {
+    Serial.printf("  Rate: %.2f ops/s\n", (1000.0f * static_cast<float>(count)) / elapsed);
+  }
+  for (int i = 0; i < opCount; ++i) {
+    Serial.printf("  %-10s %sok=%lu%s %sfail=%lu%s\n",
+                  stats[i].name,
+                  goodIfNonZeroColor(stats[i].ok),
+                  static_cast<unsigned long>(stats[i].ok),
+                  LOG_COLOR_RESET,
+                  goodIfZeroColor(stats[i].fail),
+                  static_cast<unsigned long>(stats[i].fail),
+                  LOG_COLOR_RESET);
+  }
+  const uint32_t successDelta = device.totalSuccess() - succBefore;
+  const uint32_t failDelta = device.totalFailures() - failBefore;
+  Serial.printf("  Health delta: %ssuccess +%lu%s, %sfailures +%lu%s\n",
+                goodIfNonZeroColor(successDelta),
+                static_cast<unsigned long>(successDelta),
+                LOG_COLOR_RESET,
+                goodIfZeroColor(failDelta),
+                static_cast<unsigned long>(failDelta),
+                LOG_COLOR_RESET);
+}
+
+void runSelfTest() {
+  struct Result {
+    uint32_t pass = 0;
+    uint32_t fail = 0;
+    uint32_t skip = 0;
+  } result;
+
+  enum class SelftestOutcome : uint8_t { PASS, FAIL, SKIP };
+  auto report = [&](const char* name, SelftestOutcome outcome, const char* note) {
+    const bool ok = (outcome == SelftestOutcome::PASS);
+    const bool skip = (outcome == SelftestOutcome::SKIP);
+    const char* color = skip ? LOG_COLOR_YELLOW : LOG_COLOR_RESULT(ok);
+    const char* tag = skip ? "SKIP" : (ok ? "PASS" : "FAIL");
+    Serial.printf("  [%s%s%s] %s", color, tag, LOG_COLOR_RESET, name);
+    if (note && note[0]) {
+      Serial.printf(" - %s", note);
+    }
+    Serial.println();
+    if (skip) {
+      result.skip++;
+    } else if (ok) {
+      result.pass++;
+    } else {
+      result.fail++;
+    }
+  };
+  auto reportCheck = [&](const char* name, bool ok, const char* note) {
+    report(name, ok ? SelftestOutcome::PASS : SelftestOutcome::FAIL, note);
+  };
+  auto reportSkip = [&](const char* name, const char* note) {
+    report(name, SelftestOutcome::SKIP, note);
+  };
+
+  Serial.println("=== BME280 selftest (safe commands) ===");
+  cancelPending();
+
+  BME280::Mode origMode = BME280::Mode::SLEEP;
+  BME280::Oversampling origT = BME280::Oversampling::X1;
+  BME280::Oversampling origP = BME280::Oversampling::X1;
+  BME280::Oversampling origH = BME280::Oversampling::X1;
+  BME280::Filter origFilter = BME280::Filter::OFF;
+  BME280::Standby origStandby = BME280::Standby::MS_0_5;
+  bool haveSnapshot = device.getMode(origMode).ok() &&
+                      device.getOversamplingT(origT).ok() &&
+                      device.getOversamplingP(origP).ok() &&
+                      device.getOversamplingH(origH).ok() &&
+                      device.getFilter(origFilter).ok() &&
+                      device.getStandby(origStandby).ok();
+  reportCheck("capture baseline settings", haveSnapshot, haveSnapshot ? "" : "could not read one or more fields");
+
+  const uint32_t succBefore = device.totalSuccess();
+  const uint32_t failBefore = device.totalFailures();
+  const uint8_t consBefore = device.consecutiveFailures();
+
+  BME280::Status st = device.probe();
+  if (st.code == BME280::Err::NOT_INITIALIZED) {
+    reportSkip("probe responds", "driver not initialized");
+    reportSkip("remaining checks", "selftest aborted");
+    Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
+                  goodIfNonZeroColor(result.pass), static_cast<unsigned long>(result.pass), LOG_COLOR_RESET,
+                  goodIfZeroColor(result.fail), static_cast<unsigned long>(result.fail), LOG_COLOR_RESET,
+                  skipCountColor(result.skip), static_cast<unsigned long>(result.skip), LOG_COLOR_RESET);
+    return;
+  }
+  reportCheck("probe responds", st.ok(), st.ok() ? "" : errToStr(st.code));
+  const bool probeNoTrack = device.totalSuccess() == succBefore &&
+                            device.totalFailures() == failBefore &&
+                            device.consecutiveFailures() == consBefore;
+  reportCheck("probe no-health-side-effects", probeNoTrack, "");
+
+  uint8_t id = 0;
+  st = device.readChipId(id);
+  reportCheck("readChipId", st.ok(), st.ok() ? "" : errToStr(st.code));
+  reportCheck("chip id matches 0x60", st.ok() && id == BME280::cmd::CHIP_ID_BME280, "");
+
+  st = device.setMode(BME280::Mode::FORCED);
+  reportCheck("setMode(FORCED)", st.ok(), st.ok() ? "" : errToStr(st.code));
+  BME280::Mode modeNow = BME280::Mode::SLEEP;
+  st = device.getMode(modeNow);
+  reportCheck("getMode", st.ok(), st.ok() ? "" : errToStr(st.code));
+  reportCheck("verify mode=FORCED", st.ok() && modeNow == BME280::Mode::FORCED, "");
+
+  st = device.setOversamplingT(BME280::Oversampling::X2);
+  reportCheck("setOversamplingT(X2)", st.ok(), st.ok() ? "" : errToStr(st.code));
+  BME280::Oversampling os = BME280::Oversampling::SKIP;
+  st = device.getOversamplingT(os);
+  reportCheck("verify osrs_t=X2", st.ok() && os == BME280::Oversampling::X2, st.ok() ? "" : errToStr(st.code));
+
+  st = device.setOversamplingP(BME280::Oversampling::X4);
+  reportCheck("setOversamplingP(X4)", st.ok(), st.ok() ? "" : errToStr(st.code));
+  st = device.getOversamplingP(os);
+  reportCheck("verify osrs_p=X4", st.ok() && os == BME280::Oversampling::X4, st.ok() ? "" : errToStr(st.code));
+
+  st = device.setOversamplingH(BME280::Oversampling::X2);
+  reportCheck("setOversamplingH(X2)", st.ok(), st.ok() ? "" : errToStr(st.code));
+  st = device.getOversamplingH(os);
+  reportCheck("verify osrs_h=X2", st.ok() && os == BME280::Oversampling::X2, st.ok() ? "" : errToStr(st.code));
+
+  st = device.setFilter(BME280::Filter::X4);
+  reportCheck("setFilter(X4)", st.ok(), st.ok() ? "" : errToStr(st.code));
+  BME280::Filter fil = BME280::Filter::OFF;
+  st = device.getFilter(fil);
+  reportCheck("verify filter=X4", st.ok() && fil == BME280::Filter::X4, st.ok() ? "" : errToStr(st.code));
+
+  st = device.setStandby(BME280::Standby::MS_125);
+  reportCheck("setStandby(125ms)", st.ok(), st.ok() ? "" : errToStr(st.code));
+  BME280::Standby sb = BME280::Standby::MS_0_5;
+  st = device.getStandby(sb);
+  reportCheck("verify standby=125ms", st.ok() && sb == BME280::Standby::MS_125, st.ok() ? "" : errToStr(st.code));
+
+  BME280::Measurement m;
+  st = performMeasurementBlocking(m);
+  reportCheck("measurement cycle", st.ok(), st.ok() ? "" : errToStr(st.code));
+  const bool mRange = (m.temperatureC > -60.0f && m.temperatureC < 130.0f) &&
+                      (m.humidityPct >= 0.0f && m.humidityPct <= 100.0f) &&
+                      (m.pressurePa > 20000.0f && m.pressurePa < 130000.0f);
+  reportCheck("measurement in plausible range", st.ok() && mRange, "");
+
+  BME280::RawSample raw;
+  st = device.getRawSample(raw);
+  reportCheck("getRawSample", st.ok(), st.ok() ? "" : errToStr(st.code));
+
+  BME280::CompensatedSample comp;
+  st = device.getCompensatedSample(comp);
+  reportCheck("getCompensatedSample", st.ok(), st.ok() ? "" : errToStr(st.code));
+
+  bool measuring = false;
+  st = device.isMeasuring(measuring);
+  reportCheck("isMeasuring", st.ok(), st.ok() ? "" : errToStr(st.code));
+
+  const uint32_t measMs = device.estimateMeasurementTimeMs();
+  const uint32_t standbyMs = device.getStandbyTimeMs();
+  const uint32_t cycleMs = device.estimateNormalCycleMs();
+  reportCheck("estimateMeasurementTimeMs>0", measMs > 0U, "");
+  reportCheck("estimateNormalCycleMs>=meas", cycleMs >= measMs, "");
+  reportCheck("getStandbyTimeMs valid", standbyMs > 0U || modeNow != BME280::Mode::NORMAL, "");
+
+  uint8_t statusReg = 0;
+  st = device.readStatus(statusReg);
+  reportCheck("readStatus", st.ok(), st.ok() ? "" : errToStr(st.code));
+
+  st = device.recover();
+  reportCheck("recover", st.ok(), st.ok() ? "" : errToStr(st.code));
+  reportCheck("isOnline", device.isOnline(), "");
+
+  if (haveSnapshot) {
+    device.setMode(origMode);
+    device.setOversamplingT(origT);
+    device.setOversamplingP(origP);
+    device.setOversamplingH(origH);
+    device.setFilter(origFilter);
+    device.setStandby(origStandby);
+  }
+
+  Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
+                goodIfNonZeroColor(result.pass), static_cast<unsigned long>(result.pass), LOG_COLOR_RESET,
+                goodIfZeroColor(result.fail), static_cast<unsigned long>(result.fail), LOG_COLOR_RESET,
+                skipCountColor(result.skip), static_cast<unsigned long>(result.skip), LOG_COLOR_RESET);
 }
 
 void cancelPending() {
@@ -633,24 +1075,43 @@ bool parseStandby(const String& token, BME280::Standby& out) {
 }
 
 void printHelp() {
-  Serial.println("=== Commands ===");
-  Serial.println("  help                    - Show this help");
-  Serial.println("  scan                    - Scan I2C bus");
-  Serial.println("  read                    - Request and display measurement");
-  Serial.println("  mode [sleep|forced|normal] - Set or show operating mode");
-  Serial.println("  osrs [t|p|h <0..5>]        - Set or show oversampling");
-  Serial.println("  filter [0..4]              - Set or show IIR filter");
-  Serial.println("  standby [0..7]             - Set or show standby time");
-  Serial.println("  settings                  - Show chip + internal settings");
-  Serial.println("  calib [raw]              - Show cached or raw calibration coefficients");
-  Serial.println("  status                  - Read status register");
-  Serial.println("  chipid                  - Read chip ID");
-  Serial.println("  reset                   - Soft reset device");
-  Serial.println("  drv                     - Show driver state and health");
-  Serial.println("  probe                   - Probe device (no health tracking)");
-  Serial.println("  recover                 - Manual recovery attempt");
-  Serial.println("  verbose [0|1]            - Enable/disable verbose output");
-  Serial.println("  stress [N]              - Run N measurement cycles");
+  auto helpSection = [](const char* title) {
+    Serial.printf("\n%s[%s]%s\n", LOG_COLOR_GREEN, title, LOG_COLOR_RESET);
+  };
+  auto helpItem = [](const char* cmd, const char* desc) {
+    Serial.printf("  %s%-32s%s - %s\n", LOG_COLOR_CYAN, cmd, LOG_COLOR_RESET, desc);
+  };
+
+  Serial.println();
+  Serial.printf("%s=== BME280 CLI Help ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
+  helpSection("Common");
+  helpItem("help / ?", "Show this help");
+  helpItem("scan", "Scan I2C bus");
+  helpItem("read", "Request and display measurement");
+  helpItem("raw", "Show last raw ADC sample");
+  helpItem("comp", "Show last compensated sample");
+  helpItem("measuring", "Show measuring flag");
+  helpItem("timing", "Show measurement and cycle timing estimates");
+
+  helpSection("Configuration");
+  helpItem("mode [sleep|forced|normal]", "Set or show operating mode");
+  helpItem("osrs [t|p|h <0..5>]", "Set or show oversampling");
+  helpItem("filter [0..4]", "Set or show IIR filter");
+  helpItem("standby [0..7]", "Set or show standby time");
+  helpItem("cfg / settings", "Show chip and internal settings");
+  helpItem("calib [raw]", "Show cached or raw calibration");
+  helpItem("status", "Read status register");
+  helpItem("chipid", "Read chip ID");
+  helpItem("reset", "Soft reset device");
+
+  helpSection("Diagnostics");
+  helpItem("drv", "Show driver state and health");
+  helpItem("probe", "Probe device (no health tracking)");
+  helpItem("recover", "Manual recovery attempt");
+  helpItem("verbose [0|1]", "Enable/disable verbose output");
+  helpItem("stress [N]", "Run N measurement cycles");
+  helpItem("stress_mix [N]", "Run N mixed-operation cycles");
+  helpItem("selftest", "Run safe command self-test report");
 }
 
 // ============================================================================
@@ -680,6 +1141,32 @@ void processCommand(const String& cmdLine) {
     if (st.code != BME280::Err::IN_PROGRESS) {
       printStatus(st);
     }
+    return;
+  }
+
+  if (cmd == "raw") {
+    printRawSample();
+    return;
+  }
+
+  if (cmd == "comp") {
+    printCompensatedSample();
+    return;
+  }
+
+  if (cmd == "measuring") {
+    bool measuring = false;
+    BME280::Status st = device.isMeasuring(measuring);
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+    Serial.printf("Measuring: %s\n", measuring ? "YES" : "NO");
+    return;
+  }
+
+  if (cmd == "timing") {
+    printTimingInfo();
     return;
   }
 
@@ -871,7 +1358,30 @@ void processCommand(const String& cmdLine) {
   if (cmd.startsWith("verbose ")) {
     const int val = cmd.substring(8).toInt();
     verboseMode = (val != 0);
-    LOGI("Verbose mode: %s", verboseMode ? "ON" : "OFF");
+    LOGI("Verbose mode: %s%s%s",
+         onOffColor(verboseMode),
+         verboseMode ? "ON" : "OFF",
+         LOG_COLOR_RESET);
+    return;
+  }
+
+  if (cmd == "selftest") {
+    runSelfTest();
+    return;
+  }
+
+  if (cmd == "stress_mix") {
+    runStressMix(50);
+    return;
+  }
+
+  if (cmd.startsWith("stress_mix ")) {
+    int count = cmd.substring(11).toInt();
+    if (count <= 0 || count > 100000) {
+      LOGW("Invalid stress_mix count");
+      return;
+    }
+    runStressMix(count);
     return;
   }
 

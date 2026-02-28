@@ -1,4 +1,4 @@
-# Codex Prompt: Production-Grade BME280 I2C Driver Library (ESP32 Arduino / PlatformIO)
+﻿# Codex Prompt: Production-Grade BME280 I2C Driver Library (ESP32 Arduino / PlatformIO)
 
 You are an expert embedded engineer. Implement a **production-grade, reusable BME280 I2C driver library** for **ESP32-S2 / ESP32-S3** using **Arduino framework** under **PlatformIO**.
 
@@ -32,7 +32,7 @@ All types in `namespace BME280 { }`.
 
 ---
 
-## Status.h — Error Codes
+## Status.h -- Error Codes
 
 Follow the RV3032 pattern exactly:
 
@@ -66,7 +66,7 @@ struct Status {
 
 ---
 
-## Config.h — Configuration
+## Config.h -- Configuration
 
 ```cpp
 /// I2C write callback signature
@@ -141,7 +141,7 @@ struct Config {
 
 ---
 
-## CommandTable.h — Register Definitions
+## CommandTable.h -- Register Definitions
 
 Define all BME280 registers from `BME280_Register_Reference.md`:
 - Register addresses as `static constexpr uint8_t REG_*`
@@ -184,7 +184,7 @@ namespace cmd {
 
 ---
 
-## BME280.h — Main Driver Class
+## BME280.h -- Main Driver Class
 
 ### DriverState (same as RV3032)
 
@@ -216,7 +216,7 @@ struct RawSample {
 
 /// Fixed-point compensated values (no float)
 struct CompensatedSample {
-  int32_t tempC_x100 = 0;        ///< Temperature * 100 (e.g., 2534 = 25.34°C)
+  int32_t tempC_x100 = 0;        ///< Temperature * 100 (e.g., 2534 = 25.34 degC)
   uint32_t pressurePa = 0;       ///< Pressure in Pa
   uint32_t humidityPct_x1024 = 0; ///< Humidity * 1024 (Q22.10 format)
 };
@@ -395,7 +395,7 @@ Public API (getMeasurement, setMode, etc.)
 Register helpers (readRegs, writeRegs)
     ↓
 TRACKED wrappers (_i2cWriteReadTracked, _i2cWriteTracked)
-    ↓  ← _updateHealth() called here ONLY
+    ↓  <- _updateHealth() called here ONLY
 RAW wrappers (_i2cWriteReadRaw, _i2cWriteRaw)
     ↓
 Transport callbacks (Config::i2cWrite, i2cWriteRead)
@@ -414,11 +414,11 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 2. Set `_initialized = false`, `_driverState = UNINIT`
 3. Validate config (callbacks not null, timeout > 0)
 4. Clamp `offlineThreshold` to minimum 1
-5. `probe()` — verify device responds (raw path, no health tracking)
+5. `probe()` -- verify device responds (raw path, no health tracking)
 6. Verify chip ID == 0x60
-7. `_readCalibration()` — read and parse compensation data
-8. `_validateCalibration()` — sanity check calibration values
-9. `_applyConfig()` — write ctrl_hum, ctrl_meas, config registers
+7. `_readCalibration()` -- read and parse compensation data
+8. `_validateCalibration()` -- sanity check calibration values
+9. `_applyConfig()` -- write ctrl_hum, ctrl_meas, config registers
 10. Set `_initialized = true`, `_driverState = READY`
 
 ### Compensation Math

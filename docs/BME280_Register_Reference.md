@@ -1,4 +1,4 @@
-# BME280 Register & Timing Reference (implementation-ready)
+﻿# BME280 Register & Timing Reference (implementation-ready)
 
 Source: `bst-bme280-ds002.pdf` (Bosch Sensortec BME280 datasheet).
 
@@ -9,8 +9,8 @@ This file is designed so an implementation agent can build a **robust BME280 dri
 ## 1) Bus addressing (I2C)
 
 7-bit I2C slave address depends on **SDO** pin:
-- SDO = GND → **0x76**
-- SDO = VDDIO → **0x77**
+- SDO = GND -> **0x76**
+- SDO = VDDIO -> **0x77**
 
 ---
 
@@ -78,11 +78,11 @@ This file is designed so an implementation agent can build a **robust BME280 dri
 | osrs_h[2:0] | Humidity oversampling |
 |---|---|
 | 000 | Skipped (output set to 0x8000) |
-| 001 | oversampling ×1 |
-| 010 | oversampling ×2 |
-| 011 | oversampling ×4 |
-| 100 | oversampling ×8 |
-| 101, others | oversampling ×16 |
+| 001 | oversampling x1 |
+| 010 | oversampling x2 |
+| 011 | oversampling x4 |
+| 100 | oversampling x8 |
+| 101, others | oversampling x16 |
 
 > Datasheet rule: after writing `ctrl_hum`, you must write `ctrl_meas` for the change to become effective.
 
@@ -98,20 +98,20 @@ This file is designed so an implementation agent can build a **robust BME280 dri
 | osrs_t[2:0] | Temperature oversampling |
 |---|---|
 | 000 | Skipped (output set to 0x80000) |
-| 001 | oversampling ×1 |
-| 010 | oversampling ×2 |
-| 011 | oversampling ×4 |
-| 100 | oversampling ×8 |
-| 101, others | oversampling ×16 |
+| 001 | oversampling x1 |
+| 010 | oversampling x2 |
+| 011 | oversampling x4 |
+| 100 | oversampling x8 |
+| 101, others | oversampling x16 |
 
 | osrs_p[2:0] | Pressure oversampling |
 |---|---|
 | 000 | Skipped (output set to 0x80000) |
-| 001 | oversampling ×1 |
-| 010 | oversampling ×2 |
-| 011 | oversampling ×4 |
-| 100 | oversampling ×8 |
-| 101, others | oversampling ×16 |
+| 001 | oversampling x1 |
+| 010 | oversampling x2 |
+| 011 | oversampling x4 |
+| 100 | oversampling x8 |
+| 101, others | oversampling x16 |
 
 | mode[1:0] | Mode |
 |---|---|
@@ -143,14 +143,14 @@ This file is designed so an implementation agent can build a **robust BME280 dri
 | 011 | 8 |
 | 100, others | 16 |
 
-> Datasheet rule: `config` is writable only in **sleep** mode. If you’re in normal mode, switch to sleep → write config → restore mode.
+> Datasheet rule: `config` is writable only in **sleep** mode. If you're in normal mode, switch to sleep -> write config -> restore mode.
 
 ---
 
 ## 5) Soft reset and chip ID
 
 ### 5.1 Chip ID
-- Read `0xD0` → must be **0x60** for BME280.
+- Read `0xD0` -> must be **0x60** for BME280.
 
 ### 5.2 Soft reset
 - Write **0xB6** to register `0xE0` to perform a complete power-on-reset procedure.
@@ -177,7 +177,7 @@ Practical driver guidance:
 
 ---
 
-## 7) Driver “gotchas” worth encoding as tests
+## 7) Driver "gotchas" worth encoding as tests
 - Changing `ctrl_hum` requires a subsequent write to `ctrl_meas`.
 - `config` writes must be done in sleep.
 - Always burst-read `0xF7..0xFE` to keep pressure/temp/humidity coherent.

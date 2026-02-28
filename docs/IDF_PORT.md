@@ -1,10 +1,10 @@
-# BME280 — ESP-IDF Migration Prompt
+﻿# BME280 -- ESP-IDF Migration Prompt
 
 > **Library**: BME280 (Bosch temperature / humidity / pressure sensor)
-> **Current version**: 1.1.0 → **Target**: 2.0.0
+> **Current version**: 1.1.0 -> **Target**: 2.0.0
 > **Namespace**: `BME280`
 > **Include path**: `#include "BME280/BME280.h"`
-> **Difficulty**: Easy — `millis()` replacement in .cpp only, I2C already callback-based
+> **Difficulty**: Easy -- `millis()` replacement in .cpp only, I2C already callback-based
 
 ---
 
@@ -16,7 +16,7 @@ git tag v1.1.0   # freeze Arduino-era version
 
 ---
 
-## Current State — Arduino Dependencies (exact)
+## Current State -- Arduino Dependencies (exact)
 
 | API | Count | Locations |
 |-----|-------|-----------|
@@ -41,7 +41,7 @@ Config is struct-based. Time injected via `tick(uint32_t nowMs)`.
 
 Delete the include from the .cpp file.
 
-### 2. Replace 4× `millis()` with `esp_timer_get_time()`
+### 2. Replace 4x `millis()` with `esp_timer_get_time()`
 
 Add at file scope in the .cpp:
 
@@ -81,8 +81,8 @@ dependencies:
 
 ### 5. Version bump
 
-- `library.json` → `2.0.0`
-- `Version.h` (if present) → `2.0.0`
+- `library.json` -> `2.0.0`
+- `Version.h` (if present) -> `2.0.0`
 
 ### 6. Replace Arduino example with ESP-IDF example
 

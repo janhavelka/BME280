@@ -1,5 +1,4 @@
-# GitHub Actions CI for ESP32 PlatformIO builds
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -11,11 +10,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         environment:
           - ex_bringup_s3
           - ex_bringup_s2
-      fail-fast: false
 
     steps:
       - name: Checkout repository
@@ -34,14 +33,39 @@ jobs:
       - name: Build ${{ matrix.environment }}
         run: pio run -e ${{ matrix.environment }}
 
-  # Optional: check that library.json is valid
+  native-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Enforce core timing guard
+        run: python tools/check_core_timing_guard.py
+
+      - name: Run native tests
+        run: pio test -e native
+
   validate-library:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Enforce example CLI contract
+        run: python tools/check_cli_contract.py
+
       - name: Validate library.json
         run: |
           python -c "import json; json.load(open('library.json'))"
           echo "library.json is valid JSON"
+

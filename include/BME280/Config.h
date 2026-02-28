@@ -31,6 +31,11 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
                                   uint8_t* rxData, size_t rxLen, uint32_t timeoutMs,
                                   void* user);
 
+/// Millisecond timestamp callback.
+/// @param user User context pointer passed through from Config
+/// @return Current monotonic milliseconds
+using NowMsFn = uint32_t (*)(void* user);
+
 /// Oversampling settings
 enum class Oversampling : uint8_t {
   SKIP = 0,  ///< Measurement skipped
@@ -75,6 +80,10 @@ struct Config {
   I2cWriteFn i2cWrite = nullptr;        ///< I2C write function pointer
   I2cWriteReadFn i2cWriteRead = nullptr; ///< I2C write-read function pointer
   void* i2cUser = nullptr;               ///< User context for callbacks
+
+  // === Timing Hooks (optional) ===
+  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source
+  void* timeUser = nullptr;              ///< User context for timing hook
   
   // === Device Settings ===
   uint8_t i2cAddress = 0x76;             ///< 0x76 (SDO=GND) or 0x77 (SDO=VDD)

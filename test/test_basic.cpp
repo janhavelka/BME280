@@ -1,0 +1,278 @@
+/// @file test_basic.cpp
+/// @brief Native contract tests for BME280 lifecycle and health behavior.
+
+#include <unity.h>
+
+#include "Arduino.h"
+#include "Wire.h"
+
+SerialClass Serial;
+TwoWire Wire;
+
+#include "BME280/BME280.h"
+
+using namespace BME280;
+
+namespace {
+
+struct FakeBus {
+  uint32_t nowMs = 1000;
+  uint32_t writeCalls = 0;
+  uint32_t readCalls = 0;
+
+  int readErrorRemaining = 0;
+  int writeErrorRemaining = 0;
+  Status readError = Status::Error(Err::I2C_ERROR, "forced read error", -1);
+  Status writeError = Status::Error(Err::I2C_ERROR, "forced write error", -2);
+};
+
+Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user) {
+  FakeBus* bus = static_cast<FakeBus*>(user);
+  bus->writeCalls++;
+  if (data == nullptr || len == 0) {
+    return Status::Error(Err::INVALID_PARAM, "invalid fake write args");
+  }
+  if (bus->writeErrorRemaining > 0) {
+    bus->writeErrorRemaining--;
+    return bus->writeError;
+  }
+  return Status::Ok();
+}
+
+Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxData,
+                     size_t rxLen, uint32_t, void* user) {
+  FakeBus* bus = static_cast<FakeBus*>(user);
+  bus->readCalls++;
+  if (txData == nullptr || txLen == 0 || (rxLen > 0 && rxData == nullptr)) {
+    return Status::Error(Err::INVALID_PARAM, "invalid fake write-read args");
+  }
+  if (bus->readErrorRemaining > 0) {
+    bus->readErrorRemaining--;
+    return bus->readError;
+  }
+
+  const uint8_t reg = txData[0];
+  for (size_t i = 0; i < rxLen; ++i) {
+    rxData[i] = 0;
+  }
+
+  if (reg == cmd::REG_CHIP_ID && rxLen >= 1) {
+    rxData[0] = cmd::CHIP_ID_BME280;
+  } else if (reg == cmd::REG_CALIB_TP_START && rxLen == cmd::REG_CALIB_TP_LEN) {
+    for (size_t i = 0; i < rxLen; ++i) {
+      rxData[i] = static_cast<uint8_t>(i + 1);
+    }
+    rxData[0] = 0x88;
+    rxData[1] = 0x01;  // digT1 = 0x0188
+    rxData[6] = 0x34;
+    rxData[7] = 0x12;  // digP1 = 0x1234
+  } else if (reg == cmd::REG_CALIB_H1 && rxLen >= 1) {
+    rxData[0] = 0x01;
+  } else if (reg == cmd::REG_CALIB_H_START && rxLen == cmd::REG_CALIB_H_LEN) {
+    rxData[0] = 0x11;
+    rxData[1] = 0x22;
+    rxData[2] = 0x33;
+    rxData[3] = 0x44;
+    rxData[4] = 0x55;
+    rxData[5] = 0x66;
+    rxData[6] = 0x77;
+  } else if (reg == cmd::REG_STATUS && rxLen >= 1) {
+    rxData[0] = 0;
+  }
+
+  return Status::Ok();
+}
+
+uint32_t fakeNowMs(void* user) {
+  return static_cast<FakeBus*>(user)->nowMs;
+}
+
+Config makeConfig(FakeBus& bus) {
+  Config cfg;
+  cfg.i2cWrite = fakeWrite;
+  cfg.i2cWriteRead = fakeWriteRead;
+  cfg.i2cUser = &bus;
+  cfg.nowMs = fakeNowMs;
+  cfg.timeUser = &bus;
+  cfg.i2cTimeoutMs = 10;
+  cfg.offlineThreshold = 3;
+  cfg.mode = Mode::FORCED;
+  return cfg;
+}
+
+}  // namespace
+
+void setUp() {}
+void tearDown() {}
+
+void test_status_ok() {
+  Status st = Status::Ok();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::OK), static_cast<uint8_t>(st.code));
+}
+
+void test_status_error() {
+  Status st = Status::Error(Err::I2C_ERROR, "Test error", 42);
+  TEST_ASSERT_FALSE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(42, st.detail);
+}
+
+void test_status_in_progress() {
+  Status st{Err::IN_PROGRESS, 0, "In progress"};
+  TEST_ASSERT_FALSE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS), static_cast<uint8_t>(st.code));
+}
+
+void test_config_defaults() {
+  Config cfg;
+  TEST_ASSERT_NULL(cfg.i2cWrite);
+  TEST_ASSERT_NULL(cfg.i2cWriteRead);
+  TEST_ASSERT_EQUAL_HEX8(0x76, cfg.i2cAddress);
+  TEST_ASSERT_EQUAL_UINT16(50, cfg.i2cTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT8(5, cfg.offlineThreshold);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1), static_cast<uint8_t>(cfg.osrsT));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1), static_cast<uint8_t>(cfg.osrsP));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1), static_cast<uint8_t>(cfg.osrsH));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Filter::OFF), static_cast<uint8_t>(cfg.filter));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Standby::MS_125), static_cast<uint8_t>(cfg.standby));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::FORCED), static_cast<uint8_t>(cfg.mode));
+}
+
+void test_begin_rejects_missing_callbacks() {
+  BME280::BME280 dev;
+  Config cfg;
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_begin_success_sets_ready_and_health() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_TRUE(dev.isOnline());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+}
+
+void test_probe_failure_does_not_update_health() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t beforeSuccess = dev.totalSuccess();
+  const uint32_t beforeFailures = dev.totalFailures();
+  const DriverState beforeState = dev.state();
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_ERROR, "forced probe error", -7);
+  Status st = dev.probe();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(beforeState),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_recover_failure_updates_health_once() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_ERROR, "forced recover error", -8);
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(1u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(dev.lastError().code));
+  TEST_ASSERT_EQUAL_UINT32(bus.nowMs, dev.lastErrorMs());
+}
+
+void test_recover_success_returns_ready() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_ERROR, "forced recover error", -9);
+  (void)dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+
+  bus.nowMs = 4321;
+  Status st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT32(5u, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT32(4321u, dev.lastOkMs());
+}
+
+void test_recover_reaches_offline_when_threshold_is_one() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.offlineThreshold = 1;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_ERROR, "forced timeout", -10);
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_FALSE(dev.isOnline());
+}
+
+void test_forced_measurement_timing_wraparound_reaches_ready() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::FORCED;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.nowMs = 0xFFFFFFF8u;
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.measurementReady());
+
+  // Elapsed time across uint32 wrap should still satisfy forced-mode deadline.
+  bus.nowMs = 20u;
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_TRUE(dev.measurementReady());
+
+  Measurement m{};
+  st = dev.getMeasurement(m);
+  TEST_ASSERT_TRUE(st.ok());
+}
+
+int main() {
+  UNITY_BEGIN();
+  RUN_TEST(test_status_ok);
+  RUN_TEST(test_status_error);
+  RUN_TEST(test_status_in_progress);
+  RUN_TEST(test_config_defaults);
+  RUN_TEST(test_begin_rejects_missing_callbacks);
+  RUN_TEST(test_begin_success_sets_ready_and_health);
+  RUN_TEST(test_probe_failure_does_not_update_health);
+  RUN_TEST(test_recover_failure_updates_health_once);
+  RUN_TEST(test_recover_success_returns_ready);
+  RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
+  RUN_TEST(test_forced_measurement_timing_wraparound_reaches_ready);
+  return UNITY_END();
+}
