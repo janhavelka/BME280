@@ -1086,6 +1086,7 @@ void printHelp() {
   Serial.printf("%s=== BME280 CLI Help ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
   helpSection("Common");
   helpItem("help / ?", "Show this help");
+  helpItem("version / ver", "Print firmware and library version info");
   helpItem("scan", "Scan I2C bus");
   helpItem("read", "Request and display measurement");
   helpItem("raw", "Show last raw ADC sample");
@@ -1114,6 +1115,15 @@ void printHelp() {
   helpItem("selftest", "Run safe command self-test report");
 }
 
+void printVersionInfo() {
+  Serial.println("=== Version Info ===");
+  Serial.printf("  Example firmware build: %s %s\n", __DATE__, __TIME__);
+  Serial.printf("  BME280 library version: %s\n", BME280::VERSION);
+  Serial.printf("  BME280 library full: %s\n", BME280::VERSION_FULL);
+  Serial.printf("  BME280 library build: %s\n", BME280::BUILD_TIMESTAMP);
+  Serial.printf("  BME280 library commit: %s (%s)\n", BME280::GIT_COMMIT, BME280::GIT_STATUS);
+}
+
 // ============================================================================
 // Command Processing
 // ============================================================================
@@ -1127,6 +1137,11 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "help" || cmd == "?") {
     printHelp();
+    return;
+  }
+
+  if (cmd == "version" || cmd == "ver") {
+    printVersionInfo();
     return;
   }
 

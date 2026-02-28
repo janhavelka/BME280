@@ -309,7 +309,7 @@ Status BME280::requestMeasurement() {
     }
 
     _measurementRequested = true;
-    _measurementStartMs = millis();
+    _measurementStartMs = _nowMs();
 
     return Status::Error(Err::IN_PROGRESS, "Measurement started");
   }
@@ -611,10 +611,10 @@ Status BME280::softReset() {
   // Poll for reset completion using RAW reads.
   // During POR (~2 ms) the device may NACK — this is expected.
   // Raw path avoids inflating health-failure counters.
-  const uint32_t deadline = millis() + RESET_TIMEOUT_MS;
+  const uint32_t deadline = _nowMs() + RESET_TIMEOUT_MS;
   bool resetDone = false;
   for (uint16_t poll = 0; poll < RESET_MAX_POLLS; ++poll) {
-    if (deadlineReached(millis(), deadline)) {
+    if (deadlineReached(_nowMs(), deadline)) {
       return Status::Error(Err::TIMEOUT, "Reset timeout");
     }
     uint8_t status = 0;
@@ -818,7 +818,7 @@ Status BME280::_updateHealth(const Status& st) {
     return st;
   }
 
-  const uint32_t now = millis();
+  const uint32_t now = _nowMs();
   const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
   const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
 
@@ -1038,6 +1038,10 @@ Status BME280::_compensate() {
   }
 
   return Status::Ok();
+}
+
+uint32_t BME280::_nowMs() const {
+  return millis();
 }
 
 }  // namespace BME280

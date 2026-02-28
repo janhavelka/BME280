@@ -298,6 +298,7 @@ private:
   Status _validateCalibration();
   Status _readRawData();
   Status _compensate();
+  uint32_t _nowMs() const;
   
   // =========================================================================
   // State
