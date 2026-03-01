@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-03-01
+
+### Changed
+- Updated `docs/IDF_PORT.md` to reflect the actual timing abstraction and portability flow.
+
+### Fixed
+- Core timing guard compliance updates in `src/BME280.cpp`.
+
+### Removed
+- Stale auxiliary documentation templates not used by the current release flow.
+
 ## [1.1.0] - 2026-02-22
 
 ### Added
@@ -51,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/janhavelka/BME280/compare/v1.1.1...v1.2.0
 [1.1.0]: https://github.com/janhavelka/BME280/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/janhavelka/BME280/releases/tag/v1.0.0
 [0.1.0]: https://github.com/janhavelka/BME280/releases/tag/v0.1.0

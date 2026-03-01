@@ -1,6 +1,6 @@
 {
   "name": "BME280",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Production-grade BME280 environmental sensor driver.",
   "keywords": [
     "bme280",
@@ -32,9 +32,15 @@
   },
   "license": "MIT",
   "homepage": "https://www.thymos.cz",
-  "frameworks": ["arduino"],
-  "platforms": ["espressif32"],
-  "headers": ["BME280/BME280.h"],
+  "frameworks": [
+    "arduino"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "headers": [
+    "BME280/BME280.h"
+  ],
   "build": {
     "includeDir": "include",
     "srcDir": "src"

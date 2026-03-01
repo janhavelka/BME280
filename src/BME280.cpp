@@ -1041,6 +1041,9 @@ Status BME280::_compensate() {
 }
 
 uint32_t BME280::_nowMs() const {
+  if (_config.nowMs != nullptr) {
+    return _config.nowMs(_config.timeUser);
+  }
   return millis();
 }
 
