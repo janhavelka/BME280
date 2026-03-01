@@ -71,6 +71,10 @@ void cancelPending();
 // Helper Functions
 // ============================================================================
 
+uint32_t exampleNowMs(void*) {
+  return millis();
+}
+
 const char* errToStr(BME280::Err err) {
   using namespace BME280;
   switch (err) {
@@ -1442,6 +1446,7 @@ void setup() {
   cfg.i2cWriteRead = transport::wireWriteRead;
   cfg.i2cAddress = 0x76;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
+  cfg.nowMs = exampleNowMs;
   cfg.offlineThreshold = 5;
 
   BME280::Status st = device.begin(cfg);

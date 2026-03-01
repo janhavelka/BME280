@@ -19,6 +19,7 @@ struct FakeBus {
   uint32_t nowMs = 1000;
   uint32_t writeCalls = 0;
   uint32_t readCalls = 0;
+  uint32_t measuringStatusReadsRemaining = 0;
 
   int readErrorRemaining = 0;
   int writeErrorRemaining = 0;
@@ -77,7 +78,12 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
     rxData[5] = 0x66;
     rxData[6] = 0x77;
   } else if (reg == cmd::REG_STATUS && rxLen >= 1) {
-    rxData[0] = 0;
+    if (bus->measuringStatusReadsRemaining > 0) {
+      rxData[0] = cmd::MASK_STATUS_MEASURING;
+      bus->measuringStatusReadsRemaining--;
+    } else {
+      rxData[0] = 0;
+    }
   }
 
   return Status::Ok();
@@ -261,6 +267,64 @@ void test_forced_measurement_timing_wraparound_reaches_ready() {
   TEST_ASSERT_TRUE(st.ok());
 }
 
+void test_forced_measurement_request_while_busy_tracks_completion() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::FORCED;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  // Simulate an in-flight forced conversion (e.g., started by prior config write).
+  bus.measuringStatusReadsRemaining = 1;
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.measurementReady());
+
+  bus.nowMs += dev.estimateMeasurementTimeMs();
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_TRUE(dev.measurementReady());
+
+  Measurement m{};
+  st = dev.getMeasurement(m);
+  TEST_ASSERT_TRUE(st.ok());
+}
+
+void test_raw_and_compensated_samples_remain_available_after_measurement_read() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::FORCED;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  RawSample raw{};
+  CompensatedSample comp{};
+
+  Status st = dev.getRawSample(raw);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+  st = dev.getCompensatedSample(comp);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+
+  st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(st.code));
+  bus.nowMs += dev.estimateMeasurementTimeMs();
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_TRUE(dev.measurementReady());
+
+  Measurement m{};
+  st = dev.getMeasurement(m);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(dev.measurementReady());
+
+  st = dev.getRawSample(raw);
+  TEST_ASSERT_TRUE(st.ok());
+  st = dev.getCompensatedSample(comp);
+  TEST_ASSERT_TRUE(st.ok());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_status_ok);
@@ -274,5 +338,7 @@ int main() {
   RUN_TEST(test_recover_success_returns_ready);
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
   RUN_TEST(test_forced_measurement_timing_wraparound_reaches_ready);
+  RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
+  RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
   return UNITY_END();
 }

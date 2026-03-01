@@ -5,7 +5,6 @@
 
 #include "BME280/BME280.h"
 
-#include <Arduino.h>
 #include <cstring>
 #include <limits>
 
@@ -106,6 +105,7 @@ Status BME280::begin(const Config& config) {
 
   _measurementRequested = false;
   _measurementReady = false;
+  _hasSample = false;
   _measurementStartMs = 0;
   _tFine = 0;
   _rawSample = RawSample{};
@@ -211,6 +211,7 @@ void BME280::tick(uint32_t nowMs) {
   }
 
   _measurementReady = true;
+  _hasSample = true;
   _measurementRequested = false;
 }
 
@@ -229,6 +230,7 @@ void BME280::end() {
   _driverState = DriverState::UNINIT;
   _measurementRequested = false;
   _measurementReady = false;
+  _hasSample = false;
   _measurementStartMs = 0;
   _tFine = 0;
   _rawSample = RawSample{};
@@ -299,7 +301,11 @@ Status BME280::requestMeasurement() {
       return st;
     }
     if (measuring) {
-      return Status::Error(Err::BUSY, "Device is measuring");
+      // A conversion can still be running after config writes in forced mode.
+      // Track completion instead of forcing the caller to re-issue the request.
+      _measurementRequested = true;
+      _measurementStartMs = _nowMs();
+      return Status::Error(Err::IN_PROGRESS, "Measurement already in progress");
     }
 
     const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::FORCED);
@@ -338,7 +344,7 @@ Status BME280::getRawSample(RawSample& out) const {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  if (!_measurementReady) {
+  if (!_hasSample) {
     return Status::Error(Err::MEASUREMENT_NOT_READY, "Measurement not ready");
   }
 
@@ -350,7 +356,7 @@ Status BME280::getCompensatedSample(CompensatedSample& out) const {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  if (!_measurementReady) {
+  if (!_hasSample) {
     return Status::Error(Err::MEASUREMENT_NOT_READY, "Measurement not ready");
   }
 
@@ -601,6 +607,7 @@ Status BME280::softReset() {
 
   _measurementRequested = false;
   _measurementReady = false;
+  _hasSample = false;
   _measurementStartMs = 0;
 
   Status st = writeRegister(cmd::REG_RESET, cmd::RESET_VALUE);
@@ -1044,7 +1051,8 @@ uint32_t BME280::_nowMs() const {
   if (_config.nowMs != nullptr) {
     return _config.nowMs(_config.timeUser);
   }
-  return millis();
+  // No platform fallback here: keep core timing source injected.
+  return 0;
 }
 
 }  // namespace BME280

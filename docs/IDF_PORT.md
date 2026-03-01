@@ -7,8 +7,8 @@ Last audited: 2026-03-01
 - Core transport is callback-based (`Config.i2cWrite`, `Config.i2cWriteRead`).
 - Optional timing hook is available (`Config.nowMs`, `Config.timeUser`).
 - Core measurement/recovery logic uses `_nowMs()` wrapper.
-- Arduino timing is used only as fallback in one place:
-  - `BME280::_nowMs()` -> `millis()` when `Config.nowMs == nullptr`
+- No Arduino timing fallback exists in library core; provide `Config.nowMs` for
+  non-zero health timestamps and deadline-based internals.
 
 ## ESP-IDF Adapter Requirements
 To run under pure ESP-IDF, provide:
@@ -37,4 +37,4 @@ cfg.nowMs = idfNowMs;
 - `python tools/check_core_timing_guard.py` passes.
 - `pio test -e native` passes.
 - Example build passes (`pio run -e ex_bringup_s3`).
-- No new direct Arduino timing calls outside wrapper fallback.
+- No direct Arduino timing calls in `src/` or `include/`.

@@ -154,12 +154,15 @@ public:
   /// Get measurement result (float)
   /// Returns MEASUREMENT_NOT_READY if not available
   /// Clears ready flag after successful read
+  /// Does not invalidate cached raw/fixed-point samples.
   Status getMeasurement(Measurement& out);
 
   /// Get raw ADC values
+  /// Returns MEASUREMENT_NOT_READY until at least one sample has been captured.
   Status getRawSample(RawSample& out) const;
 
   /// Get fixed-point compensated values
+  /// Returns MEASUREMENT_NOT_READY until at least one sample has been captured.
   Status getCompensatedSample(CompensatedSample& out) const;
 
   /// Get cached calibration coefficients
@@ -339,6 +342,7 @@ private:
   // Measurement state
   bool _measurementRequested = false;
   bool _measurementReady = false;
+  bool _hasSample = false;
   uint32_t _measurementStartMs = 0;
   int32_t _tFine = 0;
   RawSample _rawSample;

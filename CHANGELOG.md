@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-03-01
+
+### Changed
+- Quick start and bringup example now set `Config.nowMs` explicitly for portable timing/health timestamps.
+- `docs/IDF_PORT.md` and timing-guard policy now reflect zero direct Arduino timing calls in library core.
+
+### Fixed
+- Restored injected time source in core driver (`_nowMs()`); removed direct `millis()` usage from library internals.
+- Forced-mode `requestMeasurement()` now tracks an already-running conversion as `IN_PROGRESS` instead of returning `BUSY`, preventing avoidable measurement-cycle timeouts.
+- `getRawSample()` and `getCompensatedSample()` now return the latest cached sample even after `getMeasurement()` consumes the ready flag.
+
 ## [1.2.0] - 2026-03-01
 
 ### Changed
@@ -73,7 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/janhavelka/BME280/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/janhavelka/BME280/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/janhavelka/BME280/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/janhavelka/BME280/compare/v1.0.0...v1.1.0

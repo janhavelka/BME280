@@ -41,7 +41,7 @@ BME280::Status i2cWrite(uint8_t addr, const uint8_t* data, size_t len,
 }
 
 BME280::Status i2cWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
-                                 uint8_t* rx, size_t rxLen, uint32_t timeoutMs, void* user) {
+                                  uint8_t* rx, size_t rxLen, uint32_t timeoutMs, void* user) {
   Wire.beginTransmission(addr);
   Wire.write(tx, txLen);
   if (Wire.endTransmission(false) != 0) {
@@ -56,6 +56,10 @@ BME280::Status i2cWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
   return BME280::Status::Ok();
 }
 
+uint32_t nowMs(void*) {
+  return millis();
+}
+
 BME280::BME280 device;
 
 void setup() {
@@ -65,6 +69,7 @@ void setup() {
   BME280::Config cfg;
   cfg.i2cWrite = i2cWrite;
   cfg.i2cWriteRead = i2cWriteRead;
+  cfg.nowMs = nowMs;
   cfg.i2cAddress = 0x76;
   
   auto status = device.begin(cfg);
@@ -148,7 +153,3 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 ## License
 
 MIT License. See [LICENSE](LICENSE).
-
-## Documentation
-
-- `docs/DOXYGEN.md` - how to build and browse API docs
