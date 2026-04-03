@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Added a dedicated README documentation section that points to the shipped register reference and datasheet files.
-
 ## [1.3.0] - 2026-04-03
 
 ### Added
@@ -19,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BME280::_nowMs()` now falls back to `millis()` when `Config::nowMs` is not injected.
 - `examples/common/I2cTransport.h` now uses `TwoWire*` from `Config::i2cUser` and treats per-call `timeoutMs` as advisory.
 - README quick start now matches the example transport adapter and status mapping.
+- README now includes a dedicated documentation section and release-notes reference for the shipped datasheet and register notes.
 - Native tests cover the `millis()` fallback and example transport error mapping.
 
 ## [1.2.2] - 2026-04-02

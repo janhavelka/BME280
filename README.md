@@ -146,6 +146,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 ## Documentation
 
 - `CHANGELOG.md` - full release history
+- `release_notes.md` - latest release summary
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
 - `docs/bst-bme280-ds002.pdf` - Bosch datasheet copy used for verification
