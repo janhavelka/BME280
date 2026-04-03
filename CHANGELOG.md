@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README now includes a dedicated documentation section and release-notes reference for the shipped datasheet and register notes.
 - Native tests cover the `millis()` fallback and example transport error mapping.
 
-## [1.2.2] - 2026-04-02
+## [1.2.2] - 2026-04-03
 
 ### Added
 - `inProgress()` convenience method on `Status` struct.
