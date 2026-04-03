@@ -10,7 +10,7 @@
 
 #include <Arduino.h>
 
-#include "common/BuildConfig.h"
+#include "examples/common/BuildConfig.h"
 
 // Compile-time validation
 #if LOG_LEVEL < 0 || LOG_LEVEL > 4
@@ -40,6 +40,10 @@ inline const char* log_bool_str(bool value) { return value ? "yes" : "no"; }
  */
 inline void log_begin(unsigned long baud = 115200) {
   LOG_SERIAL.begin(baud);
+  // Give USB CDC time to initialize on ESP32-S3
+  #if defined(CONFIG_IDF_TARGET_ESP32S3) && ARDUINO_USB_CDC_ON_BOOT
+  delay(100);
+  #endif
 }
 
 // Colorize only the severity tag; keep message text in terminal default color.
@@ -74,4 +78,12 @@ inline void log_begin(unsigned long baud = 115200) {
 #define LOGT(fmt, ...) \
   do { \
     if (LOG_LEVEL >= 4) LOG_PRINT_WITH_TAG(LOG_COLOR_GRAY, "T", fmt, ##__VA_ARGS__); \
+  } while (0)
+
+// Conditional verbose logging (runtime switch)
+#define LOGV(verbose, fmt, ...) \
+  do { \
+    if (verbose) { \
+      LOG_PRINT_WITH_TAG(LOG_COLOR_GRAY, "V", fmt, ##__VA_ARGS__); \
+    } \
   } while (0)

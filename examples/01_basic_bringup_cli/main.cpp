@@ -4,10 +4,11 @@
 
 #include <Arduino.h>
 #include <limits>
-#include "common/Log.h"
-#include "common/BoardConfig.h"
-#include "common/I2cTransport.h"
-#include "common/I2cScanner.h"
+#include "examples/common/Log.h"
+#include "examples/common/BoardConfig.h"
+#include "examples/common/BusDiag.h"
+#include "examples/common/I2cTransport.h"
+#include "examples/common/I2cScanner.h"
 
 #include "BME280/BME280.h"
 
@@ -1150,7 +1151,7 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "scan") {
-    i2c::scan();
+    bus_diag::scan();
     return;
   }
 
@@ -1439,11 +1440,12 @@ void setup() {
   }
   LOGI("I2C initialized (SDA=%d, SCL=%d)", board::I2C_SDA, board::I2C_SCL);
 
-  i2c::scan();
+  bus_diag::scan();
 
   BME280::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
+  cfg.i2cUser = &Wire;
   cfg.i2cAddress = 0x76;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.nowMs = exampleNowMs;
