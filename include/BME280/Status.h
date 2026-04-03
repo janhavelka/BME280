@@ -20,7 +20,13 @@ enum class Err : uint8_t {
   MEASUREMENT_NOT_READY,     ///< Sample not yet available
   COMPENSATION_ERROR,        ///< Compensation math failed
   BUSY,                      ///< Device is busy
-  IN_PROGRESS                ///< Operation scheduled; call tick() to complete
+  IN_PROGRESS,               ///< Operation scheduled; call tick() to complete
+
+  // I2C transport details (append-only to preserve existing values)
+  I2C_NACK_ADDR,             ///< I2C address not acknowledged
+  I2C_NACK_DATA,             ///< I2C data byte not acknowledged
+  I2C_TIMEOUT,               ///< I2C transaction timeout
+  I2C_BUS                    ///< I2C bus error (arbitration lost, etc.)
 };
 
 /// Status structure returned by all fallible operations

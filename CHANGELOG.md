@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-04-03
+
+### Added
+- Granular I2C transport error codes: `I2C_NACK_ADDR`, `I2C_NACK_DATA`, `I2C_TIMEOUT`, and `I2C_BUS`.
+
+### Changed
+- `BME280::_nowMs()` now falls back to `millis()` when `Config::nowMs` is not injected.
+- `examples/common/I2cTransport.h` now uses `TwoWire*` from `Config::i2cUser` and treats per-call `timeoutMs` as advisory.
+- README quick start now matches the example transport adapter and status mapping.
+- Native tests cover the `millis()` fallback and example transport error mapping.
+
 ## [1.2.2] - 2026-04-02
 
 ### Added
@@ -99,7 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/janhavelka/BME280/compare/v1.2.2...v1.3.0
 [1.2.1]: https://github.com/janhavelka/BME280/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/janhavelka/BME280/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/janhavelka/BME280/compare/v1.1.0...v1.1.1

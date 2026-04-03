@@ -18,20 +18,42 @@
 
 namespace transport {
 
+inline BME280::Status mapWireResult(uint8_t result, const char* context) {
+  switch (result) {
+    case 0:
+      return BME280::Status::Ok();
+    case 1:
+      return BME280::Status::Error(BME280::Err::INVALID_PARAM, context, result);
+    case 2:
+      return BME280::Status::Error(BME280::Err::I2C_NACK_ADDR, context, result);
+    case 3:
+      return BME280::Status::Error(BME280::Err::I2C_NACK_DATA, context, result);
+    case 4:
+      return BME280::Status::Error(BME280::Err::I2C_BUS, context, result);
+    case 5:
+      return BME280::Status::Error(BME280::Err::I2C_TIMEOUT, context, result);
+    default:
+      return BME280::Status::Error(BME280::Err::I2C_ERROR, context, result);
+  }
+}
+
 /**
  * @brief Wire-based I2C write implementation.
  *
- * Pass to Config::i2cWrite, and pass &Wire (or custom TwoWire*) to i2cUser.
+ * Pass to Config::i2cWrite, and pass &Wire (or a custom TwoWire*) to i2cUser.
+ * The timeout parameter is advisory; bus timeout ownership stays with initWire().
  *
  * @param addr I2C 7-bit address
  * @param data Data buffer to send
  * @param len Number of bytes
- * @param timeoutMs Timeout (used to set Wire timeout if supported)
+ * @param timeoutMs Timeout requested by the driver (advisory only)
  * @param user Pointer to TwoWire instance
  * @return Status OK on success, I2C error on failure
  */
 inline BME280::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
                                 uint32_t timeoutMs, void* user) {
+  (void)timeoutMs;
+
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
     return BME280::Status::Error(BME280::Err::INVALID_CONFIG, "Wire instance is null");
@@ -46,55 +68,37 @@ inline BME280::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
                                  static_cast<int32_t>(len));
   }
 
-#if defined(ARDUINO_ARCH_ESP32)
-  wire->setTimeOut(static_cast<uint16_t>(timeoutMs));
-#else
-  (void)timeoutMs;
-#endif
-
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
     return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C write incomplete",
-                                 static_cast<int32_t>(written));
+                                  static_cast<int32_t>(written));
   }
 
   uint8_t result = wire->endTransmission(true);  // Send STOP
-  switch (result) {
-    case 0:
-      return BME280::Status::Ok();
-    case 1:
-      return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C data too long", result);
-    case 2:
-      return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C address NACK", result);
-    case 3:
-      return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C data NACK", result);
-    case 4:
-      return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C bus error", result);
-    case 5:
-      return BME280::Status::Error(BME280::Err::TIMEOUT, "I2C timeout", result);
-    default:
-      return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C unknown error", result);
-  }
+  return mapWireResult(result, "I2C write failed");
 }
 
 /**
  * @brief Wire-based I2C write-read implementation.
  *
- * Pass to Config::i2cWriteRead, and pass &Wire (or custom TwoWire*) to i2cUser.
+ * Pass to Config::i2cWriteRead, and pass &Wire (or a custom TwoWire*) to i2cUser.
+ * The timeout parameter is advisory; bus timeout ownership stays with initWire().
  *
  * @param addr I2C 7-bit address
  * @param tx TX buffer to send
  * @param txLen TX length
  * @param rx RX buffer for readback
  * @param rxLen RX length
- * @param timeoutMs Timeout (used to set Wire timeout if supported)
+ * @param timeoutMs Timeout requested by the driver (advisory only)
  * @param user Pointer to TwoWire instance
  * @return Status OK on success, I2C error on failure
  */
 inline BME280::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
                                     uint8_t* rx, size_t rxLen, uint32_t timeoutMs,
                                     void* user) {
+  (void)timeoutMs;
+
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
     return BME280::Status::Error(BME280::Err::INVALID_CONFIG, "Wire instance is null");
@@ -109,12 +113,6 @@ inline BME280::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
     return BME280::Status::Error(BME280::Err::INVALID_PARAM, "I2C read exceeds buffer");
   }
 
-#if defined(ARDUINO_ARCH_ESP32)
-  wire->setTimeOut(static_cast<uint16_t>(timeoutMs));
-#else
-  (void)timeoutMs;
-#endif
-
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {
@@ -124,13 +122,13 @@ inline BME280::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
 
   uint8_t result = wire->endTransmission(false);  // Repeated start
   if (result != 0) {
-    return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C write failed", result);
+    return mapWireResult(result, "I2C write phase failed");
   }
 
   size_t read = wire->requestFrom(addr, static_cast<uint8_t>(rxLen));
   if (read != rxLen) {
     return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C read length mismatch",
-                                 static_cast<int32_t>(read));
+                                  static_cast<int32_t>(read));
   }
 
   for (size_t i = 0; i < rxLen; ++i) {
@@ -176,11 +174,7 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
 
   Wire.begin(sda, scl);
   Wire.setClock(freq);
-#if defined(ARDUINO_ARCH_ESP32)
   Wire.setTimeOut(timeoutMs);
-#else
-  (void)timeoutMs;
-#endif
   return true;
 }
 

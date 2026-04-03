@@ -10,6 +10,7 @@ SerialClass Serial;
 TwoWire Wire;
 
 #include "BME280/BME280.h"
+#include "common/I2cTransport.h"
 
 using namespace BME280;
 
@@ -108,7 +109,12 @@ Config makeConfig(FakeBus& bus) {
 
 }  // namespace
 
-void setUp() {}
+void setUp() {
+  setMillis(0);
+  Wire._clearEndTransmissionResult();
+  Wire._clearRequestFromOverride();
+}
+
 void tearDown() {}
 
 void test_status_ok() {
@@ -166,6 +172,35 @@ void test_begin_success_sets_ready_and_health() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+}
+
+void test_now_ms_fallback_uses_millis_when_callback_missing() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.nowMs = nullptr;
+  cfg.timeUser = nullptr;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  setMillis(4321);
+  Status st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(4321u, dev.lastOkMs());
+}
+
+void test_begin_without_now_ms_uses_millis_fallback() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.nowMs = nullptr;
+  cfg.timeUser = nullptr;
+
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_TRUE(st.ok());
+  setMillis(4242u);
+  st = dev.setMode(Mode::NORMAL);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(4242u, dev.lastOkMs());
 }
 
 void test_probe_failure_does_not_update_health() {
@@ -226,6 +261,90 @@ void test_recover_success_returns_ready() {
   TEST_ASSERT_EQUAL_UINT32(5u, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT32(4321u, dev.lastOkMs());
+}
+
+void test_recover_preserves_transport_error_code() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "forced recover nack", 7);
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                          static_cast<uint8_t>(dev.lastError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
+  Wire._clearEndTransmissionResult();
+  Wire._clearRequestFromOverride();
+
+  TEST_ASSERT_TRUE(transport::initWire(8, 9, 400000, 77));
+  TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
+
+  const uint8_t byte = 0x55;
+
+  Wire._setEndTransmissionResult(2);
+  Status st = transport::wireWrite(0x76, &byte, 1, 123, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
+
+  Wire._setEndTransmissionResult(3);
+  st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
+
+  Wire._setEndTransmissionResult(4);
+  st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+
+  Wire._setEndTransmissionResult(5);
+  st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+
+  Wire._setEndTransmissionResult(1);
+  st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+}
+
+void test_example_transport_validates_params_and_handles_write_read() {
+  const uint8_t tx = 0x00;
+  uint8_t rx = 0;
+
+  Status st = transport::wireWrite(0x76, nullptr, 1, 50, nullptr);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+
+  st = transport::wireWrite(0x76, &tx, 0, 50, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+
+  st = transport::wireWriteRead(0x76, nullptr, 1, &rx, 1, 50, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+
+  st = transport::wireWriteRead(0x76, &tx, 1, nullptr, 1, 50, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+
+  Wire._setEndTransmissionResult(0);
+  Wire._setRequestFromResult(1);
+  st = transport::wireWriteRead(0x76, &tx, 1, &rx, 1, 50, &Wire);
+  TEST_ASSERT_TRUE(st.ok());
+
+  Wire._setRequestFromResult(0);
+  st = transport::wireWriteRead(0x76, &tx, 1, &rx, 1, 50, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(st.code));
 }
 
 void test_recover_reaches_offline_when_threshold_is_one() {
@@ -333,12 +452,17 @@ int main() {
   RUN_TEST(test_config_defaults);
   RUN_TEST(test_begin_rejects_missing_callbacks);
   RUN_TEST(test_begin_success_sets_ready_and_health);
+  RUN_TEST(test_now_ms_fallback_uses_millis_when_callback_missing);
   RUN_TEST(test_probe_failure_does_not_update_health);
   RUN_TEST(test_recover_failure_updates_health_once);
   RUN_TEST(test_recover_success_returns_ready);
+  RUN_TEST(test_recover_preserves_transport_error_code);
+  RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
+  RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
   RUN_TEST(test_forced_measurement_timing_wraparound_reaches_ready);
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
   RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
+  RUN_TEST(test_begin_without_now_ms_uses_millis_fallback);
   return UNITY_END();
 }

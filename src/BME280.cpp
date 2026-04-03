@@ -5,6 +5,7 @@
 
 #include "BME280/BME280.h"
 
+#include <Arduino.h>
 #include <cstring>
 #include <limits>
 
@@ -1051,8 +1052,7 @@ uint32_t BME280::_nowMs() const {
   if (_config.nowMs != nullptr) {
     return _config.nowMs(_config.timeUser);
   }
-  // No platform fallback here: keep core timing source injected.
-  return 0;
+  return millis();
 }
 
 }  // namespace BME280

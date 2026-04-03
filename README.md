@@ -7,7 +7,7 @@ Production-grade BME280 I2C driver for ESP32 (Arduino/PlatformIO).
 - **Injected I2C transport** - no Wire dependency in library code
 - **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
 - **Deterministic behavior** - no unbounded loops, no heap allocations
-- **Non-blocking architecture** - tick-based state machine for async operations
+- **Managed synchronous lifecycle** - blocking I2C ops with tick-based polling for waits
 
 ## Installation
 
@@ -29,47 +29,18 @@ Copy `include/BME280/` and `src/` to your project.
 ```cpp
 #include <Wire.h>
 #include "BME280/BME280.h"
-
-// Transport callbacks
-BME280::Status i2cWrite(uint8_t addr, const uint8_t* data, size_t len,
-                             uint32_t timeoutMs, void* user) {
-  Wire.beginTransmission(addr);
-  Wire.write(data, len);
-  return Wire.endTransmission() == 0 
-    ? BME280::Status::Ok() 
-    : BME280::Status::Error(BME280::Err::I2C_ERROR, "Write failed");
-}
-
-BME280::Status i2cWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
-                                  uint8_t* rx, size_t rxLen, uint32_t timeoutMs, void* user) {
-  Wire.beginTransmission(addr);
-  Wire.write(tx, txLen);
-  if (Wire.endTransmission(false) != 0) {
-    return BME280::Status::Error(BME280::Err::I2C_ERROR, "Write failed");
-  }
-  if (Wire.requestFrom(addr, rxLen) != rxLen) {
-    return BME280::Status::Error(BME280::Err::I2C_ERROR, "Read failed");
-  }
-  for (size_t i = 0; i < rxLen; i++) {
-    rx[i] = Wire.read();
-  }
-  return BME280::Status::Ok();
-}
-
-uint32_t nowMs(void*) {
-  return millis();
-}
+#include "common/I2cTransport.h"
 
 BME280::BME280 device;
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin(8, 9);  // SDA, SCL
+  transport::initWire(8, 9, 400000, 50);
   
   BME280::Config cfg;
-  cfg.i2cWrite = i2cWrite;
-  cfg.i2cWriteRead = i2cWriteRead;
-  cfg.nowMs = nowMs;
+  cfg.i2cWrite = transport::wireWrite;
+  cfg.i2cWriteRead = transport::wireWriteRead;
+  cfg.i2cUser = &Wire;
   cfg.i2cAddress = 0x76;
   
   auto status = device.begin(cfg);
@@ -87,6 +58,10 @@ void loop() {
   // Your code here
 }
 ```
+
+The example adapter maps Arduino `Wire` failures to specific `I2C_*` status codes and keeps
+bus timeout ownership in `transport::initWire()`. If you do not inject `Config::nowMs`, the
+driver falls back to `millis()` on Arduino/native-test builds.
 
 ## Health Monitoring
 
@@ -159,7 +134,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 | `BoardConfig.h` | Pin definitions and Wire init for supported boards |
 | `BuildConfig.h` | Compile-time `LOG_LEVEL` configuration |
 | `Log.h` | Serial logging macros (`LOGE`/`LOGW`/`LOGI`/`LOGD`/`LOGT`/`LOGV`) |
-| `I2cTransport.h` | Wire-based I2C transport adapter (`wireWrite`, `wireWriteRead`) |
+| `I2cTransport.h` | Wire-based I2C transport adapter (`wireWrite`, `wireWriteRead`, `initWire`) |
 | `I2cScanner.h` | I2C bus scanner with table output and bus recovery |
 | `BusDiag.h` | Bus diagnostics wrapper (scan + probe) |
 | `CliShell.h` | Serial command-line shell with line editing |

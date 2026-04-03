@@ -9,7 +9,8 @@ class TwoWire {
 public:
   void begin(int sda = -1, int scl = -1) { (void)sda; (void)scl; }
   void setClock(uint32_t freq) { (void)freq; }
-  void setTimeOut(uint32_t timeoutMs) { (void)timeoutMs; }
+  void setTimeOut(uint32_t timeoutMs) { _timeoutMs = timeoutMs; }
+  uint32_t getTimeOut() const { return _timeoutMs; }
   
   void beginTransmission(uint8_t addr) { _addr = addr; _txLen = 0; }
   size_t write(uint8_t data) { _txBuf[_txLen++] = data; return 1; }
@@ -19,13 +20,17 @@ public:
     }
     return len;
   }
-  uint8_t endTransmission(bool stop = true) { (void)stop; return 0; }
+  uint8_t endTransmission(bool stop = true) { (void)stop; return _endTransmissionResult; }
   
   size_t requestFrom(uint8_t addr, size_t len) { 
     (void)addr;
-    _rxLen = len;
+    if (_requestFromOverrideEnabled) {
+      _rxLen = _requestFromOverride;
+    } else {
+      _rxLen = len;
+    }
     _rxIdx = 0;
-    return len;
+    return _rxLen;
   }
   
   int available() { return _rxLen - _rxIdx; }
@@ -43,6 +48,14 @@ public:
     }
   }
 
+  void _setEndTransmissionResult(uint8_t result) { _endTransmissionResult = result; }
+  void _clearEndTransmissionResult() { _endTransmissionResult = 0; }
+  void _setRequestFromResult(size_t len) {
+    _requestFromOverrideEnabled = true;
+    _requestFromOverride = len;
+  }
+  void _clearRequestFromOverride() { _requestFromOverrideEnabled = false; }
+
 private:
   uint8_t _addr = 0;
   uint8_t _txBuf[64] = {};
@@ -50,6 +63,10 @@ private:
   uint8_t _rxBuf[64] = {};
   size_t _rxLen = 0;
   size_t _rxIdx = 0;
+  uint32_t _timeoutMs = 0;
+  uint8_t _endTransmissionResult = 0;
+  bool _requestFromOverrideEnabled = false;
+  size_t _requestFromOverride = 0;
 };
 
 extern TwoWire Wire;
