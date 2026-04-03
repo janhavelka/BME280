@@ -11,13 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Granular I2C transport error codes: `I2C_NACK_ADDR`, `I2C_NACK_DATA`, `I2C_TIMEOUT`, and `I2C_BUS`.
+- Native tests covering the `millis()` fallback and example transport error mapping.
 
 ### Changed
-- `BME280::_nowMs()` now falls back to `millis()` when `Config::nowMs` is not injected.
 - `examples/common/I2cTransport.h` now uses `TwoWire*` from `Config::i2cUser` and treats per-call `timeoutMs` as advisory.
-- README quick start now matches the example transport adapter and status mapping.
-- README now includes a dedicated documentation section and release-notes reference for the shipped datasheet and register notes.
-- Native tests cover the `millis()` fallback and example transport error mapping.
+- README quick start, transport notes, and documentation section now match the example adapter and shipped datasheet/register notes.
+
+### Fixed
+- `BME280::_nowMs()` now falls back to `millis()` when `Config::nowMs` is not injected, matching the documented behavior.
 
 ## [1.2.2] - 2026-04-03
 
