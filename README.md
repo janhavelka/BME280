@@ -143,6 +143,13 @@ Not part of the library. These simulate project-level glue and keep examples sel
 | `HealthDiag.h` | Verbose health diagnostics with color, snapshots, and `HealthMonitor` |
 | `TransportAdapter.h` | Transport function pointer adapter |
 
+## Documentation
+
+- `CHANGELOG.md` - full release history
+- `docs/IDF_PORT.md` - ESP-IDF portability guidance
+- `docs/BME280_Register_Reference.md` - register reference and bitfield notes
+- `docs/bst-bme280-ds002.pdf` - Bosch datasheet copy used for verification
+
 ## License
 
 MIT License. See [LICENSE](LICENSE).
