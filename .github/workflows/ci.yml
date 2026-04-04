@@ -13,8 +13,8 @@ jobs:
       fail-fast: false
       matrix:
         environment:
-          - ex_bringup_s3
-          - ex_bringup_s2
+          - esp32s3dev
+          - esp32s2dev
 
     steps:
       - name: Checkout repository
