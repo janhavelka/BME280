@@ -1079,6 +1079,16 @@ bool parseStandby(const String& token, BME280::Standby& out) {
   return true;
 }
 
+bool parseU32(const String& token, uint32_t& out) {
+  char* end = nullptr;
+  const unsigned long value = strtoul(token.c_str(), &end, 0);
+  if (end == token.c_str() || *end != '\0') {
+    return false;
+  }
+  out = static_cast<uint32_t>(value);
+  return true;
+}
+
 void printHelp() {
   auto helpSection = [](const char* title) {
     Serial.printf("\n%s[%s]%s\n", LOG_COLOR_GREEN, title, LOG_COLOR_RESET);
@@ -1109,6 +1119,10 @@ void printHelp() {
   helpItem("status", "Read status register");
   helpItem("chipid", "Read chip ID");
   helpItem("reset", "Soft reset device");
+
+  helpSection("Registers");
+  helpItem("reg <addr>", "Read 8-bit register (hex address)");
+  helpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic only; may desync cached config)");
 
   helpSection("Diagnostics");
   helpItem("drv", "Show driver state and health");
@@ -1343,6 +1357,50 @@ void processCommand(const String& cmdLine) {
     cancelPending();
     BME280::Status st = device.softReset();
     printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("wreg ")) {
+    String args = cmd.substring(5);
+    args.trim();
+    const int split = args.indexOf(' ');
+    if (split < 0) {
+      LOGW("Usage: wreg <addr> <val>");
+      return;
+    }
+
+    uint32_t addr = 0;
+    uint32_t value = 0;
+    if (!parseU32(args.substring(0, split), addr) ||
+        !parseU32(args.substring(split + 1), value) ||
+        addr > 0xFFu || value > 0xFFu) {
+      LOGW("Usage: wreg <addr> <val>");
+      return;
+    }
+
+    BME280::Status st = device.writeRegister(static_cast<uint8_t>(addr), static_cast<uint8_t>(value));
+    printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("reg ")) {
+    uint32_t addr = 0;
+    if (!parseU32(cmd.substring(4), addr) || addr > 0xFFu) {
+      LOGW("Usage: reg <addr>");
+      return;
+    }
+
+    uint8_t value = 0;
+    BME280::Status st = device.readRegister(static_cast<uint8_t>(addr), value);
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+
+    Serial.printf("Reg 0x%02lX = 0x%02X (%u)\n",
+                  static_cast<unsigned long>(addr),
+                  value,
+                  value);
     return;
   }
 

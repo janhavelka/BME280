@@ -808,6 +808,14 @@ Status BME280::writeRegs(uint8_t startReg, const uint8_t* buf, size_t len) {
   return _i2cWriteTracked(payload, len + 1);
 }
 
+Status BME280::readRegisters(uint8_t startReg, uint8_t* buf, size_t len) {
+  return readRegs(startReg, buf, len);
+}
+
+Status BME280::writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len) {
+  return writeRegs(startReg, buf, len);
+}
+
 Status BME280::readRegister(uint8_t reg, uint8_t& value) {
   return readRegs(reg, &value, 1);
 }
@@ -822,21 +830,21 @@ Status BME280::_readRegisterRaw(uint8_t reg, uint8_t& value) {
 }
 
 Status BME280::_updateHealth(const Status& st) {
-  if (!_initialized) {
-    return st;
-  }
-
   const uint32_t now = _nowMs();
   const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
   const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
+  const bool isSuccess = st.ok() || st.inProgress();
 
-  if (st.ok()) {
+  if (isSuccess) {
     _lastOkMs = now;
     if (_totalSuccess < maxU32) {
       _totalSuccess++;
     }
     _consecutiveFailures = 0;
-    _driverState = DriverState::READY;
+
+    if (_initialized) {
+      _driverState = DriverState::READY;
+    }
     return st;
   }
 
@@ -849,10 +857,12 @@ Status BME280::_updateHealth(const Status& st) {
     _consecutiveFailures++;
   }
 
-  if (_consecutiveFailures >= _config.offlineThreshold) {
-    _driverState = DriverState::OFFLINE;
-  } else {
-    _driverState = DriverState::DEGRADED;
+  if (_initialized) {
+    if (_consecutiveFailures >= _config.offlineThreshold) {
+      _driverState = DriverState::OFFLINE;
+    } else {
+      _driverState = DriverState::DEGRADED;
+    }
   }
 
   return st;

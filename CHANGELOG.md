@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-04-05
+
+### Added
+- Public lifecycle/config introspection helpers: `isInitialized()` and `getConfig()`.
+- Public tracked raw-register helpers: `readRegisters()`, `writeRegisters()`, `readRegister()`, and `writeRegister()`.
+- `Err::CONVERSION_NOT_READY` alias for cross-library uniformity.
+
+### Changed
+- Health tracking now treats `IN_PROGRESS` as non-failure activity and keeps pre-`begin()` validation errors from forcing state transitions.
+- Bringup CLI now exposes `reg` / `wreg` register diagnostics for tracked low-level access.
+
 ## [1.3.0] - 2026-04-03
 
 ### Added
@@ -112,7 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/janhavelka/BME280/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/janhavelka/BME280/compare/v1.2.2...v1.3.0
 [1.2.1]: https://github.com/janhavelka/BME280/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/janhavelka/BME280/compare/v1.1.1...v1.2.0

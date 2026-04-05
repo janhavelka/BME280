@@ -1,6 +1,6 @@
 {
   "name": "BME280",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Production-grade BME280 environmental sensor driver.",
   "keywords": [
     "bme280",

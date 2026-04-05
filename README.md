@@ -94,12 +94,21 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 
 - `Status begin(const Config& config)` - Initialize driver
 - `void tick(uint32_t nowMs)` - Process pending operations
-- `void end()` - Shutdown driver
+- `void end()` - Shutdown driver and best-effort return the sensor to sleep
+- `bool isInitialized()` - True after successful `begin()` until `end()`
+- `const Config& getConfig()` - Cached configuration snapshot owned by the driver
 
 ### Diagnostics
 
 - `Status probe()` - Check device presence (no health tracking)
 - `Status recover()` - Attempt recovery from DEGRADED/OFFLINE (re-applies config)
+
+### Raw Register Access
+
+- `Status readRegisters(uint8_t startReg, uint8_t* buf, size_t len)` - Read a contiguous tracked register block
+- `Status writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len)` - Write a contiguous tracked register block
+- `Status readRegister(uint8_t reg, uint8_t& value)` - Read a single tracked register
+- `Status writeRegister(uint8_t reg, uint8_t value)` - Write a single tracked register
 
 ### State
 
@@ -115,6 +124,8 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 - `uint32_t totalFailures()` - Lifetime failure count
 - `uint32_t totalSuccess()` - Lifetime success count
 
+`IN_PROGRESS` is treated as non-failure activity for health tracking. Pre-`begin()` validation and transport setup errors do not transition the driver into `DEGRADED` or `OFFLINE`.
+
 ### Timing
 
 - `uint32_t estimateMeasurementTimeMs()` - Max measurement time for current oversampling
@@ -124,6 +135,7 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 ## Examples
 
 - `01_basic_bringup_cli/` - Interactive CLI for testing
+- CLI register diagnostics: `reg <addr>` and `wreg <addr> <val>` provide tracked raw register access for bring-up and service work. Raw writes bypass the typed config helpers; use `recover()` or `begin()` to restore cached settings after manual register edits.
 
 ### Example Helpers (`examples/common/`)
 

@@ -18,6 +18,7 @@ enum class Err : uint8_t {
   CHIP_ID_MISMATCH,          ///< Chip ID != 0x60 (not a BME280)
   CALIBRATION_INVALID,       ///< Compensation data failed validation
   MEASUREMENT_NOT_READY,     ///< Sample not yet available
+  CONVERSION_NOT_READY = MEASUREMENT_NOT_READY, ///< Alias for cross-library uniformity
   COMPENSATION_ERROR,        ///< Compensation math failed
   BUSY,                      ///< Device is busy
   IN_PROGRESS,               ///< Operation scheduled; call tick() to complete

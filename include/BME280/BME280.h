@@ -88,8 +88,14 @@ public:
   /// @param nowMs Current timestamp in milliseconds
   void tick(uint32_t nowMs);
   
-  /// Shutdown the driver and release resources
+  /// Shutdown the driver, put the sensor to sleep best-effort, and clear runtime state
   void end();
+
+  /// Check if begin() completed successfully and end() has not been called
+  bool isInitialized() const { return _initialized; }
+
+  /// Get the cached configuration snapshot currently owned by the driver
+  const Config& getConfig() const { return _config; }
   
   // =========================================================================
   // Diagnostics
@@ -99,7 +105,7 @@ public:
   /// @return Status::Ok() if device responds, error otherwise
   Status probe();
   
-  /// Attempt to recover from DEGRADED/OFFLINE state
+  /// Attempt to recover from DEGRADED/OFFLINE state by probing and reapplying cached config
   /// @return Status::Ok() if device now responsive, error otherwise
   Status recover();
   
@@ -233,6 +239,22 @@ public:
   Status isMeasuring(bool& measuring);
 
   // =========================================================================
+  // Raw Register Access
+  // =========================================================================
+
+  /// Read a contiguous register block
+  Status readRegisters(uint8_t startReg, uint8_t* buf, size_t len);
+
+  /// Write a contiguous register block
+  Status writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len);
+
+  /// Read a single register
+  Status readRegister(uint8_t reg, uint8_t& value);
+
+  /// Write a single register
+  Status writeRegister(uint8_t reg, uint8_t value);
+
+  // =========================================================================
   // Timing
   // =========================================================================
 
@@ -274,12 +296,6 @@ private:
   
   /// Write registers (uses tracked path)
   Status writeRegs(uint8_t startReg, const uint8_t* buf, size_t len);
-
-  /// Read single register (uses tracked path)
-  Status readRegister(uint8_t reg, uint8_t& value);
-
-  /// Write single register (uses tracked path)
-  Status writeRegister(uint8_t reg, uint8_t value);
 
   /// Read single register (raw path)
   Status _readRegisterRaw(uint8_t reg, uint8_t& value);

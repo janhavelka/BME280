@@ -134,6 +134,7 @@ void test_status_in_progress() {
   Status st{Err::IN_PROGRESS, 0, "In progress"};
   TEST_ASSERT_FALSE(st.ok());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(st.inProgress());
 }
 
 void test_config_defaults() {
@@ -168,10 +169,10 @@ void test_begin_success_sets_ready_and_health() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
                           static_cast<uint8_t>(dev.state()));
   TEST_ASSERT_TRUE(dev.isOnline());
-  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
+  TEST_ASSERT_GREATER_THAN_UINT32(0u, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
-  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(bus.nowMs, dev.lastOkMs());
 }
 
 void test_now_ms_fallback_uses_millis_when_callback_missing() {
@@ -252,13 +253,14 @@ void test_recover_success_returns_ready() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
 
+  const uint32_t successBefore = dev.totalSuccess();
   bus.nowMs = 4321;
   Status st = dev.recover();
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
                           static_cast<uint8_t>(dev.state()));
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
-  TEST_ASSERT_EQUAL_UINT32(5u, dev.totalSuccess());
+  TEST_ASSERT_GREATER_THAN_UINT32(successBefore, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT32(4321u, dev.lastOkMs());
 }
