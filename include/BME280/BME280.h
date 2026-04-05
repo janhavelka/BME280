@@ -72,6 +72,30 @@ struct CalibrationRaw {
   uint8_t h[cmd::REG_CALIB_H_LEN] = {};
 };
 
+/// Snapshot of driver configuration and runtime state without I2C access.
+struct SettingsSnapshot {
+  bool initialized = false;
+  DriverState state = DriverState::UNINIT;
+  uint8_t i2cAddress = 0x76;
+  uint32_t i2cTimeoutMs = 0;
+  uint8_t offlineThreshold = 0;
+  bool hasNowMsHook = false;
+  Mode mode = Mode::SLEEP;
+  Oversampling osrsT = Oversampling::SKIP;
+  Oversampling osrsP = Oversampling::SKIP;
+  Oversampling osrsH = Oversampling::SKIP;
+  Filter filter = Filter::OFF;
+  Standby standby = Standby::MS_0_5;
+  bool measurementRequested = false;
+  bool measurementReady = false;
+  bool hasSample = false;
+  uint32_t measurementStartMs = 0;
+  int32_t tFine = 0;
+  RawSample rawSample = {};
+  CompensatedSample compSample = {};
+  Calibration calibration = {};
+};
+
 /// BME280 driver class
 class BME280 {
 public:
@@ -108,6 +132,7 @@ public:
   /// Attempt to recover from DEGRADED/OFFLINE state by probing and reapplying cached config
   /// @return Status::Ok() if device now responsive, error otherwise
   Status recover();
+  Status getSettings(SettingsSnapshot& out) const;
   
   // =========================================================================
   // Driver State

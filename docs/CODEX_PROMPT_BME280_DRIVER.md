@@ -534,7 +534,7 @@ namespace transport {
 
 ```ini
 [platformio]
-default_envs = ex_bringup_s3
+default_envs = esp32s3dev
 
 [env]
 framework = arduino
@@ -545,13 +545,13 @@ build_flags =
   -Wall
   -Wextra
 
-[env:ex_bringup_s3]
+[env:esp32s3dev]
 platform = espressif32
 board = esp32-s3-devkitc-1
 build_src_filter = +<examples/01_basic_bringup_cli/>
 extra_scripts = pre:scripts/generate_version.py
 
-[env:ex_bringup_s2]
+[env:esp32s2dev]
 platform = espressif32
 board = esp32-s2-saola-1
 build_src_filter = +<examples/01_basic_bringup_cli/>

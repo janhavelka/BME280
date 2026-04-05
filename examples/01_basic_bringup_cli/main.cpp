@@ -423,36 +423,18 @@ bool readChipSettings(ChipSettings& out) {
 }
 
 bool readInternalSettings(InternalSettings& out) {
-  BME280::Status st = device.getMode(out.mode);
+  BME280::SettingsSnapshot snap;
+  BME280::Status st = device.getSettings(snap);
   if (!st.ok()) {
     printStatus(st);
     return false;
   }
-  st = device.getOversamplingT(out.osrsT);
-  if (!st.ok()) {
-    printStatus(st);
-    return false;
-  }
-  st = device.getOversamplingP(out.osrsP);
-  if (!st.ok()) {
-    printStatus(st);
-    return false;
-  }
-  st = device.getOversamplingH(out.osrsH);
-  if (!st.ok()) {
-    printStatus(st);
-    return false;
-  }
-  st = device.getFilter(out.filter);
-  if (!st.ok()) {
-    printStatus(st);
-    return false;
-  }
-  st = device.getStandby(out.standby);
-  if (!st.ok()) {
-    printStatus(st);
-    return false;
-  }
+  out.mode = snap.mode;
+  out.osrsT = snap.osrsT;
+  out.osrsP = snap.osrsP;
+  out.osrsH = snap.osrsH;
+  out.filter = snap.filter;
+  out.standby = snap.standby;
   return true;
 }
 

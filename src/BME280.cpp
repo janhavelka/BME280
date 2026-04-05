@@ -279,6 +279,32 @@ Status BME280::recover() {
   return Status::Ok();
 }
 
+Status BME280::getSettings(SettingsSnapshot& out) const {
+  out.initialized = _initialized;
+  out.state = _driverState;
+  out.i2cAddress = _config.i2cAddress;
+  out.i2cTimeoutMs = _config.i2cTimeoutMs;
+  out.offlineThreshold = _config.offlineThreshold;
+  out.hasNowMsHook = (_config.nowMs != nullptr);
+  out.mode = _config.mode;
+  out.osrsT = _config.osrsT;
+  out.osrsP = _config.osrsP;
+  out.osrsH = _config.osrsH;
+  out.filter = _config.filter;
+  out.standby = _config.standby;
+  out.measurementRequested = _measurementRequested;
+  out.measurementReady = _measurementReady;
+  out.hasSample = _hasSample;
+  out.measurementStartMs = _measurementStartMs;
+  out.tFine = _tFine;
+  out.rawSample = _rawSample;
+  out.compSample = _compSample;
+  out.calibration = Calibration{
+      _digT1, _digT2, _digT3, _digP1, _digP2, _digP3, _digP4, _digP5, _digP6,
+      _digP7, _digP8, _digP9, _digH1, _digH2, _digH3, _digH4, _digH5, _digH6};
+  return Status::Ok();
+}
+
 Status BME280::requestMeasurement() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");

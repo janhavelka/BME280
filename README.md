@@ -155,6 +155,24 @@ Not part of the library. These simulate project-level glue and keep examples sel
 | `HealthDiag.h` | Verbose health diagnostics with color, snapshots, and `HealthMonitor` |
 | `TransportAdapter.h` | Transport function pointer adapter |
 
+## Behavioral Contracts
+
+1. Threading model: single-threaded by default; not thread-safe.
+2. Timing model: `tick()` is bounded; forced-mode wait and recovery timing stay callback-timebase-driven.
+3. Resource ownership: bus, pins, and timeout policy remain application-owned via `Config`.
+4. Memory behavior: no heap allocation in steady-state library operation.
+5. Error handling: all fallible APIs return `Status`; no exceptions and no silent failures.
+
+## Running Tests
+
+```bash
+pio test -e native
+python tools/check_cli_contract.py
+python tools/check_core_timing_guard.py
+pio run -e esp32s3dev
+pio run -e esp32s2dev
+```
+
 ## Documentation
 
 - `CHANGELOG.md` - full release history

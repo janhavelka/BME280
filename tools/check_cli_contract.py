@@ -11,10 +11,14 @@ REQUIRED_COMMON = [
     "BoardConfig.h",
     "BuildConfig.h",
     "Log.h",
+    "I2cTransport.h",
+    "I2cScanner.h",
+    "CommandHandler.h",
     "TransportAdapter.h",
     "BusDiag.h",
     "CliShell.h",
     "HealthView.h",
+    "HealthDiag.h",
 ]
 
 MANDATORY_COMMANDS = ["help", "scan", "probe", "recover", "drv", "read", "verbose", "stress"]

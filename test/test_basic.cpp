@@ -120,12 +120,16 @@ void tearDown() {}
 void test_status_ok() {
   Status st = Status::Ok();
   TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(static_cast<bool>(st));
+  TEST_ASSERT_TRUE(st.is(Err::OK));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::OK), static_cast<uint8_t>(st.code));
 }
 
 void test_status_error() {
   Status st = Status::Error(Err::I2C_ERROR, "Test error", 42);
   TEST_ASSERT_FALSE(st.ok());
+  TEST_ASSERT_FALSE(static_cast<bool>(st));
+  TEST_ASSERT_TRUE(st.is(Err::I2C_ERROR));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_INT32(42, st.detail);
 }
@@ -133,6 +137,8 @@ void test_status_error() {
 void test_status_in_progress() {
   Status st{Err::IN_PROGRESS, 0, "In progress"};
   TEST_ASSERT_FALSE(st.ok());
+  TEST_ASSERT_FALSE(static_cast<bool>(st));
+  TEST_ASSERT_TRUE(st.is(Err::IN_PROGRESS));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS), static_cast<uint8_t>(st.code));
   TEST_ASSERT_TRUE(st.inProgress());
 }
@@ -150,6 +156,49 @@ void test_config_defaults() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Filter::OFF), static_cast<uint8_t>(cfg.filter));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Standby::MS_125), static_cast<uint8_t>(cfg.standby));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::FORCED), static_cast<uint8_t>(cfg.mode));
+}
+
+void test_get_settings_snapshot() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.i2cAddress = 0x77;
+  cfg.osrsT = Oversampling::X8;
+  cfg.osrsP = Oversampling::X4;
+  cfg.osrsH = Oversampling::X2;
+  cfg.filter = Filter::X8;
+  cfg.standby = Standby::MS_500;
+  cfg.mode = Mode::NORMAL;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  SettingsSnapshot snap;
+  Status st = dev.getSettings(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.initialized);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(snap.state));
+  TEST_ASSERT_EQUAL_HEX8(0x77, snap.i2cAddress);
+  TEST_ASSERT_EQUAL_UINT32(10u, snap.i2cTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT8(3u, snap.offlineThreshold);
+  TEST_ASSERT_TRUE(snap.hasNowMsHook);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::NORMAL), static_cast<uint8_t>(snap.mode));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X8),
+                          static_cast<uint8_t>(snap.osrsT));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X4),
+                          static_cast<uint8_t>(snap.osrsP));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X2),
+                          static_cast<uint8_t>(snap.osrsH));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Filter::X8),
+                          static_cast<uint8_t>(snap.filter));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Standby::MS_500),
+                          static_cast<uint8_t>(snap.standby));
+  TEST_ASSERT_FALSE(snap.measurementRequested);
+  TEST_ASSERT_FALSE(snap.measurementReady);
+  TEST_ASSERT_FALSE(snap.hasSample);
+  TEST_ASSERT_EQUAL_UINT32(0u, snap.measurementStartMs);
+  TEST_ASSERT_EQUAL_INT32(0, snap.tFine);
+  TEST_ASSERT_EQUAL_INT32(0, snap.rawSample.adcT);
+  TEST_ASSERT_EQUAL_UINT32(0u, snap.compSample.pressurePa);
 }
 
 void test_begin_rejects_missing_callbacks() {
@@ -452,6 +501,7 @@ int main() {
   RUN_TEST(test_status_error);
   RUN_TEST(test_status_in_progress);
   RUN_TEST(test_config_defaults);
+  RUN_TEST(test_get_settings_snapshot);
   RUN_TEST(test_begin_rejects_missing_callbacks);
   RUN_TEST(test_begin_success_sets_ready_and_health);
   RUN_TEST(test_now_ms_fallback_uses_millis_when_callback_missing);
