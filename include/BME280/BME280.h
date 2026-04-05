@@ -74,26 +74,26 @@ struct CalibrationRaw {
 
 /// Snapshot of driver configuration and runtime state without I2C access.
 struct SettingsSnapshot {
-  bool initialized = false;
-  DriverState state = DriverState::UNINIT;
-  uint8_t i2cAddress = 0x76;
-  uint32_t i2cTimeoutMs = 0;
-  uint8_t offlineThreshold = 0;
-  bool hasNowMsHook = false;
-  Mode mode = Mode::SLEEP;
-  Oversampling osrsT = Oversampling::SKIP;
-  Oversampling osrsP = Oversampling::SKIP;
-  Oversampling osrsH = Oversampling::SKIP;
-  Filter filter = Filter::OFF;
-  Standby standby = Standby::MS_0_5;
-  bool measurementRequested = false;
-  bool measurementReady = false;
-  bool hasSample = false;
-  uint32_t measurementStartMs = 0;
-  int32_t tFine = 0;
-  RawSample rawSample = {};
-  CompensatedSample compSample = {};
-  Calibration calibration = {};
+  bool initialized = false;                   ///< True after begin() succeeds
+  DriverState state = DriverState::UNINIT;    ///< Current driver state
+  uint8_t i2cAddress = 0x76;                  ///< Active 7-bit I2C address
+  uint32_t i2cTimeoutMs = 0;                  ///< Active I2C timeout
+  uint8_t offlineThreshold = 0;               ///< Failure threshold for OFFLINE
+  bool hasNowMsHook = false;                  ///< True when Config::nowMs is set
+  Mode mode = Mode::SLEEP;                    ///< Active measurement mode
+  Oversampling osrsT = Oversampling::SKIP;    ///< Temperature oversampling
+  Oversampling osrsP = Oversampling::SKIP;    ///< Pressure oversampling
+  Oversampling osrsH = Oversampling::SKIP;    ///< Humidity oversampling
+  Filter filter = Filter::OFF;                ///< IIR filter coefficient
+  Standby standby = Standby::MS_0_5;         ///< Standby time for normal mode
+  bool measurementRequested = false;          ///< True after forced-mode trigger
+  bool measurementReady = false;              ///< True when data registers are ready
+  bool hasSample = false;                     ///< True when a compensated sample is cached
+  uint32_t measurementStartMs = 0;            ///< Timestamp of last measurement trigger
+  int32_t tFine = 0;                          ///< Last t_fine intermediate value
+  RawSample rawSample = {};                   ///< Last raw ADC sample
+  CompensatedSample compSample = {};          ///< Last compensated sample
+  Calibration calibration = {};               ///< Cached compensation coefficients
 };
 
 /// BME280 driver class
@@ -132,6 +132,10 @@ public:
   /// Attempt to recover from DEGRADED/OFFLINE state by probing and reapplying cached config
   /// @return Status::Ok() if device now responsive, error otherwise
   Status recover();
+
+  /// Populate a snapshot of cached configuration and runtime state without I2C.
+  /// @param[out] out Snapshot to fill
+  /// @return Status::Ok() always
   Status getSettings(SettingsSnapshot& out) const;
   
   // =========================================================================

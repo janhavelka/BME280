@@ -102,6 +102,7 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 
 - `Status probe()` - Check device presence (no health tracking)
 - `Status recover()` - Attempt recovery from DEGRADED/OFFLINE (re-applies config)
+- `Status getSettings(SettingsSnapshot& out)` - Populate a snapshot of cached config and runtime state (no I2C)
 
 ### Raw Register Access
 

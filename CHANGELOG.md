@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `SettingsSnapshot` struct for reading cached configuration and runtime state without I2C.
+- `getSettings(SettingsSnapshot&)` method to populate a settings snapshot.
+- `Status::is(Err)` method for type-safe error code comparison.
+- `Status::operator bool()` explicit conversion for concise success checks.
+
 ## [1.4.0] - 2026-04-05
 
 ### Added
