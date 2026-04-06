@@ -299,9 +299,24 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   out.tFine = _tFine;
   out.rawSample = _rawSample;
   out.compSample = _compSample;
-  out.calibration = Calibration{
-      _digT1, _digT2, _digT3, _digP1, _digP2, _digP3, _digP4, _digP5, _digP6,
-      _digP7, _digP8, _digP9, _digH1, _digH2, _digH3, _digH4, _digH5, _digH6};
+  out.calibration.digT1 = _digT1;
+  out.calibration.digT2 = _digT2;
+  out.calibration.digT3 = _digT3;
+  out.calibration.digP1 = _digP1;
+  out.calibration.digP2 = _digP2;
+  out.calibration.digP3 = _digP3;
+  out.calibration.digP4 = _digP4;
+  out.calibration.digP5 = _digP5;
+  out.calibration.digP6 = _digP6;
+  out.calibration.digP7 = _digP7;
+  out.calibration.digP8 = _digP8;
+  out.calibration.digP9 = _digP9;
+  out.calibration.digH1 = _digH1;
+  out.calibration.digH2 = _digH2;
+  out.calibration.digH3 = _digH3;
+  out.calibration.digH4 = _digH4;
+  out.calibration.digH5 = _digH5;
+  out.calibration.digH6 = _digH6;
   return Status::Ok();
 }
 
