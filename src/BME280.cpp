@@ -850,18 +850,30 @@ Status BME280::writeRegs(uint8_t startReg, const uint8_t* buf, size_t len) {
 }
 
 Status BME280::readRegisters(uint8_t startReg, uint8_t* buf, size_t len) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
   return readRegs(startReg, buf, len);
 }
 
 Status BME280::writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
   return writeRegs(startReg, buf, len);
 }
 
 Status BME280::readRegister(uint8_t reg, uint8_t& value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
   return readRegs(reg, &value, 1);
 }
 
 Status BME280::writeRegister(uint8_t reg, uint8_t value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
   return writeRegs(reg, &value, 1);
 }
 
@@ -915,22 +927,22 @@ Status BME280::_applyConfig() {
   const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
   const uint8_t config = buildConfig(_config.standby, _config.filter);
 
-  Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeasSleep);
+  Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
   if (!st.ok()) {
     return st;
   }
 
-  st = writeRegister(cmd::REG_CONFIG, config);
+  st = writeRegs(cmd::REG_CONFIG, &config, 1);
   if (!st.ok()) {
     return st;
   }
 
-  st = writeRegister(cmd::REG_CTRL_HUM, ctrlHum);
+  st = writeRegs(cmd::REG_CTRL_HUM, &ctrlHum, 1);
   if (!st.ok()) {
     return st;
   }
 
-  return writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  return writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
 }
 
 Status BME280::_readCalibration() {

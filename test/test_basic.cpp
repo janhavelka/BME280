@@ -495,6 +495,35 @@ void test_raw_and_compensated_samples_remain_available_after_measurement_read() 
   TEST_ASSERT_TRUE(st.ok());
 }
 
+void test_register_access_after_end_does_not_touch_bus() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t writesAfterBegin = bus.writeCalls;
+  const uint32_t readsAfterBegin = bus.readCalls;
+
+  dev.end();
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  uint8_t value = 0;
+  Status st = dev.readRegister(cmd::REG_CHIP_ID, value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  st = dev.writeRegister(cmd::REG_CTRL_MEAS, 0);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+
+  st = dev.readRegisters(cmd::REG_CHIP_ID, &value, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_status_ok);
@@ -516,5 +545,6 @@ int main() {
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
   RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
   RUN_TEST(test_begin_without_now_ms_uses_millis_fallback);
+  RUN_TEST(test_register_access_after_end_does_not_touch_bus);
   return UNITY_END();
 }
