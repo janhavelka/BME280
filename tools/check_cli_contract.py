@@ -17,6 +17,7 @@ REQUIRED_COMMON = [
     "TransportAdapter.h",
     "BusDiag.h",
     "CliShell.h",
+    "CliStyle.h",
     "HealthView.h",
     "HealthDiag.h",
 ]

@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <limits>
+#include "examples/common/CliStyle.h"
 #include "examples/common/Log.h"
 #include "examples/common/BoardConfig.h"
 #include "examples/common/BusDiag.h"
@@ -1176,49 +1177,42 @@ bool parseU32(const String& token, uint32_t& out) {
 }
 
 void printHelp() {
-  auto helpSection = [](const char* title) {
-    Serial.printf("\n%s[%s]%s\n", LOG_COLOR_GREEN, title, LOG_COLOR_RESET);
-  };
-  auto helpItem = [](const char* cmd, const char* desc) {
-    Serial.printf("  %s%-32s%s - %s\n", LOG_COLOR_CYAN, cmd, LOG_COLOR_RESET, desc);
-  };
-
   Serial.println();
-  Serial.printf("%s=== BME280 CLI Help ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
-  helpSection("Common");
-  helpItem("help / ?", "Show this help");
-  helpItem("version / ver", "Print firmware and library version info");
-  helpItem("scan", "Scan I2C bus");
-  helpItem("read", "Request and display measurement");
-  helpItem("raw", "Show last raw ADC sample");
-  helpItem("comp", "Show last compensated sample");
-  helpItem("measuring", "Show measuring flag");
-  helpItem("timing", "Show measurement and cycle timing estimates");
+  cli::printHelpHeader("BME280 CLI Help");
+  cli::printHelpSection("Common");
+  cli::printHelpItem("help / ?", "Show this help");
+  cli::printHelpItem("version / ver", "Print firmware and library version info");
+  cli::printHelpItem("scan", "Scan I2C bus");
+  cli::printHelpItem("read", "Request and display measurement");
+  cli::printHelpItem("raw", "Show last raw ADC sample");
+  cli::printHelpItem("comp", "Show last compensated sample");
+  cli::printHelpItem("measuring", "Show measuring flag");
+  cli::printHelpItem("timing", "Show measurement and cycle timing estimates");
 
-  helpSection("Configuration");
-  helpItem("mode [sleep|forced|normal]", "Set or show operating mode");
-  helpItem("osrs [t|p|h <0..5>]", "Set or show oversampling");
-  helpItem("filter [0..4]", "Set or show IIR filter");
-  helpItem("standby [0..7]", "Set or show standby time");
-  helpItem("cfg / settings", "Show chip and internal settings");
-  helpItem("calib [raw]", "Show cached or raw calibration");
-  helpItem("status", "Read status register");
-  helpItem("chipid", "Read chip ID");
-  helpItem("reset", "Soft reset device");
+  cli::printHelpSection("Configuration");
+  cli::printHelpItem("mode [sleep|forced|normal]", "Set or show operating mode");
+  cli::printHelpItem("osrs [t|p|h <0..5>]", "Set or show oversampling");
+  cli::printHelpItem("filter [0..4]", "Set or show IIR filter");
+  cli::printHelpItem("standby [0..7]", "Set or show standby time");
+  cli::printHelpItem("cfg / settings", "Show chip and internal settings");
+  cli::printHelpItem("calib [raw]", "Show cached or raw calibration");
+  cli::printHelpItem("status", "Read status register");
+  cli::printHelpItem("chipid", "Read chip ID");
+  cli::printHelpItem("reset", "Soft reset device");
 
-  helpSection("Registers");
-  helpItem("reg <addr>", "Read 8-bit register (hex address)");
-  helpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic only; may desync cached config)");
+  cli::printHelpSection("Registers");
+  cli::printHelpItem("reg <addr>", "Read 8-bit register (hex address)");
+  cli::printHelpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic only; may desync cached config)");
 
-  helpSection("Diagnostics");
-  helpItem("drv", "Show driver state and health");
-  helpItem("state", "Show compact one-line health summary");
-  helpItem("probe", "Probe device (no health tracking)");
-  helpItem("recover", "Manual recovery attempt");
-  helpItem("verbose [0|1]", "Enable/disable verbose output");
-  helpItem("stress [N]", "Run N measurement cycles");
-  helpItem("stress_mix [N]", "Run N mixed-operation cycles");
-  helpItem("selftest", "Run safe command self-test report");
+  cli::printHelpSection("Diagnostics");
+  cli::printHelpItem("drv", "Show driver state and health");
+  cli::printHelpItem("state", "Show compact one-line health summary");
+  cli::printHelpItem("probe", "Probe device (no health tracking)");
+  cli::printHelpItem("recover", "Manual recovery attempt");
+  cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
+  cli::printHelpItem("stress [N]", "Run N measurement cycles");
+  cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles");
+  cli::printHelpItem("selftest", "Run safe command self-test report");
 }
 
 void printVersionInfo() {
@@ -1623,7 +1617,7 @@ void setup() {
   LOGI("Device initialized successfully");
   printDriverHealth();
   printHelp();
-  Serial.print("> ");
+  cli::printPrompt();
 }
 
 void loop() {
@@ -1654,7 +1648,7 @@ void loop() {
       if (inputBuffer.length() > 0) {
         processCommand(inputBuffer);
         inputBuffer = "";
-        Serial.print("> ");
+        cli::printPrompt();
       }
     } else {
       inputBuffer += c;
