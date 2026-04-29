@@ -22,7 +22,56 @@ REQUIRED_COMMON = [
     "HealthDiag.h",
 ]
 
-MANDATORY_COMMANDS = ["help", "scan", "probe", "recover", "drv", "read", "verbose", "stress"]
+MANDATORY_COMMANDS = [
+    "help",
+    "scan",
+    "probe",
+    "recover",
+    "drv",
+    "state",
+    "read",
+    "raw",
+    "comp",
+    "timing",
+    "status",
+    "chipid",
+    "mode",
+    "osrs",
+    "filter",
+    "standby",
+    "reset",
+    "reg",
+    "wreg",
+    "selftest",
+    "stress",
+    "stress_mix",
+    "verbose",
+]
+
+HANDLED_COMMANDS = [
+    "scan",
+    "probe",
+    "recover",
+    "drv",
+    "state",
+    "read",
+    "raw",
+    "comp",
+    "timing",
+    "status",
+    "chipid",
+    "mode",
+    "osrs",
+    "filter",
+    "standby",
+    "reset",
+    "reg",
+    "wreg",
+    "selftest",
+    "stress",
+    "stress_mix",
+    "verbose",
+]
 
 
 def fail(msg: str) -> None:
@@ -61,6 +110,11 @@ def main() -> int:
     for cmd in MANDATORY_COMMANDS:
         if re.search(rf"\b{re.escape(cmd)}\b", text) is None:
             fail(f"mandatory command '{cmd}' missing in {bringup_main.as_posix()}")
+
+    for cmd in HANDLED_COMMANDS:
+        pattern = rf'cmd(?:\s*==\s*"{re.escape(cmd)}"|\.startsWith\("{re.escape(cmd)}(?: |")|\s*==\s*"{re.escape(cmd)}")'
+        if re.search(pattern, text) is None:
+            fail(f"mandatory command '{cmd}' has no visible handler")
 
     if re.search(r"\bcfg\b", text) is None and re.search(r"\bsettings\b", text) is None:
         fail("either 'cfg' or 'settings' command must be present")

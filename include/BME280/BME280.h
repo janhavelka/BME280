@@ -178,8 +178,9 @@ public:
   // =========================================================================
   
   /// Request a measurement (non-blocking)
-  /// In FORCED mode: triggers measurement if idle
-  /// In NORMAL mode: marks intent to read next available
+  /// In FORCED mode: triggers measurement if idle.
+  /// In NORMAL mode: waits one estimated normal cycle before reading, so the
+  /// sample is fresh relative to the request.
   /// Returns IN_PROGRESS if measurement started, BUSY if already measuring or OFFLINE
   Status requestMeasurement();
 
@@ -210,19 +211,24 @@ public:
   // Configuration
   // =========================================================================
 
-  /// Set operating mode (SLEEP, FORCED, NORMAL)
+  /// Set operating mode (SLEEP, FORCED, NORMAL).
+  /// FORCED is an on-demand policy and does not trigger a conversion until
+  /// requestMeasurement() is called.
   Status setMode(Mode mode);
 
   /// Get current mode
   Status getMode(Mode& out) const;
 
-  /// Set oversampling for temperature
+  /// Set oversampling for temperature.
+  /// Temperature must be enabled when pressure or humidity is enabled.
   Status setOversamplingT(Oversampling osrs);
 
-  /// Set oversampling for pressure
+  /// Set oversampling for pressure.
+  /// Temperature must be enabled when pressure is enabled.
   Status setOversamplingP(Oversampling osrs);
 
-  /// Set oversampling for humidity
+  /// Set oversampling for humidity.
+  /// Temperature must be enabled when humidity is enabled.
   Status setOversamplingH(Oversampling osrs);
 
   /// Set IIR filter coefficient
@@ -336,6 +342,9 @@ private:
   /// Update health counters and state based on operation result
   /// Called ONLY from tracked transport wrappers
   Status _updateHealth(const Status& st);
+
+  /// Record non-transport semantic failures that make recovery unsuccessful.
+  Status _recordFailure(const Status& st);
 
   // =========================================================================
   // Internal

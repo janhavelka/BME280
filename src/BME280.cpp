@@ -69,6 +69,23 @@ static bool isValidMode(Mode mode) {
   return mode == Mode::SLEEP || mode == Mode::FORCED || mode == Mode::NORMAL;
 }
 
+static bool isValidMeasurementSelection(Oversampling osrsT,
+                                        Oversampling osrsP,
+                                        Oversampling osrsH) {
+  const bool tempSkipped = (osrsT == Oversampling::SKIP);
+  const bool pressSkipped = (osrsP == Oversampling::SKIP);
+  const bool humSkipped = (osrsH == Oversampling::SKIP);
+
+  if (tempSkipped && (!pressSkipped || !humSkipped)) {
+    return false;
+  }
+  return !(tempSkipped && pressSkipped && humSkipped);
+}
+
+static Mode registerModeForConfig(Mode mode) {
+  return (mode == Mode::FORCED) ? Mode::SLEEP : mode;
+}
+
 static uint8_t buildCtrlHum(Oversampling osrsH) {
   return static_cast<uint8_t>(osrsToReg(osrsH) << cmd::BIT_CTRL_HUM_OSRS_H);
 }
@@ -129,6 +146,9 @@ Status BME280::begin(const Config& config) {
       !isValidMode(config.mode)) {
     return Status::Error(Err::INVALID_CONFIG, "Invalid configuration value");
   }
+  if (!isValidMeasurementSelection(config.osrsT, config.osrsP, config.osrsH)) {
+    return Status::Error(Err::INVALID_CONFIG, "Invalid oversampling combination");
+  }
 
   _config = config;
   if (_config.offlineThreshold == 0) {
@@ -178,8 +198,11 @@ void BME280::tick(uint32_t nowMs) {
     return;
   }
 
-  if (_config.mode == Mode::FORCED) {
-    const uint32_t deadline = _measurementStartMs + estimateMeasurementTimeMs();
+  if (_config.mode == Mode::FORCED || _config.mode == Mode::NORMAL) {
+    const uint32_t waitMs = (_config.mode == Mode::NORMAL)
+        ? estimateNormalCycleMs()
+        : estimateMeasurementTimeMs();
+    const uint32_t deadline = _measurementStartMs + waitMs;
     if (!deadlineReached(nowMs, deadline)) {
       return;
     }
@@ -266,7 +289,8 @@ Status BME280::recover() {
     return st;
   }
   if (chipId != cmd::CHIP_ID_BME280) {
-    return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
+    return _recordFailure(
+        Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId));
   }
 
   // Re-apply configuration: after a power glitch or external reset
@@ -363,6 +387,7 @@ Status BME280::requestMeasurement() {
   }
 
   _measurementRequested = true;
+  _measurementStartMs = _nowMs();
   return Status::Error(Err::IN_PROGRESS, "Measurement scheduled");
 }
 
@@ -460,8 +485,13 @@ Status BME280::setMode(Mode mode) {
   if (!isValidMode(mode)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid mode");
   }
+  if (mode != Mode::SLEEP &&
+      !isValidMeasurementSelection(_config.osrsT, _config.osrsP, _config.osrsH)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling combination");
+  }
 
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, mode);
+  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
+                                         registerModeForConfig(mode));
   Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
   if (!st.ok()) {
     return st;
@@ -489,8 +519,12 @@ Status BME280::setOversamplingT(Oversampling osrs) {
   if (!isValidOversampling(osrs)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid oversampling");
   }
+  if (!isValidMeasurementSelection(osrs, _config.osrsP, _config.osrsH)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling combination");
+  }
 
-  const uint8_t ctrlMeas = buildCtrlMeas(osrs, _config.osrsP, _config.mode);
+  const uint8_t ctrlMeas = buildCtrlMeas(osrs, _config.osrsP,
+                                         registerModeForConfig(_config.mode));
   Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
   if (!st.ok()) {
     return st;
@@ -506,8 +540,12 @@ Status BME280::setOversamplingP(Oversampling osrs) {
   if (!isValidOversampling(osrs)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid oversampling");
   }
+  if (!isValidMeasurementSelection(_config.osrsT, osrs, _config.osrsH)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling combination");
+  }
 
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, osrs, _config.mode);
+  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, osrs,
+                                         registerModeForConfig(_config.mode));
   Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
   if (!st.ok()) {
     return st;
@@ -523,6 +561,9 @@ Status BME280::setOversamplingH(Oversampling osrs) {
   if (!isValidOversampling(osrs)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid oversampling");
   }
+  if (!isValidMeasurementSelection(_config.osrsT, _config.osrsP, osrs)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling combination");
+  }
 
   const uint8_t ctrlHum = buildCtrlHum(osrs);
   Status st = writeRegister(cmd::REG_CTRL_HUM, ctrlHum);
@@ -530,7 +571,8 @@ Status BME280::setOversamplingH(Oversampling osrs) {
     return st;
   }
 
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
+  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
+                                         registerModeForConfig(_config.mode));
   st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
   if (!st.ok()) {
     return st;
@@ -550,7 +592,8 @@ Status BME280::setFilter(Filter filter) {
 
   const uint8_t config = buildConfig(_config.standby, filter);
   const uint8_t ctrlMeasSleep = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP);
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
+  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
+                                         registerModeForConfig(_config.mode));
 
   Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeasSleep);
   if (!st.ok()) {
@@ -581,7 +624,8 @@ Status BME280::setStandby(Standby standby) {
 
   const uint8_t config = buildConfig(standby, _config.filter);
   const uint8_t ctrlMeasSleep = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP);
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
+  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
+                                         registerModeForConfig(_config.mode));
 
   Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeasSleep);
   if (!st.ok()) {
@@ -921,10 +965,43 @@ Status BME280::_updateHealth(const Status& st) {
   return st;
 }
 
+Status BME280::_recordFailure(const Status& st) {
+  if (st.ok() || st.inProgress() ||
+      st.code == Err::INVALID_CONFIG ||
+      st.code == Err::INVALID_PARAM ||
+      st.code == Err::NOT_INITIALIZED) {
+    return st;
+  }
+
+  const uint32_t now = _nowMs();
+  const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
+  const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
+
+  _lastError = st;
+  _lastErrorMs = now;
+  if (_totalFailures < maxU32) {
+    _totalFailures++;
+  }
+  if (_consecutiveFailures < maxU8) {
+    _consecutiveFailures++;
+  }
+
+  if (_initialized) {
+    if (_consecutiveFailures >= _config.offlineThreshold) {
+      _driverState = DriverState::OFFLINE;
+    } else {
+      _driverState = DriverState::DEGRADED;
+    }
+  }
+
+  return st;
+}
+
 Status BME280::_applyConfig() {
   const uint8_t ctrlHum = buildCtrlHum(_config.osrsH);
   const uint8_t ctrlMeasSleep = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP);
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, _config.mode);
+  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
+                                         registerModeForConfig(_config.mode));
   const uint8_t config = buildConfig(_config.standby, _config.filter);
 
   Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);

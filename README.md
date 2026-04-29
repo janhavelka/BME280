@@ -62,6 +62,9 @@ void loop() {
 The example adapter maps Arduino `Wire` failures to specific `I2C_*` status codes and keeps
 bus timeout ownership in `transport::initWire()`. If you do not inject `Config::nowMs`, the
 driver falls back to `millis()` on Arduino/native-test builds.
+`common/I2cTransport.h` is example-only glue; when manually copying only `include/` and
+`src/`, provide equivalent `Config::i2cWrite` and `Config::i2cWriteRead` callbacks in
+your application.
 
 ## Health Monitoring
 
@@ -103,6 +106,35 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 - `Status probe()` - Check device presence (no health tracking)
 - `Status recover()` - Attempt recovery from DEGRADED/OFFLINE (re-applies config)
 - `Status getSettings(SettingsSnapshot& out)` - Populate a snapshot of cached config and runtime state (no I2C)
+
+### Measurement
+
+- `Status requestMeasurement()` - Start a forced measurement or schedule a fresh normal-mode cycle; returns `IN_PROGRESS` when accepted
+- `bool measurementReady()` - True after `tick()` captures and compensates a sample
+- `Status getMeasurement(Measurement& out)` - Get floating-point temperature, pressure, and humidity
+- `Status getRawSample(RawSample& out)` - Get the latest raw ADC sample after at least one capture
+- `Status getCompensatedSample(CompensatedSample& out)` - Get fixed-point compensated values after at least one capture
+- `Status getCalibration(Calibration& out)` - Return cached calibration coefficients
+- `Status readCalibrationRaw(CalibrationRaw& out)` - Read calibration register blocks from the device
+
+Forced mode is an on-demand policy: `begin()` and `setMode(FORCED)` keep the hardware in
+sleep until `requestMeasurement()` writes the forced-mode trigger. Normal-mode requests
+wait one estimated normal cycle before reading registers, so the returned sample is fresh
+relative to the request.
+
+### Configuration
+
+- `Status setMode(Mode mode)` - Select `SLEEP`, `FORCED`, or `NORMAL`
+- `Status setOversamplingT/P/H(Oversampling osrs)` - Configure temperature, pressure, or humidity oversampling
+- `Status setFilter(Filter filter)` - Configure the IIR filter coefficient
+- `Status setStandby(Standby standby)` - Configure standby interval for normal mode
+- `Status softReset()` - Write the Bosch reset command, reload calibration, and reapply cached config
+- `Status readChipId/readStatus/readCtrlHum/readCtrlMeas/readConfig(...)` - Read status/config registers
+- `Status isMeasuring(bool& measuring)` - Read the measuring bit
+
+Temperature oversampling must be enabled whenever pressure or humidity is enabled because
+Bosch compensation requires `t_fine`. At least one measured channel must be enabled.
+Invalid combinations are rejected in `begin()` and typed setters before touching I2C.
 
 ### Raw Register Access
 
@@ -150,6 +182,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 | `I2cTransport.h` | Wire-based I2C transport adapter (`wireWrite`, `wireWriteRead`, `initWire`) |
 | `I2cScanner.h` | I2C bus scanner with table output and bus recovery |
 | `BusDiag.h` | Bus diagnostics wrapper (scan + probe) |
+| `CliStyle.h` | Shared ANSI colors and CLI formatting helpers |
 | `CliShell.h` | Serial command-line shell with line editing |
 | `CommandHandler.h` | Command parsing helpers (`readLine`, `match`, `parseInt`) |
 | `HealthView.h` | Compact health status display |

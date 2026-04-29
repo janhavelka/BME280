@@ -17,6 +17,8 @@ using namespace BME280;
 namespace {
 
 struct FakeBus {
+  uint8_t reg[256] = {};
+  uint8_t chipId = cmd::CHIP_ID_BME280;
   uint32_t nowMs = 1000;
   uint32_t writeCalls = 0;
   uint32_t readCalls = 0;
@@ -26,6 +28,8 @@ struct FakeBus {
   int writeErrorRemaining = 0;
   Status readError = Status::Error(Err::I2C_ERROR, "forced read error", -1);
   Status writeError = Status::Error(Err::I2C_ERROR, "forced write error", -2);
+  uint8_t lastWriteReg = 0;
+  uint8_t lastWriteValue = 0;
 };
 
 Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user) {
@@ -37,6 +41,13 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
   if (bus->writeErrorRemaining > 0) {
     bus->writeErrorRemaining--;
     return bus->writeError;
+  }
+  const uint8_t startReg = data[0];
+  for (size_t i = 1; i < len; ++i) {
+    const uint8_t reg = static_cast<uint8_t>(startReg + static_cast<uint8_t>(i - 1));
+    bus->reg[reg] = data[i];
+    bus->lastWriteReg = reg;
+    bus->lastWriteValue = data[i];
   }
   return Status::Ok();
 }
@@ -59,7 +70,7 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
   }
 
   if (reg == cmd::REG_CHIP_ID && rxLen >= 1) {
-    rxData[0] = cmd::CHIP_ID_BME280;
+    rxData[0] = bus->chipId;
   } else if (reg == cmd::REG_CALIB_TP_START && rxLen == cmd::REG_CALIB_TP_LEN) {
     for (size_t i = 0; i < rxLen; ++i) {
       rxData[i] = static_cast<uint8_t>(i + 1);
@@ -83,7 +94,11 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
       rxData[0] = cmd::MASK_STATUS_MEASURING;
       bus->measuringStatusReadsRemaining--;
     } else {
-      rxData[0] = 0;
+      rxData[0] = bus->reg[cmd::REG_STATUS];
+    }
+  } else {
+    for (size_t i = 0; i < rxLen; ++i) {
+      rxData[i] = bus->reg[static_cast<uint8_t>(reg + static_cast<uint8_t>(i))];
     }
   }
 
@@ -210,6 +225,23 @@ void test_begin_rejects_missing_callbacks() {
                           static_cast<uint8_t>(dev.state()));
 }
 
+void test_begin_rejects_invalid_oversampling_combination() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.osrsT = Oversampling::SKIP;
+  cfg.osrsP = Oversampling::X1;
+  cfg.osrsH = Oversampling::SKIP;
+
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.state()));
+}
+
 void test_begin_success_sets_ready_and_health() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -222,6 +254,23 @@ void test_begin_success_sets_ready_and_health() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT32(bus.nowMs, dev.lastOkMs());
+}
+
+void test_begin_forced_mode_keeps_hardware_sleep_until_requested() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::FORCED;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SLEEP),
+                          bus.reg[cmd::REG_CTRL_MEAS] & cmd::MASK_CTRL_MEAS_MODE);
+
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::FORCED),
+                          bus.reg[cmd::REG_CTRL_MEAS] & cmd::MASK_CTRL_MEAS_MODE);
 }
 
 void test_now_ms_fallback_uses_millis_when_callback_missing() {
@@ -314,6 +363,23 @@ void test_recover_success_returns_ready() {
   TEST_ASSERT_EQUAL_UINT32(4321u, dev.lastOkMs());
 }
 
+void test_recover_chip_id_mismatch_updates_health() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.chipId = 0x61;
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CHIP_ID_MISMATCH),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(1u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CHIP_ID_MISMATCH),
+                          static_cast<uint8_t>(dev.lastError().code));
+}
+
 void test_recover_preserves_transport_error_code() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -328,6 +394,38 @@ void test_recover_preserves_transport_error_code() {
                           static_cast<uint8_t>(dev.lastError().code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
+}
+
+void test_set_oversampling_rejects_invalid_compensation_combo_without_write() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const uint32_t writesBefore = bus.writeCalls;
+
+  Status st = dev.setOversamplingT(Oversampling::SKIP);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+
+  Oversampling osrs = Oversampling::SKIP;
+  st = dev.getOversamplingT(osrs);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
+                          static_cast<uint8_t>(osrs));
+}
+
+void test_set_mode_forced_does_not_trigger_conversion() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::NORMAL;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  Status st = dev.setMode(Mode::FORCED);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SLEEP),
+                          bus.reg[cmd::REG_CTRL_MEAS] & cmd::MASK_CTRL_MEAS_MODE);
+  TEST_ASSERT_FALSE(dev.measurementReady());
 }
 
 void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
@@ -437,6 +535,35 @@ void test_forced_measurement_timing_wraparound_reaches_ready() {
   TEST_ASSERT_TRUE(st.ok());
 }
 
+void test_normal_mode_request_waits_for_fresh_cycle() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::NORMAL;
+  cfg.standby = Standby::MS_125;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.measurementReady());
+
+  const uint32_t readsAfterRequest = bus.readCalls;
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_FALSE(dev.measurementReady());
+  TEST_ASSERT_EQUAL_UINT32(readsAfterRequest, bus.readCalls);
+
+  bus.nowMs += dev.estimateNormalCycleMs() - 1U;
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_FALSE(dev.measurementReady());
+  TEST_ASSERT_EQUAL_UINT32(readsAfterRequest, bus.readCalls);
+
+  bus.nowMs += 1U;
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_TRUE(dev.measurementReady());
+  TEST_ASSERT_GREATER_THAN_UINT32(readsAfterRequest, bus.readCalls);
+}
+
 void test_forced_measurement_request_while_busy_tracks_completion() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -532,16 +659,22 @@ int main() {
   RUN_TEST(test_config_defaults);
   RUN_TEST(test_get_settings_snapshot);
   RUN_TEST(test_begin_rejects_missing_callbacks);
+  RUN_TEST(test_begin_rejects_invalid_oversampling_combination);
   RUN_TEST(test_begin_success_sets_ready_and_health);
+  RUN_TEST(test_begin_forced_mode_keeps_hardware_sleep_until_requested);
   RUN_TEST(test_now_ms_fallback_uses_millis_when_callback_missing);
   RUN_TEST(test_probe_failure_does_not_update_health);
   RUN_TEST(test_recover_failure_updates_health_once);
   RUN_TEST(test_recover_success_returns_ready);
+  RUN_TEST(test_recover_chip_id_mismatch_updates_health);
   RUN_TEST(test_recover_preserves_transport_error_code);
+  RUN_TEST(test_set_oversampling_rejects_invalid_compensation_combo_without_write);
+  RUN_TEST(test_set_mode_forced_does_not_trigger_conversion);
   RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
   RUN_TEST(test_forced_measurement_timing_wraparound_reaches_ready);
+  RUN_TEST(test_normal_mode_request_waits_for_fresh_cycle);
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
   RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
   RUN_TEST(test_begin_without_now_ms_uses_millis_fallback);

@@ -49,6 +49,10 @@ inline const char* errToString(BME280::Err err) {
     case BME280::Err::COMPENSATION_ERROR:    return "COMPENSATION_ERROR";
     case BME280::Err::BUSY:                  return "BUSY";
     case BME280::Err::IN_PROGRESS:           return "IN_PROGRESS";
+    case BME280::Err::I2C_NACK_ADDR:         return "I2C_NACK_ADDR";
+    case BME280::Err::I2C_NACK_DATA:         return "I2C_NACK_DATA";
+    case BME280::Err::I2C_TIMEOUT:           return "I2C_TIMEOUT";
+    case BME280::Err::I2C_BUS:               return "I2C_BUS";
     default:                                  return "UNKNOWN";
   }
 }
