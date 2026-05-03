@@ -570,11 +570,11 @@ extra_scripts = pre:scripts/generate_version.py
   "keywords": ["bme280", "sensor", "temperature", "pressure", "humidity", "i2c"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/user/BME280.git"
+    "url": "https://github.com/janhavelka/BME280.git"
   },
   "authors": [
     {
-      "name": "Your Name"
+      "name": "Thymos Solution s.r.o"
     }
   ],
   "license": "MIT",

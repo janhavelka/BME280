@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native tests for forced-mode on-demand behavior, normal-mode fresh-cycle gating, invalid oversampling combinations, and chip-ID mismatch recovery health.
 
 ### Changed
+- Doxyfile project metadata now matches `library.json`, and archived prompt
+  metadata no longer contains placeholder ownership values.
 - Forced mode is now treated as an on-demand policy: `begin()` and `setMode(FORCED)` leave the hardware in sleep until `requestMeasurement()` triggers a conversion.
 - Normal-mode `requestMeasurement()` now waits one estimated normal cycle before `tick()` reads data registers, avoiding stale immediate samples.
 - README API docs now include measurement, configuration, calibration, status, and oversampling constraints.
