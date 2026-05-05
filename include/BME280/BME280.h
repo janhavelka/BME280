@@ -321,6 +321,9 @@ private:
   
   /// Tracked I2C write (updates health)
   Status _i2cWriteTracked(const uint8_t* buf, size_t len);
+
+  /// Return BUSY when normal operations try I2C while OFFLINE.
+  Status _offlineStatus() const;
   
   // =========================================================================
   // Register Access
@@ -345,6 +348,7 @@ private:
 
   /// Record non-transport semantic failures that make recovery unsuccessful.
   Status _recordFailure(const Status& st);
+  void _reassertOfflineLatch();
 
   // =========================================================================
   // Internal
@@ -372,6 +376,7 @@ private:
   uint8_t _consecutiveFailures = 0;
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
+  bool _allowOfflineI2c = false;
 
   // Calibration data
   uint16_t _digT1 = 0;

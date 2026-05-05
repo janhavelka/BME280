@@ -13,13 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Status::is(Err)` method for type-safe error code comparison.
 - `Status::operator bool()` explicit conversion for concise success checks.
 - Native tests for forced-mode on-demand behavior, normal-mode fresh-cycle gating, invalid oversampling combinations, and chip-ID mismatch recovery health.
+- Native coverage proving latched `OFFLINE` blocks normal I2C operations without touching the bus while `recover()` remains the explicit recovery path.
 
 ### Changed
 - Doxyfile project metadata now matches `library.json`, and archived prompt
   metadata no longer contains placeholder ownership values.
+- Explicit recovery/reset bypass internals now use the shared `ScopedOfflineI2cAllowance` / `_reassertOfflineLatch()` procedure so failed recovery attempts that begin from `OFFLINE` keep the latch asserted.
 - Forced mode is now treated as an on-demand policy: `begin()` and `setMode(FORCED)` leave the hardware in sleep until `requestMeasurement()` triggers a conversion.
 - Normal-mode `requestMeasurement()` now waits one estimated normal cycle before `tick()` reads data registers, avoiding stale immediate samples.
 - README API docs now include measurement, configuration, calibration, status, and oversampling constraints.
+- Health behavior is now standardized on latched `OFFLINE`: normal public I2C operations return `BUSY` with `Driver is offline; call recover()` and do not touch I2C until `recover()` succeeds.
 
 ### Fixed
 - Invalid oversampling combinations are rejected in `begin()` and typed setters before I2C, instead of failing later during compensation inside `tick()`.

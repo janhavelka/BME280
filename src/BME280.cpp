@@ -18,6 +18,24 @@ static constexpr uint16_t RESET_MAX_POLLS = 255;
 static constexpr uint32_t MEASUREMENT_MARGIN_US = 1000;
 static constexpr int64_t HUMIDITY_MAX_X4096 = 419430400;
 
+class ScopedOfflineI2cAllowance {
+public:
+  explicit ScopedOfflineI2cAllowance(bool& flag, bool allow) : _flag(flag), _old(flag) {
+    _flag = allow;
+  }
+
+  ~ScopedOfflineI2cAllowance() {
+    _flag = _old;
+  }
+
+  ScopedOfflineI2cAllowance(const ScopedOfflineI2cAllowance&) = delete;
+  ScopedOfflineI2cAllowance& operator=(const ScopedOfflineI2cAllowance&) = delete;
+
+private:
+  bool& _flag;
+  bool _old;
+};
+
 static bool deadlineReached(uint32_t nowMs, uint32_t deadlineMs) {
   return static_cast<int32_t>(nowMs - deadlineMs) >= 0;
 }
@@ -283,24 +301,32 @@ Status BME280::recover() {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  uint8_t chipId = 0;
-  Status st = readRegister(cmd::REG_CHIP_ID, chipId);
-  if (!st.ok()) {
-    return st;
-  }
-  if (chipId != cmd::CHIP_ID_BME280) {
-    return _recordFailure(
-        Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId));
-  }
+  const bool startedOffline = (_driverState == DriverState::OFFLINE);
+  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
+  Status result = [&]() -> Status {
+    uint8_t chipId = 0;
+    Status st = readRegister(cmd::REG_CHIP_ID, chipId);
+    if (!st.ok()) {
+      return st;
+    }
+    if (chipId != cmd::CHIP_ID_BME280) {
+      return _recordFailure(
+          Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId));
+    }
 
-  // Re-apply configuration: after a power glitch or external reset
-  // device registers revert to defaults.
-  st = _applyConfig();
-  if (!st.ok()) {
-    return st;
-  }
+    // Re-apply configuration: after a power glitch or external reset
+    // device registers revert to defaults.
+    st = _applyConfig();
+    if (!st.ok()) {
+      return st;
+    }
 
-  return Status::Ok();
+    return Status::Ok();
+  }();
+  if (startedOffline && !result.ok() && !result.inProgress()) {
+    _reassertOfflineLatch();
+  }
+  return result;
 }
 
 Status BME280::getSettings(SettingsSnapshot& out) const {
@@ -691,46 +717,54 @@ Status BME280::softReset() {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  _measurementRequested = false;
-  _measurementReady = false;
-  _hasSample = false;
-  _measurementStartMs = 0;
+  const bool startedOffline = (_driverState == DriverState::OFFLINE);
+  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
+  Status result = [&]() -> Status {
+    _measurementRequested = false;
+    _measurementReady = false;
+    _hasSample = false;
+    _measurementStartMs = 0;
 
-  Status st = writeRegister(cmd::REG_RESET, cmd::RESET_VALUE);
-  if (!st.ok()) {
-    return st;
-  }
-
-  // Poll for reset completion using RAW reads.
-  // During POR (~2 ms) the device may NACK — this is expected.
-  // Raw path avoids inflating health-failure counters.
-  const uint32_t deadline = _nowMs() + RESET_TIMEOUT_MS;
-  bool resetDone = false;
-  for (uint16_t poll = 0; poll < RESET_MAX_POLLS; ++poll) {
-    if (deadlineReached(_nowMs(), deadline)) {
-      return Status::Error(Err::TIMEOUT, "Reset timeout");
+    Status st = writeRegister(cmd::REG_RESET, cmd::RESET_VALUE);
+    if (!st.ok()) {
+      return st;
     }
-    uint8_t status = 0;
-    st = _readRegisterRaw(cmd::REG_STATUS, status);
-    if (st.ok() && (status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
-      resetDone = true;
-      break;
-    }
-    // I2C error or im_update still set — keep polling
-  }
-  if (!resetDone) {
-    return Status::Error(Err::TIMEOUT, "Reset polling limit reached", RESET_MAX_POLLS);
-  }
 
-  st = _readCalibration();
-  if (!st.ok()) {
-    return st;
+    // Poll for reset completion using RAW reads.
+    // During POR (~2 ms) the device may NACK; this is expected.
+    // Raw path avoids inflating health-failure counters.
+    const uint32_t deadline = _nowMs() + RESET_TIMEOUT_MS;
+    bool resetDone = false;
+    for (uint16_t poll = 0; poll < RESET_MAX_POLLS; ++poll) {
+      if (deadlineReached(_nowMs(), deadline)) {
+        return Status::Error(Err::TIMEOUT, "Reset timeout");
+      }
+      uint8_t status = 0;
+      st = _readRegisterRaw(cmd::REG_STATUS, status);
+      if (st.ok() && (status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
+        resetDone = true;
+        break;
+      }
+      // I2C error or im_update still set; keep polling.
+    }
+    if (!resetDone) {
+      return Status::Error(Err::TIMEOUT, "Reset polling limit reached", RESET_MAX_POLLS);
+    }
+
+    st = _readCalibration();
+    if (!st.ok()) {
+      return st;
+    }
+    st = _validateCalibration();
+    if (!st.ok()) {
+      return st;
+    }
+    return _applyConfig();
+  }();
+  if (startedOffline && !result.ok() && !result.inProgress()) {
+    _reassertOfflineLatch();
   }
-  st = _validateCalibration();
-  if (!st.ok()) {
-    return st;
-  }
-  return _applyConfig();
+  return result;
 }
 
 Status BME280::readChipId(uint8_t& id) {
@@ -849,6 +883,9 @@ Status BME280::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
   if (txBuf == nullptr || txLen == 0 || (rxLen > 0 && rxBuf == nullptr)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
+  if (!_allowOfflineI2c && _initialized && _driverState == DriverState::OFFLINE) {
+    return _offlineStatus();
+  }
 
   Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
@@ -861,12 +898,19 @@ Status BME280::_i2cWriteTracked(const uint8_t* buf, size_t len) {
   if (buf == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
+  if (!_allowOfflineI2c && _initialized && _driverState == DriverState::OFFLINE) {
+    return _offlineStatus();
+  }
 
   Status st = _i2cWriteRaw(buf, len);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
     return st;
   }
   return _updateHealth(st);
+}
+
+Status BME280::_offlineStatus() const {
+  return Status::Error(Err::BUSY, "Driver is offline; call recover()");
 }
 
 Status BME280::readRegs(uint8_t startReg, uint8_t* buf, size_t len) {
@@ -995,6 +1039,14 @@ Status BME280::_recordFailure(const Status& st) {
   }
 
   return st;
+}
+
+void BME280::_reassertOfflineLatch() {
+  _driverState = DriverState::OFFLINE;
+  const uint8_t threshold = _config.offlineThreshold == 0 ? 1 : _config.offlineThreshold;
+  if (_consecutiveFailures < threshold) {
+    _consecutiveFailures = threshold;
+  }
 }
 
 Status BME280::_applyConfig() {
