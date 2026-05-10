@@ -1,6 +1,6 @@
 ﻿# BME280 Register & Timing Reference (implementation-ready)
 
-Source: `bst-bme280-ds002.pdf` (Bosch Sensortec BME280 datasheet).
+Source: `BME280_datasheet.pdf` (Bosch Sensortec BME280 datasheet).
 
 This file is designed so an implementation agent can build a **robust BME280 driver** without reopening the PDF.
 
