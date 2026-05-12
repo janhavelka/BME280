@@ -83,6 +83,18 @@ uint32_t exampleNowMs(void*) {
   return millis();
 }
 
+BME280::Config makeDefaultConfig() {
+  BME280::Config cfg;
+  cfg.i2cWrite = transport::wireWrite;
+  cfg.i2cWriteRead = transport::wireWriteRead;
+  cfg.i2cUser = &Wire;
+  cfg.i2cAddress = 0x76;
+  cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
+  cfg.nowMs = exampleNowMs;
+  cfg.offlineThreshold = 5;
+  return cfg;
+}
+
 const char* errToStr(BME280::Err err) {
   using namespace BME280;
   switch (err) {
@@ -346,6 +358,43 @@ void printCompensatedSample() {
                 static_cast<long>(sample.tempC_x100),
                 static_cast<unsigned long>(sample.pressurePa),
                 humidityPct);
+}
+
+void printDataRegisters() {
+  uint8_t data[BME280::cmd::DATA_LEN] = {};
+  const BME280::Status st =
+      device.readRegisters(BME280::cmd::REG_DATA_START, data, sizeof(data));
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  const int32_t adcP = (static_cast<int32_t>(data[0]) << 12) |
+                       (static_cast<int32_t>(data[1]) << 4) |
+                       (static_cast<int32_t>(data[2]) >> 4);
+  const int32_t adcT = (static_cast<int32_t>(data[3]) << 12) |
+                       (static_cast<int32_t>(data[4]) << 4) |
+                       (static_cast<int32_t>(data[5]) >> 4);
+  const int32_t adcH = (static_cast<int32_t>(data[6]) << 8) |
+                       static_cast<int32_t>(data[7]);
+
+  Serial.println("=== Live Data Registers ===");
+  Serial.print("  0xF7..0xFE: ");
+  for (size_t i = 0; i < sizeof(data); ++i) {
+    Serial.printf("%02X", data[i]);
+    if (i + 1 < sizeof(data)) {
+      Serial.print(' ');
+    }
+  }
+  Serial.println();
+  Serial.printf("  Decoded raw ADC: P=%ld T=%ld H=%ld\n",
+                static_cast<long>(adcP),
+                static_cast<long>(adcT),
+                static_cast<long>(adcH));
+  Serial.printf("  Sentinel check: P_skip=%d T_skip=%d H_skip=%d\n",
+                adcP == 0x80000L ? 1 : 0,
+                adcT == 0x80000L ? 1 : 0,
+                adcH == 0x8000L ? 1 : 0);
 }
 
 void printTimingInfo() {
@@ -1187,9 +1236,11 @@ void printHelp() {
   cli::printHelpItem("help / ?", "Show this help");
   cli::printHelpItem("version / ver", "Print firmware and library version info");
   cli::printHelpItem("scan", "Scan I2C bus");
+  cli::printHelpItem("begin", "Run begin() with the default example config");
   cli::printHelpItem("read", "Request and display measurement");
   cli::printHelpItem("raw", "Show last raw ADC sample");
   cli::printHelpItem("comp", "Show last compensated sample");
+  cli::printHelpItem("data", "Burst-read and decode live data registers");
   cli::printHelpItem("measuring", "Show measuring flag");
   cli::printHelpItem("timing", "Show measurement and cycle timing estimates");
 
@@ -1254,6 +1305,18 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "begin") {
+    LOGI("Initializing BME280...");
+    cancelPending();
+    device.end();
+    BME280::Status st = device.begin(makeDefaultConfig());
+    printStatus(st);
+    if (st.ok()) {
+      printDriverHealth();
+    }
+    return;
+  }
+
   if (cmd == "read") {
     cancelPending();
     const BME280::Status st = scheduleMeasurement();
@@ -1270,6 +1333,11 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "comp") {
     printCompensatedSample();
+    return;
+  }
+
+  if (cmd == "data") {
+    printDataRegisters();
     return;
   }
 
@@ -1602,15 +1670,7 @@ void setup() {
 
   bus_diag::scan();
 
-  BME280::Config cfg;
-  cfg.i2cWrite = transport::wireWrite;
-  cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
-  cfg.i2cAddress = 0x76;
-  cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
-  cfg.nowMs = exampleNowMs;
-  cfg.offlineThreshold = 5;
-
+  BME280::Config cfg = makeDefaultConfig();
   BME280::Status st = device.begin(cfg);
   if (!st.ok()) {
     LOGE("Failed to initialize device");

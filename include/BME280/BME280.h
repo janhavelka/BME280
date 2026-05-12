@@ -43,33 +43,33 @@ struct CompensatedSample {
 /// Cached calibration coefficients from the device
 struct Calibration {
   // Temperature
-  uint16_t digT1 = 0;
-  int16_t digT2 = 0;
-  int16_t digT3 = 0;
+  uint16_t digT1 = 0; ///< Temperature compensation coefficient T1
+  int16_t digT2 = 0;  ///< Temperature compensation coefficient T2
+  int16_t digT3 = 0;  ///< Temperature compensation coefficient T3
   // Pressure
-  uint16_t digP1 = 0;
-  int16_t digP2 = 0;
-  int16_t digP3 = 0;
-  int16_t digP4 = 0;
-  int16_t digP5 = 0;
-  int16_t digP6 = 0;
-  int16_t digP7 = 0;
-  int16_t digP8 = 0;
-  int16_t digP9 = 0;
+  uint16_t digP1 = 0; ///< Pressure compensation coefficient P1
+  int16_t digP2 = 0;  ///< Pressure compensation coefficient P2
+  int16_t digP3 = 0;  ///< Pressure compensation coefficient P3
+  int16_t digP4 = 0;  ///< Pressure compensation coefficient P4
+  int16_t digP5 = 0;  ///< Pressure compensation coefficient P5
+  int16_t digP6 = 0;  ///< Pressure compensation coefficient P6
+  int16_t digP7 = 0;  ///< Pressure compensation coefficient P7
+  int16_t digP8 = 0;  ///< Pressure compensation coefficient P8
+  int16_t digP9 = 0;  ///< Pressure compensation coefficient P9
   // Humidity
-  uint8_t digH1 = 0;
-  int16_t digH2 = 0;
-  uint8_t digH3 = 0;
-  int16_t digH4 = 0;
-  int16_t digH5 = 0;
-  int8_t digH6 = 0;
+  uint8_t digH1 = 0;  ///< Humidity compensation coefficient H1
+  int16_t digH2 = 0;  ///< Humidity compensation coefficient H2
+  uint8_t digH3 = 0;  ///< Humidity compensation coefficient H3
+  int16_t digH4 = 0;  ///< Humidity compensation coefficient H4
+  int16_t digH5 = 0;  ///< Humidity compensation coefficient H5
+  int8_t digH6 = 0;   ///< Humidity compensation coefficient H6
 };
 
 /// Raw calibration register blocks
 struct CalibrationRaw {
-  uint8_t tp[cmd::REG_CALIB_TP_LEN] = {};
-  uint8_t h1 = 0;
-  uint8_t h[cmd::REG_CALIB_H_LEN] = {};
+  uint8_t tp[cmd::REG_CALIB_TP_LEN] = {}; ///< Raw 0x88..0xA1 temperature/pressure block
+  uint8_t h1 = 0;                         ///< Raw 0xA1 humidity byte
+  uint8_t h[cmd::REG_CALIB_H_LEN] = {};   ///< Raw 0xE1..0xE7 humidity block
 };
 
 /// Snapshot of driver configuration and runtime state without I2C access.
@@ -90,6 +90,7 @@ struct SettingsSnapshot {
   bool measurementReady = false;              ///< True when data registers are ready
   bool hasSample = false;                     ///< True when a compensated sample is cached
   uint32_t measurementStartMs = 0;            ///< Timestamp of last measurement trigger
+  uint32_t sampleTimestampMs = 0;             ///< Timestamp of the last cached sample
   int32_t tFine = 0;                          ///< Last t_fine intermediate value
   RawSample rawSample = {};                   ///< Last raw ADC sample
   CompensatedSample compSample = {};          ///< Last compensated sample
@@ -144,6 +145,9 @@ public:
   
   /// Get current driver state
   DriverState state() const { return _driverState; }
+
+  /// Alias for state() used by shared diagnostics.
+  DriverState driverState() const { return state(); }
   
   /// Check if driver is ready for operations
   bool isOnline() const { 
@@ -187,24 +191,43 @@ public:
   /// Check if measurement is ready to read
   bool measurementReady() const { return _measurementReady; }
 
+  /// True after at least one sample has been cached.
+  bool hasSample() const { return _hasSample; }
+
+  /// Timestamp of the last cached sample, or 0 if none exists.
+  uint32_t sampleTimestampMs() const { return _sampleTimestampMs; }
+
+  /// Age of the cached sample in milliseconds.
+  /// @param nowMs Current monotonic timestamp in milliseconds
+  /// @return `nowMs - sampleTimestampMs()` when a sample exists, otherwise 0
+  uint32_t sampleAgeMs(uint32_t nowMs) const {
+    return _hasSample ? (nowMs - _sampleTimestampMs) : 0;
+  }
+
   /// Get measurement result (float)
   /// Returns MEASUREMENT_NOT_READY if not available
   /// Clears ready flag after successful read
   /// Does not invalidate cached raw/fixed-point samples.
   Status getMeasurement(Measurement& out);
 
-  /// Get raw ADC values
-  /// Returns MEASUREMENT_NOT_READY until at least one sample has been captured.
+  /// Get raw ADC values.
+  /// @param[out] out Last cached raw ADC sample
+  /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
   Status getRawSample(RawSample& out) const;
 
-  /// Get fixed-point compensated values
-  /// Returns MEASUREMENT_NOT_READY until at least one sample has been captured.
+  /// Get fixed-point compensated values.
+  /// @param[out] out Last cached fixed-point compensated sample
+  /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
   Status getCompensatedSample(CompensatedSample& out) const;
 
-  /// Get cached calibration coefficients
+  /// Get cached calibration coefficients.
+  /// @param[out] out Cached coefficients read during begin() or softReset()
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getCalibration(Calibration& out) const;
 
-  /// Read raw calibration registers from the device
+  /// Read raw calibration registers from the device.
+  /// @param[out] out Raw register blocks
+  /// @return Status::Ok() on success, error otherwise
   Status readCalibrationRaw(CalibrationRaw& out);
 
   // =========================================================================
@@ -355,6 +378,7 @@ private:
   // =========================================================================
 
   Status _applyConfig();
+  Status _waitForNvmReady();
   Status _readCalibration();
   Status _validateCalibration();
   Status _readRawData();
@@ -403,6 +427,7 @@ private:
   bool _measurementReady = false;
   bool _hasSample = false;
   uint32_t _measurementStartMs = 0;
+  uint32_t _sampleTimestampMs = 0;
   int32_t _tFine = 0;
   RawSample _rawSample;
   CompensatedSample _compSample;

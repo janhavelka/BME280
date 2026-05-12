@@ -13,8 +13,8 @@ namespace BME280 {
 namespace {
 
 static constexpr size_t MAX_WRITE_LEN = 16;
-static constexpr uint32_t RESET_TIMEOUT_MS = 10;
-static constexpr uint16_t RESET_MAX_POLLS = 255;
+static constexpr uint32_t NVM_READY_TIMEOUT_MS = 10;
+static constexpr uint16_t NVM_READY_MAX_POLLS = 255;
 static constexpr uint32_t MEASUREMENT_MARGIN_US = 1000;
 static constexpr int64_t HUMIDITY_MAX_X4096 = 419430400;
 
@@ -129,8 +129,10 @@ static int16_t signExtend12(int16_t value) {
 }  // namespace
 
 Status BME280::begin(const Config& config) {
+  _config = Config{};
   _initialized = false;
   _driverState = DriverState::UNINIT;
+  _allowOfflineI2c = false;
 
   _lastOkMs = 0;
   _lastErrorMs = 0;
@@ -143,9 +145,28 @@ Status BME280::begin(const Config& config) {
   _measurementReady = false;
   _hasSample = false;
   _measurementStartMs = 0;
+  _sampleTimestampMs = 0;
   _tFine = 0;
   _rawSample = RawSample{};
   _compSample = CompensatedSample{};
+  _digT1 = 0;
+  _digT2 = 0;
+  _digT3 = 0;
+  _digP1 = 0;
+  _digP2 = 0;
+  _digP3 = 0;
+  _digP4 = 0;
+  _digP5 = 0;
+  _digP6 = 0;
+  _digP7 = 0;
+  _digP8 = 0;
+  _digP9 = 0;
+  _digH1 = 0;
+  _digH2 = 0;
+  _digH3 = 0;
+  _digH4 = 0;
+  _digH5 = 0;
+  _digH6 = 0;
 
   if (config.i2cWrite == nullptr || config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C callbacks not set");
@@ -180,6 +201,11 @@ Status BME280::begin(const Config& config) {
   }
   if (chipId != cmd::CHIP_ID_BME280) {
     return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
+  }
+
+  st = _waitForNvmReady();
+  if (!st.ok()) {
+    return st;
   }
 
   st = _readCalibration();
@@ -254,6 +280,7 @@ void BME280::tick(uint32_t nowMs) {
 
   _measurementReady = true;
   _hasSample = true;
+  _sampleTimestampMs = nowMs;
   _measurementRequested = false;
 }
 
@@ -274,6 +301,7 @@ void BME280::end() {
   _measurementReady = false;
   _hasSample = false;
   _measurementStartMs = 0;
+  _sampleTimestampMs = 0;
   _tFine = 0;
   _rawSample = RawSample{};
   _compSample = CompensatedSample{};
@@ -346,6 +374,7 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   out.measurementReady = _measurementReady;
   out.hasSample = _hasSample;
   out.measurementStartMs = _measurementStartMs;
+  out.sampleTimestampMs = _sampleTimestampMs;
   out.tFine = _tFine;
   out.rawSample = _rawSample;
   out.compSample = _compSample;
@@ -724,31 +753,16 @@ Status BME280::softReset() {
     _measurementReady = false;
     _hasSample = false;
     _measurementStartMs = 0;
+    _sampleTimestampMs = 0;
 
     Status st = writeRegister(cmd::REG_RESET, cmd::RESET_VALUE);
     if (!st.ok()) {
       return st;
     }
 
-    // Poll for reset completion using RAW reads.
-    // During POR (~2 ms) the device may NACK; this is expected.
-    // Raw path avoids inflating health-failure counters.
-    const uint32_t deadline = _nowMs() + RESET_TIMEOUT_MS;
-    bool resetDone = false;
-    for (uint16_t poll = 0; poll < RESET_MAX_POLLS; ++poll) {
-      if (deadlineReached(_nowMs(), deadline)) {
-        return Status::Error(Err::TIMEOUT, "Reset timeout");
-      }
-      uint8_t status = 0;
-      st = _readRegisterRaw(cmd::REG_STATUS, status);
-      if (st.ok() && (status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
-        resetDone = true;
-        break;
-      }
-      // I2C error or im_update still set; keep polling.
-    }
-    if (!resetDone) {
-      return Status::Error(Err::TIMEOUT, "Reset polling limit reached", RESET_MAX_POLLS);
+    st = _waitForNvmReady();
+    if (!st.ok()) {
+      return st;
     }
 
     st = _readCalibration();
@@ -971,21 +985,25 @@ Status BME280::_readRegisterRaw(uint8_t reg, uint8_t& value) {
 }
 
 Status BME280::_updateHealth(const Status& st) {
+  if (!_initialized) {
+    return st;
+  }
+  if (st.inProgress()) {
+    return st;
+  }
+
   const uint32_t now = _nowMs();
   const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
   const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
-  const bool isSuccess = st.ok() || st.inProgress();
 
-  if (isSuccess) {
+  if (st.ok()) {
     _lastOkMs = now;
     if (_totalSuccess < maxU32) {
       _totalSuccess++;
     }
     _consecutiveFailures = 0;
 
-    if (_initialized) {
-      _driverState = DriverState::READY;
-    }
+    _driverState = DriverState::READY;
     return st;
   }
 
@@ -1072,6 +1090,25 @@ Status BME280::_applyConfig() {
   }
 
   return writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
+}
+
+Status BME280::_waitForNvmReady() {
+  const uint32_t deadline = _nowMs() + NVM_READY_TIMEOUT_MS;
+  for (uint16_t poll = 0; poll < NVM_READY_MAX_POLLS; ++poll) {
+    if (deadlineReached(_nowMs(), deadline)) {
+      return Status::Error(Err::TIMEOUT, "NVM ready timeout");
+    }
+
+    uint8_t status = 0;
+    const Status st = _readRegisterRaw(cmd::REG_STATUS, status);
+    if (st.ok() && (status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
+      return Status::Ok();
+    }
+    // I2C errors and im_update=1 are both expected during reset/POR.
+  }
+
+  return Status::Error(Err::TIMEOUT, "NVM ready polling limit reached",
+                       NVM_READY_MAX_POLLS);
 }
 
 Status BME280::_readCalibration() {

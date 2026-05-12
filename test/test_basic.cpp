@@ -22,7 +22,10 @@ struct FakeBus {
   uint32_t nowMs = 1000;
   uint32_t writeCalls = 0;
   uint32_t readCalls = 0;
+  uint32_t statusReadCalls = 0;
   uint32_t measuringStatusReadsRemaining = 0;
+  uint32_t imUpdateStatusReadsRemaining = 0;
+  bool calibrationReadWhileImUpdate = false;
 
   int readErrorRemaining = 0;
   int writeErrorRemaining = 0;
@@ -72,6 +75,10 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
   if (reg == cmd::REG_CHIP_ID && rxLen >= 1) {
     rxData[0] = bus->chipId;
   } else if (reg == cmd::REG_CALIB_TP_START && rxLen == cmd::REG_CALIB_TP_LEN) {
+    if (bus->imUpdateStatusReadsRemaining > 0 ||
+        (bus->reg[cmd::REG_STATUS] & cmd::MASK_STATUS_IM_UPDATE) != 0) {
+      bus->calibrationReadWhileImUpdate = true;
+    }
     for (size_t i = 0; i < rxLen; ++i) {
       rxData[i] = static_cast<uint8_t>(i + 1);
     }
@@ -90,12 +97,17 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
     rxData[5] = 0x66;
     rxData[6] = 0x77;
   } else if (reg == cmd::REG_STATUS && rxLen >= 1) {
+    bus->statusReadCalls++;
+    uint8_t status = bus->reg[cmd::REG_STATUS];
     if (bus->measuringStatusReadsRemaining > 0) {
-      rxData[0] = cmd::MASK_STATUS_MEASURING;
+      status |= cmd::MASK_STATUS_MEASURING;
       bus->measuringStatusReadsRemaining--;
-    } else {
-      rxData[0] = bus->reg[cmd::REG_STATUS];
     }
+    if (bus->imUpdateStatusReadsRemaining > 0) {
+      status |= cmd::MASK_STATUS_IM_UPDATE;
+      bus->imUpdateStatusReadsRemaining--;
+    }
+    rxData[0] = status;
   } else {
     for (size_t i = 0; i < rxLen; ++i) {
       rxData[i] = bus->reg[static_cast<uint8_t>(reg + static_cast<uint8_t>(i))];
@@ -211,6 +223,7 @@ void test_get_settings_snapshot() {
   TEST_ASSERT_FALSE(snap.measurementReady);
   TEST_ASSERT_FALSE(snap.hasSample);
   TEST_ASSERT_EQUAL_UINT32(0u, snap.measurementStartMs);
+  TEST_ASSERT_EQUAL_UINT32(0u, snap.sampleTimestampMs);
   TEST_ASSERT_EQUAL_INT32(0, snap.tFine);
   TEST_ASSERT_EQUAL_INT32(0, snap.rawSample.adcT);
   TEST_ASSERT_EQUAL_UINT32(0u, snap.compSample.pressurePa);
@@ -242,7 +255,70 @@ void test_begin_rejects_invalid_oversampling_combination() {
                           static_cast<uint8_t>(dev.state()));
 }
 
-void test_begin_success_sets_ready_and_health() {
+void test_invalid_begin_after_success_resets_default_runtime() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.i2cAddress = 0x77;
+  cfg.offlineThreshold = 1;
+  cfg.mode = Mode::NORMAL;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  Config bad = makeConfig(bus);
+  bad.i2cAddress = 0x75;
+  Status st = dev.begin(bad);
+
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastErrorMs());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+
+  const Config& stored = dev.getConfig();
+  TEST_ASSERT_NULL(stored.i2cWrite);
+  TEST_ASSERT_NULL(stored.i2cWriteRead);
+  TEST_ASSERT_EQUAL_HEX8(0x76, stored.i2cAddress);
+  TEST_ASSERT_EQUAL_UINT32(50u, stored.i2cTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT8(5u, stored.offlineThreshold);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::FORCED),
+                          static_cast<uint8_t>(stored.mode));
+
+  SettingsSnapshot snap;
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_FALSE(snap.initialized);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(snap.state));
+  TEST_ASSERT_EQUAL_UINT8(5u, snap.offlineThreshold);
+  TEST_ASSERT_FALSE(snap.hasNowMsHook);
+  TEST_ASSERT_FALSE(snap.hasSample);
+  TEST_ASSERT_EQUAL_UINT16(0u, snap.calibration.digT1);
+}
+
+void test_begin_normalizes_offline_threshold_on_stored_copy() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.offlineThreshold = 0;
+
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(0u, cfg.offlineThreshold);
+  TEST_ASSERT_EQUAL_UINT8(1u, dev.getConfig().offlineThreshold);
+
+  SettingsSnapshot snap;
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_EQUAL_UINT8(1u, snap.offlineThreshold);
+}
+
+void test_begin_success_sets_ready_without_health_counts() {
   FakeBus bus;
   BME280::BME280 dev;
   Status st = dev.begin(makeConfig(bus));
@@ -250,10 +326,38 @@ void test_begin_success_sets_ready_and_health() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
                           static_cast<uint8_t>(dev.state()));
   TEST_ASSERT_TRUE(dev.isOnline());
-  TEST_ASSERT_GREATER_THAN_UINT32(0u, dev.totalSuccess());
+  TEST_ASSERT_GREATER_THAN_UINT32(0u, bus.readCalls + bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
-  TEST_ASSERT_EQUAL_UINT32(bus.nowMs, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+}
+
+void test_begin_waits_for_nvm_update_before_reading_calibration() {
+  FakeBus bus;
+  bus.imUpdateStatusReadsRemaining = 2;
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(3u, bus.statusReadCalls);
+  TEST_ASSERT_FALSE(bus.calibrationReadWhileImUpdate);
+  TEST_ASSERT_TRUE(dev.isInitialized());
+}
+
+void test_begin_times_out_when_nvm_update_stuck() {
+  FakeBus bus;
+  bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_FALSE(bus.calibrationReadWhileImUpdate);
+  TEST_ASSERT_GREATER_THAN_UINT32(0u, bus.statusReadCalls);
 }
 
 void test_begin_forced_mode_keeps_hardware_sleep_until_requested() {
@@ -584,6 +688,10 @@ void test_forced_measurement_timing_wraparound_reaches_ready() {
   bus.nowMs = 20u;
   dev.tick(bus.nowMs);
   TEST_ASSERT_TRUE(dev.measurementReady());
+  TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_EQUAL_UINT32(bus.nowMs, dev.sampleTimestampMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.sampleAgeMs(bus.nowMs));
+  TEST_ASSERT_EQUAL_UINT32(25u, dev.sampleAgeMs(bus.nowMs + 25u));
 
   Measurement m{};
   st = dev.getMeasurement(m);
@@ -715,7 +823,11 @@ int main() {
   RUN_TEST(test_get_settings_snapshot);
   RUN_TEST(test_begin_rejects_missing_callbacks);
   RUN_TEST(test_begin_rejects_invalid_oversampling_combination);
-  RUN_TEST(test_begin_success_sets_ready_and_health);
+  RUN_TEST(test_invalid_begin_after_success_resets_default_runtime);
+  RUN_TEST(test_begin_normalizes_offline_threshold_on_stored_copy);
+  RUN_TEST(test_begin_success_sets_ready_without_health_counts);
+  RUN_TEST(test_begin_waits_for_nvm_update_before_reading_calibration);
+  RUN_TEST(test_begin_times_out_when_nvm_update_stuck);
   RUN_TEST(test_begin_forced_mode_keeps_hardware_sleep_until_requested);
   RUN_TEST(test_now_ms_fallback_uses_millis_when_callback_missing);
   RUN_TEST(test_probe_failure_does_not_update_health);
