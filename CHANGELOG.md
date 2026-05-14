@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Forced mode is now treated as an on-demand policy: `begin()` and `setMode(FORCED)` leave the hardware in sleep until `requestMeasurement()` triggers a conversion.
 - Normal-mode `requestMeasurement()` now waits one estimated normal cycle before `tick()` reads data registers, avoiding stale immediate samples.
 - README API docs now include measurement, configuration, calibration, status, and oversampling constraints.
+- Reference documentation now uses human-readable vendor PDF names and separates compact chip notes from full PDF extractions under `docs/extracted-md/` and `docs/pdf-extracted-md/`.
 - Health behavior is now standardized on latched `OFFLINE`: normal public I2C operations return `BUSY` with `Driver is offline; call recover()` and do not touch I2C until `recover()` succeeds.
 
 ### Fixed
