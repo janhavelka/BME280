@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-05-14
+
 ### Added
 - `SettingsSnapshot` struct for reading cached configuration and runtime state without I2C.
 - `getSettings(SettingsSnapshot&)` method to populate a settings snapshot.
@@ -146,7 +148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/janhavelka/BME280/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/janhavelka/BME280/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/janhavelka/BME280/compare/v1.2.2...v1.3.0
 [1.2.1]: https://github.com/janhavelka/BME280/compare/v1.2.0...v1.2.1
