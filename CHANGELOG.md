@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Health behavior is now standardized on latched `OFFLINE`: normal public I2C operations return `BUSY` with `Driver is offline; call recover()` and do not touch I2C until `recover()` succeeds.
 
 ### Fixed
+- Bring-up CLI stress runs now clear stale pending measurement state before
+  restarting, and `stress_mix` no longer counts expected sleep-mode measurement
+  attempts as failures.
+- Stress progress output now leaves the progress percentage uncolored and only
+  colorizes the ok/fail counters.
 - Invalid oversampling combinations are rejected in `begin()` and typed setters before I2C, instead of failing later during compensation inside `tick()`.
 - `recover()` now records a chip-ID mismatch as a health failure instead of leaving the driver marked healthy after a failed recovery.
 - Example diagnostic error strings now include granular `I2C_*` status codes.

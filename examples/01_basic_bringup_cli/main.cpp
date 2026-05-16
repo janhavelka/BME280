@@ -176,12 +176,10 @@ void printStressProgress(uint32_t completed, uint32_t total, uint32_t okCount, u
     return;
   }
   const float pct = (100.0f * static_cast<float>(completed)) / static_cast<float>(total);
-  Serial.printf("  Progress: %lu/%lu (%s%.0f%%%s, ok=%s%lu%s, fail=%s%lu%s)\n",
+  Serial.printf("  Progress: %lu/%lu (%.0f%%, ok=%s%lu%s, fail=%s%lu%s)\n",
                 static_cast<unsigned long>(completed),
                 static_cast<unsigned long>(total),
-                successRateColor(pct),
                 pct,
-                LOG_COLOR_RESET,
                 goodIfNonZeroColor(okCount),
                 static_cast<unsigned long>(okCount),
                 LOG_COLOR_RESET,
@@ -668,6 +666,7 @@ void resetStressStats(int target) {
   stressStats.attempts = 0;
   stressStats.success = 0;
   stressStats.errors = 0;
+  stressStats.hasFailure = false;
   stressStats.hasSample = false;
   stressStats.minTemp = std::numeric_limits<float>::max();
   stressStats.maxTemp = std::numeric_limits<float>::lowest();
@@ -678,6 +677,7 @@ void resetStressStats(int target) {
   stressStats.sumTemp = 0.0;
   stressStats.sumPressure = 0.0;
   stressStats.sumHumidity = 0.0;
+  stressStats.firstError = BME280::Status::Ok();
   stressStats.lastError = BME280::Status::Ok();
 }
 
@@ -724,6 +724,26 @@ void updateStressStats(const BME280::Measurement& m) {
   stressStats.sumPressure += m.pressurePa;
   stressStats.sumHumidity += m.humidityPct;
   stressStats.success++;
+}
+
+bool driverMeasurementPending() {
+  BME280::SettingsSnapshot snapshot;
+  if (!device.getSettings(snapshot).ok()) {
+    return false;
+  }
+  return snapshot.initialized && snapshot.measurementRequested && !snapshot.measurementReady;
+}
+
+BME280::Status ensureForcedMeasurementMode() {
+  BME280::Mode mode = BME280::Mode::SLEEP;
+  BME280::Status st = device.getMode(mode);
+  if (!st.ok()) {
+    return st;
+  }
+  if (mode == BME280::Mode::FORCED) {
+    return BME280::Status::Ok();
+  }
+  return device.setMode(BME280::Mode::FORCED);
 }
 
 void finishStressStats() {
@@ -793,6 +813,9 @@ void finishStressStats() {
 
 BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t timeoutMs = 500) {
   BME280::Status st = device.requestMeasurement();
+  if (st.code == BME280::Err::BUSY && !driverMeasurementPending()) {
+    return st;
+  }
   if (st.code != BME280::Err::IN_PROGRESS && st.code != BME280::Err::BUSY) {
     return st;
   }
@@ -806,6 +829,41 @@ BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t tim
     yield();
   }
   return BME280::Status::Error(BME280::Err::TIMEOUT, "measurement timeout", timeoutMs);
+}
+
+struct StressMixSettings {
+  bool valid = false;
+  BME280::Mode mode = BME280::Mode::FORCED;
+  BME280::Filter filter = BME280::Filter::OFF;
+  BME280::Standby standby = BME280::Standby::MS_125;
+};
+
+StressMixSettings captureStressMixSettings() {
+  StressMixSettings settings;
+  settings.valid = device.getMode(settings.mode).ok() &&
+                   device.getFilter(settings.filter).ok() &&
+                   device.getStandby(settings.standby).ok();
+  return settings;
+}
+
+BME280::Status restoreStressMixSettings(const StressMixSettings& settings) {
+  if (!settings.valid) {
+    return BME280::Status::Ok();
+  }
+
+  BME280::Status st = device.setMode(BME280::Mode::SLEEP);
+  if (!st.ok()) {
+    return st;
+  }
+  st = device.setFilter(settings.filter);
+  if (!st.ok()) {
+    return st;
+  }
+  st = device.setStandby(settings.standby);
+  if (!st.ok()) {
+    return st;
+  }
+  return device.setMode(settings.mode);
 }
 
 void runStressMix(int count) {
@@ -826,6 +884,7 @@ void runStressMix(int count) {
   const int opCount = static_cast<int>(sizeof(stats) / sizeof(stats[0]));
 
   cancelPending();
+  const StressMixSettings originalSettings = captureStressMixSettings();
   HealthSnapshot<BME280::BME280> healthBefore;
   healthBefore.capture(device);
   const uint32_t succBefore = device.totalSuccess();
@@ -844,7 +903,10 @@ void runStressMix(int count) {
     switch (op) {
       case 0: {
         BME280::Measurement m;
-        st = performMeasurementBlocking(m);
+        st = ensureForcedMeasurementMode();
+        if (st.ok()) {
+          st = performMeasurementBlocking(m);
+        }
         break;
       }
       case 1: {
@@ -962,6 +1024,11 @@ void runStressMix(int count) {
       Serial.println("  Last failure:");
       printStatus(lastFailure);
     }
+  }
+
+  const BME280::Status restoreStatus = restoreStressMixSettings(originalSettings);
+  if (!restoreStatus.ok()) {
+    LOGW("Could not restore pre-stress settings: %s", errToStr(restoreStatus.code));
   }
 }
 
@@ -1129,6 +1196,25 @@ void cancelPending() {
   pendingRead = false;
   stressRemaining = 0;
   stressStats.active = false;
+
+  BME280::SettingsSnapshot snapshot;
+  if (!device.getSettings(snapshot).ok() || !snapshot.initialized) {
+    return;
+  }
+
+  if (snapshot.measurementReady) {
+    BME280::Measurement discarded;
+    (void)device.getMeasurement(discarded);
+    return;
+  }
+
+  if (snapshot.measurementRequested) {
+    const BME280::Mode restoreMode = snapshot.mode;
+    BME280::Status st = device.setMode(BME280::Mode::SLEEP);
+    if (st.ok() && restoreMode != BME280::Mode::SLEEP) {
+      (void)device.setMode(restoreMode);
+    }
+  }
 }
 
 BME280::Status scheduleMeasurement() {
@@ -1140,6 +1226,13 @@ BME280::Status scheduleMeasurement() {
       Serial.printf("Measurement requested at %lu ms\n",
                     static_cast<unsigned long>(pendingStartMs));
     }
+  } else if (st.code == BME280::Err::BUSY && driverMeasurementPending()) {
+    BME280::SettingsSnapshot snapshot;
+    (void)device.getSettings(snapshot);
+    pendingRead = true;
+    pendingStartMs = snapshot.measurementStartMs;
+    st = BME280::Status::Error(BME280::Err::IN_PROGRESS,
+                               "Measurement already in progress");
   }
   return st;
 }
@@ -1644,6 +1737,11 @@ void processCommand(const String& cmdLine) {
     }
 
     cancelPending();
+    const BME280::Status st = ensureForcedMeasurementMode();
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
     stressRemaining = count;
     resetStressStats(count);
     LOGI("Starting stress test: %d cycles", count);
@@ -1689,7 +1787,7 @@ void loop() {
 
   if (stressStats.active && stressRemaining > 0 && !pendingRead) {
     const BME280::Status st = scheduleMeasurement();
-    if (st.code != BME280::Err::IN_PROGRESS && st.code != BME280::Err::BUSY) {
+    if (st.code != BME280::Err::IN_PROGRESS) {
       noteStressError(st);
       stressStats.attempts++;
       stressRemaining--;

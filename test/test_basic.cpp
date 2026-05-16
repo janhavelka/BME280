@@ -750,6 +750,36 @@ void test_forced_measurement_request_while_busy_tracks_completion() {
   TEST_ASSERT_TRUE(st.ok());
 }
 
+void test_set_mode_sleep_cancels_pending_measurement_request() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::FORCED;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(st.code));
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.measurementRequested);
+  TEST_ASSERT_FALSE(snap.measurementReady);
+
+  st = dev.setMode(Mode::SLEEP);
+  TEST_ASSERT_TRUE(st.ok());
+
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_FALSE(snap.measurementRequested);
+  TEST_ASSERT_FALSE(snap.measurementReady);
+
+  st = dev.setMode(Mode::FORCED);
+  TEST_ASSERT_TRUE(st.ok());
+  st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(st.code));
+}
+
 void test_raw_and_compensated_samples_remain_available_after_measurement_read() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -845,6 +875,7 @@ int main() {
   RUN_TEST(test_forced_measurement_timing_wraparound_reaches_ready);
   RUN_TEST(test_normal_mode_request_waits_for_fresh_cycle);
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
+  RUN_TEST(test_set_mode_sleep_cancels_pending_measurement_request);
   RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
   RUN_TEST(test_begin_without_now_ms_uses_millis_fallback);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);
