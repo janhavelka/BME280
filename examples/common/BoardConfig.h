@@ -13,6 +13,12 @@
 
 #include <stdint.h>
 
+#if defined(BME280_EXAMPLE_PLATFORM_IDF)
+#include "examples/common/IdfArduinoCompat.h"
+#else
+#include <Arduino.h>
+#endif
+
 #include "examples/common/I2cTransport.h"
 
 namespace board {
@@ -44,6 +50,15 @@ static constexpr int LED = 48;
 /// @brief Initialize I2C for examples using the default config.
 inline bool initI2c() {
   return transport::initWire(I2C_SDA, I2C_SCL, I2C_FREQ_HZ, I2C_TIMEOUT_MS);
+}
+
+/// @brief Initialize Serial for examples.
+inline void initSerial(uint32_t baud = 115200) {
+  Serial.begin(baud);
+  const uint32_t startMs = millis();
+  while (!Serial && (millis() - startMs) < 3000U) {
+    delay(10);
+  }
 }
 
 }  // namespace board

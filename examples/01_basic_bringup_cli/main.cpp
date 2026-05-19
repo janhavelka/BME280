@@ -2,7 +2,11 @@
 /// @brief Basic bringup example for BME280
 /// @note This is an EXAMPLE, not part of the library
 
+#if defined(BME280_EXAMPLE_PLATFORM_IDF)
+#include "examples/common/IdfArduinoCompat.h"
+#else
 #include <Arduino.h>
+#endif
 #include <limits>
 #include "examples/common/CliStyle.h"
 #include "examples/common/Log.h"
@@ -87,7 +91,7 @@ BME280::Config makeDefaultConfig() {
   BME280::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
+  cfg.i2cUser = transport::configUser();
   cfg.i2cAddress = 0x76;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.nowMs = exampleNowMs;

@@ -9,12 +9,15 @@ Last updated: 2026-05-19
   - Arduino builds use `millis()` when `Config::nowMs` is not supplied.
   - ESP-IDF builds use `esp_timer_get_time() / 1000` when `Config::nowMs` is not supplied.
 - Root `CMakeLists.txt` registers the core as an ESP-IDF component with C++17 enabled.
+- Root `idf_component.yml` advertises the component for ESP-IDF targets.
 - `examples/idf/basic` provides:
   - an ESP-IDF project CMake file;
   - a `main` component;
   - an `i2c_master` transport adapter;
   - explicit bus/device ownership in the example;
-  - `Config::nowMs`, `i2cWrite`, and `i2cWriteRead` wiring.
+  - `Config::nowMs`, `i2cWrite`, and `i2cWriteRead` wiring;
+  - a shared CLI entrypoint that compiles the Arduino bring-up command source
+    through `examples/common/IdfArduinoCompat.h`.
 
 ## Core Boundary
 
@@ -30,6 +33,10 @@ The IDF example maps `esp_err_t` values to library `Status` codes:
 - `ESP_ERR_INVALID_RESPONSE` -> `Err::I2C_ERROR`
 - other ESP-IDF failures -> `Err::I2C_BUS`
 
+The compatibility layer is example-local. It provides the small `Serial`,
+`String`, and timing surface needed by the existing CLI and does not enter the
+driver core or public headers.
+
 ## Validation
 
 Run these checks from the repository root:
@@ -37,6 +44,7 @@ Run these checks from the repository root:
 ```bash
 python tools/check_core_timing_guard.py
 python tools/check_cli_contract.py
+python tools/check_idf_example_contract.py
 pio test -e native
 pio run -e esp32s3dev
 pio run -e esp32s2dev

@@ -12,25 +12,26 @@ Official ESP-IDF references:
 ## Current State
 
 - Public API is in `include/BME280/`; implementation is in `src/BME280.cpp`.
-- `library.json` and `platformio.ini` remain Arduino/PlatformIO package files.
+- `library.json` advertises Arduino and ESP-IDF framework support; `platformio.ini` remains the Arduino/PlatformIO regression-build file.
 - Root `CMakeLists.txt` registers the core as an ESP-IDF component.
+- Root `idf_component.yml` provides ESP-IDF component metadata.
 - The driver already uses injected I2C callbacks from `Config`; library code does not call `Wire` directly.
 - `begin()` probes the configured address by reading the chip ID and configures the device from `Config`.
 - Supported device addresses are `0x76` and `0x77`; expected chip ID is `0x60`.
 - The driver supports sleep, forced, and normal mode, oversampling, filter, standby, raw and compensated pressure/temperature/humidity, soft reset, register access, and health tracking.
 - `tick(uint32_t nowMs)` drives non-blocking measurement and reset wait paths.
-- Native tests and examples are still organized around the Arduino project layout.
+- Native tests and Arduino examples remain organized around the PlatformIO layout; `examples/idf/basic` is a native ESP-IDF project.
 
 ## Arduino Dependencies
 
 - `src/BME280.cpp` no longer includes `<Arduino.h>`.
 - `src/PlatformTime.h` is the private fallback timing shim for Arduino, ESP-IDF, and native tests.
 - `include/BME280/Config.h` exposes `NowMsFn nowMs`, `void* timeUser`, I2C callbacks, and timeout/configuration fields that are already usable from ESP-IDF.
-- `examples/01_basic_bringup_cli/main.cpp` and all `examples/common/*.h`
-  helpers are Arduino example glue. They use `Wire`, `Serial`, `String`, GPIO
-  helpers, and Arduino timing.
+- `examples/01_basic_bringup_cli/main.cpp` is shared by Arduino and the ESP-IDF example.
+- Arduino builds use the normal `Wire`, `Serial`, `String`, GPIO helpers, and Arduino timing from `examples/common/`.
+- ESP-IDF builds define `BME280_EXAMPLE_PLATFORM_IDF` and use example-local native glue for console, timing, scanner, and `i2c_master` transport.
 - `platformio.ini` builds Arduino examples and native tests. It is not an IDF project file.
-- `library.json` declares only the Arduino framework and must remain the PlatformIO package manifest.
+- `library.json` declares Arduino and ESP-IDF framework compatibility while remaining the PlatformIO package manifest.
 - `include/BME280/Version.h` is generated from `library.json`; do not edit it by hand.
 
 ## Portability Status
@@ -40,7 +41,7 @@ Implemented:
 1. The core driver compiles through a private platform time shim instead of direct Arduino includes.
 2. ESP-IDF fallback timing uses `esp_timer_get_time() / 1000`.
 3. Root `CMakeLists.txt` provides `idf_component_register`.
-4. `examples/idf/basic` provides an ESP-IDF v6 `i2c_master` adapter.
+4. `examples/idf/basic` provides an ESP-IDF v6 `i2c_master` adapter and the same user-visible CLI workflow as the Arduino bring-up example.
 5. Arduino examples remain separate and are not part of the IDF component target.
 6. The IDF example maps `esp_err_t` values to library `Status` codes.
 
@@ -75,8 +76,8 @@ Still application-owned:
 ## Dual Arduino and ESP-IDF Architecture
 
 - Keep the BME280 core as a framework-neutral C++17 component.
-- Keep Arduino-only adapters in `examples/common/`; they are not part of the library.
-- Add IDF-only adapters under an IDF example or an optional `extras/idf/` style directory.
+- Keep framework glue in `examples/common/` and `examples/idf/basic/`; it is not part of the library core.
+- Keep IDF-only adapters under the IDF example or an optional `extras/idf/` style directory.
 - The library must never own the ESP-IDF I2C bus, pins, clock speed, pullups, or interrupt routing.
 - The application owns bus lifetime:
   - create an `i2c_master_bus_handle_t`;
@@ -164,12 +165,13 @@ If an IDF adapter is built into an example component, that example should declar
 ```cmake
 idf_component_register(
   SRCS "main.cpp" "IdfI2cTransport.cpp"
-  INCLUDE_DIRS "."
-  REQUIRES BME280 esp_driver_i2c esp_timer
+  INCLUDE_DIRS "." "../../../.."
+  REQUIRES BME280 esp_driver_i2c esp_driver_gpio esp_timer esp_rom freertos vfs
 )
 ```
 
-Do not compile `examples/common/*.h` into ESP-IDF targets.
+Only include the example-common headers needed by the shared CLI. They remain
+example-local glue and are not part of the BME280 component API.
 
 ## IDF and Arduino Example Plan
 
@@ -180,19 +182,20 @@ Arduino examples:
 
 ESP-IDF examples:
 
-- Add `examples/idf/basic` with a normal ESP-IDF `main` component.
+- Use `examples/idf/basic` with a normal ESP-IDF `main` component.
 - Configure SDA, SCL, pullups, and bus frequency in the example only.
 - Use `i2c_new_master_bus()`, `i2c_master_bus_add_device()`, and the callback adapter.
 - Build a `BME280::Config`, set the address, callbacks, timeout, and `nowMs`.
-- Call `begin(config)`, then request forced measurements or run normal mode.
-- Call `tick()` periodically from the task loop.
-- Print results with ESP-IDF logging from the example, not from the library.
+- Compile the shared CLI source through `BME280_EXAMPLE_PLATFORM_IDF` and `IdfArduinoCompat.h`.
+- Call `tick()` periodically from the `app_main()` task loop.
+- Print through the example-local console shim; the library core still does not log.
 
 ## Test and Validation Plan
 
 - Compile the existing Arduino PlatformIO environments as regression checks
   only. Arduino-ESP32 builds do not prove pure ESP-IDF v6.0.1 compatibility.
 - Compile native tests to preserve framework-neutral behavior.
+- Run `python tools/check_idf_example_contract.py` to verify the IDF example stays tied to the shared CLI and native IDF transport.
 - Add an ESP-IDF example build for ESP32-S2 and ESP32-S3.
 - Hardware smoke test both valid addresses, `0x76` and `0x77`.
 - Verify `begin()` fails cleanly when the bus is absent, the address is wrong, or chip ID is not `0x60`.
@@ -217,10 +220,10 @@ ESP-IDF examples:
 1. Add a private timing shim and remove direct `<Arduino.h>` use from `src/BME280.cpp`. Done.
 2. Add a minimal component `CMakeLists.txt` for the core library. Done.
 3. Add an IDF I2C adapter using `<driver/i2c_master.h>` outside the core driver. Done.
-4. Add `examples/idf/basic` with bus setup, adapter callbacks, and a polling task. Done.
+4. Add `examples/idf/basic` with bus setup, adapter callbacks, and the shared full CLI workflow. Done.
    Include top-level and `main` CMake files, component path wiring, and
    `extern "C" void app_main(void)`. Done.
 5. Build with ESP-IDF v6.0.1 for ESP32-S2 and ESP32-S3. Pending local ESP-IDF environment.
-6. Run Arduino and native builds to confirm existing users are unaffected. Pending local validation.
+6. Run Arduino and native builds to confirm existing users are unaffected. Done with PlatformIO native, ESP32-S3, and ESP32-S2 builds.
 7. Run hardware tests for probe, forced mode, normal mode, reset, compensation, and fault injection. Pending hardware.
 8. Update README and changelog for the implemented port. Done.

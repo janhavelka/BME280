@@ -2,9 +2,12 @@
 
 #include <limits>
 
+#include <driver/gpio.h>
 #include <esp_err.h>
 
 namespace {
+
+IdfI2cContext gContext;
 
 int timeoutToIdf(uint32_t timeoutMs) {
   constexpr uint32_t MAX_TIMEOUT_MS =
@@ -53,6 +56,58 @@ BME280::Status validate(uint8_t addr, const void* user) {
 
 }  // namespace
 
+IdfI2cContext& bme280IdfI2cContext() {
+  return gContext;
+}
+
+bool bme280IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
+                      uint8_t address) {
+  (void)timeoutMs;
+  bme280IdfDeinitI2c();
+
+  i2c_master_bus_config_t busConfig = {};
+  busConfig.i2c_port = I2C_NUM_0;
+  busConfig.sda_io_num = static_cast<gpio_num_t>(sda);
+  busConfig.scl_io_num = static_cast<gpio_num_t>(scl);
+  busConfig.clk_source = I2C_CLK_SRC_DEFAULT;
+  busConfig.glitch_ignore_cnt = 7;
+  busConfig.flags.enable_internal_pullup = true;
+
+  esp_err_t err = i2c_new_master_bus(&busConfig, &gContext.bus);
+  if (err != ESP_OK) {
+    gContext.lastError = err;
+    return false;
+  }
+
+  i2c_device_config_t devConfig = {};
+  devConfig.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+  devConfig.device_address = address;
+  devConfig.scl_speed_hz = freqHz;
+
+  err = i2c_master_bus_add_device(gContext.bus, &devConfig, &gContext.device);
+  if (err != ESP_OK) {
+    (void)i2c_del_master_bus(gContext.bus);
+    gContext.bus = nullptr;
+    gContext.lastError = err;
+    return false;
+  }
+
+  gContext.address = address;
+  gContext.lastError = ESP_OK;
+  return true;
+}
+
+void bme280IdfDeinitI2c() {
+  if (gContext.device != nullptr) {
+    (void)i2c_master_bus_rm_device(gContext.device);
+    gContext.device = nullptr;
+  }
+  if (gContext.bus != nullptr) {
+    (void)i2c_del_master_bus(gContext.bus);
+    gContext.bus = nullptr;
+  }
+}
+
 BME280::Status idfI2cWrite(uint8_t addr, const uint8_t* data, size_t len,
                            uint32_t timeoutMs, void* user) {
   BME280::Status st = validate(addr, user);
@@ -65,9 +120,9 @@ BME280::Status idfI2cWrite(uint8_t addr, const uint8_t* data, size_t len,
   }
 
   IdfI2cContext* ctx = static_cast<IdfI2cContext*>(user);
-  return mapEspError(i2c_master_transmit(ctx->device, data, static_cast<size_t>(len),
-                                         timeoutToIdf(timeoutMs)),
-                     "IDF I2C write failed");
+  ctx->lastError = i2c_master_transmit(ctx->device, data, static_cast<size_t>(len),
+                                       timeoutToIdf(timeoutMs));
+  return mapEspError(ctx->lastError, "IDF I2C write failed");
 }
 
 BME280::Status idfI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
@@ -87,14 +142,14 @@ BME280::Status idfI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen
   IdfI2cContext* ctx = static_cast<IdfI2cContext*>(user);
   const int timeout = timeoutToIdf(timeoutMs);
   if (txLen == 0U) {
-    return mapEspError(i2c_master_receive(ctx->device, rxData, rxLen, timeout),
-                       "IDF I2C read failed");
+    ctx->lastError = i2c_master_receive(ctx->device, rxData, rxLen, timeout);
+    return mapEspError(ctx->lastError, "IDF I2C read failed");
   }
   if (rxLen == 0U) {
-    return mapEspError(i2c_master_transmit(ctx->device, txData, txLen, timeout),
-                       "IDF I2C write phase failed");
+    ctx->lastError = i2c_master_transmit(ctx->device, txData, txLen, timeout);
+    return mapEspError(ctx->lastError, "IDF I2C write phase failed");
   }
-  return mapEspError(i2c_master_transmit_receive(ctx->device, txData, txLen, rxData,
-                                                 rxLen, timeout),
-                     "IDF I2C write-read failed");
+  ctx->lastError = i2c_master_transmit_receive(ctx->device, txData, txLen, rxData,
+                                               rxLen, timeout);
+  return mapEspError(ctx->lastError, "IDF I2C write-read failed");
 }

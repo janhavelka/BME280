@@ -11,6 +11,8 @@
     "i2c",
     "esp32",
     "arduino",
+    "espidf",
+    "esp-idf",
     "platformio"
   ],
   "authors": [
@@ -33,7 +35,8 @@
   "license": "MIT",
   "homepage": "https://www.thymos.cz",
   "frameworks": [
-    "arduino"
+    "arduino",
+    "espidf"
   ],
   "platforms": [
     "espressif32"

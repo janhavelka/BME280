@@ -36,8 +36,11 @@ Arduino `Wire`/`Serial`/`delay()`. Under ESP-IDF the private fallback timebase
 uses `esp_timer_get_time()`, but IDF applications should still inject
 `Config::nowMs` so health timestamps and scheduler timing share the same clock.
 
-See `examples/idf/basic` for an ESP-IDF v6-style `i2c_master` adapter and a
-minimal polling task.
+See `examples/idf/basic` for a native ESP-IDF v6-style `i2c_master` adapter.
+The ESP-IDF example compiles the same user-facing CLI command source as the
+Arduino example through example-local compatibility glue, so help text,
+diagnostics, register access, measurement workflows, stress tests, and recovery
+commands stay in parity.
 
 ## Quick Start
 
@@ -55,7 +58,7 @@ void setup() {
   BME280::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
+  cfg.i2cUser = transport::configUser();
   cfg.i2cAddress = 0x76;
   
   auto status = device.begin(cfg);
@@ -183,7 +186,7 @@ Invalid combinations are rejected in `begin()` and typed setters before touching
 ## Examples
 
 - `01_basic_bringup_cli/` - Interactive CLI for testing
-- `idf/basic/` - ESP-IDF example using the new `i2c_master` driver
+- `idf/basic/` - ESP-IDF example using the new `i2c_master` driver and the same user-facing CLI workflow as Arduino
 - CLI register diagnostics: `reg <addr>` and `wreg <addr> <val>` provide tracked raw register access for bring-up and service work. Raw writes bypass the typed config helpers; use `recover()` or `begin()` to restore cached settings after manual register edits.
 
 ### Example Helpers (`examples/common/`)
@@ -204,6 +207,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 | `HealthView.h` | Compact health status display |
 | `HealthDiag.h` | Verbose health diagnostics with color, snapshots, and `HealthMonitor` |
 | `TransportAdapter.h` | Transport function pointer adapter |
+| `IdfArduinoCompat.h` | ESP-IDF-example-only console/timing/String compatibility layer for sharing the CLI source |
 
 ## Behavioral Contracts
 
@@ -220,8 +224,13 @@ Not part of the library. These simulate project-level glue and keep examples sel
 pio test -e native
 python tools/check_cli_contract.py
 python tools/check_core_timing_guard.py
+python tools/check_idf_example_contract.py
 pio run -e esp32s3dev
 pio run -e esp32s2dev
+idf.py -C examples/idf/basic set-target esp32s3
+idf.py -C examples/idf/basic build
+idf.py -C examples/idf/basic set-target esp32s2
+idf.py -C examples/idf/basic build
 ```
 
 ## Documentation
