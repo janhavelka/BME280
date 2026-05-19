@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ESP-IDF component metadata for building the framework-neutral core with `idf_component_register`.
+- ESP-IDF basic example with an application-owned `i2c_master` bus/device and transport callbacks.
+- Private platform time shim that provides Arduino and ESP-IDF fallback clocks without including Arduino from the driver implementation.
+- `docs/IDF_PORT_IMPLEMENTATION.md` with the implemented port structure, validation notes, and remaining hardware checks.
+
+### Changed
+- Core timing guard now allows Arduino timing only inside the private platform shim.
+- README and ESP-IDF port documentation now describe the implemented component/example flow.
+
 ## [1.5.0] - 2026-05-14
 
 ### Added

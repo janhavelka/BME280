@@ -5,7 +5,8 @@
 
 #include "BME280/BME280.h"
 
-#include <Arduino.h>
+#include "PlatformTime.h"
+
 #include <cstring>
 #include <limits>
 
@@ -1281,7 +1282,7 @@ uint32_t BME280::_nowMs() const {
   if (_config.nowMs != nullptr) {
     return _config.nowMs(_config.timeUser);
   }
-  return millis();
+  return platform::nowMs();
 }
 
 }  // namespace BME280

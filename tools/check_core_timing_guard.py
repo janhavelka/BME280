@@ -23,10 +23,10 @@ LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
 
 ALLOWED_CALL_COUNTS: Dict[str, Dict[str, int]] = {
-    "src/BME280.cpp": {"millis": 1},
+    "src/PlatformTime.h": {"millis": 1},
 }
 ALLOWED_INCLUDE_COUNTS: Dict[str, int] = {
-    "src/BME280.cpp": 1,
+    "src/PlatformTime.h": 1,
 }
 
 
@@ -121,4 +121,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

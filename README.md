@@ -1,10 +1,11 @@
 # BME280 Driver Library
 
-Production-grade BME280 I2C driver for ESP32 (Arduino/PlatformIO).
+Production-grade BME280 I2C driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
 
 ## Features
 
 - **Injected I2C transport** - no Wire dependency in library code
+- **Framework-neutral core** - Arduino and ESP-IDF integration live behind callbacks/adapters
 - **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
 - **Deterministic behavior** - no unbounded loops, no heap allocations
 - **Managed synchronous lifecycle** - blocking I2C ops with tick-based polling for waits
@@ -23,6 +24,20 @@ lib_deps =
 ### Manual
 
 Copy `include/BME280/` and `src/` to your project.
+
+### ESP-IDF Component
+
+The repository root can be used as an ESP-IDF component. Add it to an IDF
+project through `EXTRA_COMPONENT_DIRS` or your component manager workflow and
+provide application-owned I2C callbacks through `BME280::Config`.
+
+The core component does not configure pins, create I2C buses, log, or call
+Arduino `Wire`/`Serial`/`delay()`. Under ESP-IDF the private fallback timebase
+uses `esp_timer_get_time()`, but IDF applications should still inject
+`Config::nowMs` so health timestamps and scheduler timing share the same clock.
+
+See `examples/idf/basic` for an ESP-IDF v6-style `i2c_master` adapter and a
+minimal polling task.
 
 ## Quick Start
 
@@ -168,6 +183,7 @@ Invalid combinations are rejected in `begin()` and typed setters before touching
 ## Examples
 
 - `01_basic_bringup_cli/` - Interactive CLI for testing
+- `idf/basic/` - ESP-IDF example using the new `i2c_master` driver
 - CLI register diagnostics: `reg <addr>` and `wreg <addr> <val>` provide tracked raw register access for bring-up and service work. Raw writes bypass the typed config helpers; use `recover()` or `begin()` to restore cached settings after manual register edits.
 
 ### Example Helpers (`examples/common/`)
@@ -212,6 +228,7 @@ pio run -e esp32s2dev
 
 - `CHANGELOG.md` - full release history
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
+- `docs/IDF_PORT_IMPLEMENTATION.md` - implemented IDF component/example notes
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
