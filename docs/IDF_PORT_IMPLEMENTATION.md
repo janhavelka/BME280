@@ -5,9 +5,7 @@ Last updated: 2026-05-19
 ## Implemented
 
 - The library core no longer includes `<Arduino.h>` from `src/BME280.cpp`.
-- `src/PlatformTime.h` is the only private framework fallback shim:
-  - Arduino builds use `millis()` when `Config::nowMs` is not supplied.
-  - ESP-IDF builds use `esp_timer_get_time() / 1000` when `Config::nowMs` is not supplied.
+- `src/PlatformTime.h` is framework-neutral and does not include Arduino or ESP-IDF headers.
 - Root `CMakeLists.txt` registers the core as an ESP-IDF component with C++17 enabled.
 - Root `idf_component.yml` advertises the component for ESP-IDF targets.
 - `examples/idf/basic` provides:
@@ -16,8 +14,7 @@ Last updated: 2026-05-19
   - an `i2c_master` transport adapter;
   - explicit bus/device ownership in the example;
   - `Config::nowMs`, `i2cWrite`, and `i2cWriteRead` wiring;
-  - a shared CLI entrypoint that compiles the Arduino bring-up command source
-    through `examples/common/IdfArduinoCompat.h`.
+  - a native `app_main` CLI with fixed command buffers and Arduino CLI command parity.
 
 ## Core Boundary
 
@@ -33,9 +30,10 @@ The IDF example maps `esp_err_t` values to library `Status` codes:
 - `ESP_ERR_INVALID_RESPONSE` -> `Err::I2C_ERROR`
 - other ESP-IDF failures -> `Err::I2C_BUS`
 
-The compatibility layer is example-local. It provides the small `Serial`,
-`String`, and timing surface needed by the existing CLI and does not enter the
-driver core or public headers.
+The ESP-IDF example does not include Arduino source or compatibility facades.
+`tools/check_idf_example_contract.py` rejects `Arduino.h`, `Wire.h`, `String`,
+`Serial`, `TwoWire`, `ArduinoCompat`, `IdfArduinoCompat`, and legacy
+`driver/i2c.h` usage in the IDF example.
 
 ## Validation
 

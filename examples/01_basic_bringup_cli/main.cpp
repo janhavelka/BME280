@@ -2,11 +2,7 @@
 /// @brief Basic bringup example for BME280
 /// @note This is an EXAMPLE, not part of the library
 
-#if defined(BME280_EXAMPLE_PLATFORM_IDF)
-#include "examples/common/IdfArduinoCompat.h"
-#else
 #include <Arduino.h>
-#endif
 #include <limits>
 #include "examples/common/CliStyle.h"
 #include "examples/common/Log.h"

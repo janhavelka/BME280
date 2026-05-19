@@ -7,11 +7,7 @@
 
 #pragma once
 
-#if defined(BME280_EXAMPLE_PLATFORM_IDF)
-#include "examples/common/IdfArduinoCompat.h"
-#else
 #include <Arduino.h>
-#endif
 
 #include "examples/common/Log.h"
 

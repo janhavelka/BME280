@@ -31,16 +31,13 @@ The repository root can be used as an ESP-IDF component. Add it to an IDF
 project through `EXTRA_COMPONENT_DIRS` or your component manager workflow and
 provide application-owned I2C callbacks through `BME280::Config`.
 
-The core component does not configure pins, create I2C buses, log, or call
-Arduino `Wire`/`Serial`/`delay()`. Under ESP-IDF the private fallback timebase
-uses `esp_timer_get_time()`, but IDF applications should still inject
-`Config::nowMs` so health timestamps and scheduler timing share the same clock.
+The core component does not configure pins, create I2C buses, log, or include
+Arduino or ESP-IDF framework headers. Applications should inject `Config::nowMs`
+so health timestamps and scheduler timing share the application clock.
 
-See `examples/idf/basic` for a native ESP-IDF v6-style `i2c_master` adapter.
-The ESP-IDF example compiles the same user-facing CLI command source as the
-Arduino example through example-local compatibility glue, so help text,
-diagnostics, register access, measurement workflows, stress tests, and recovery
-commands stay in parity.
+See `examples/idf/basic` for a native ESP-IDF v6-style `i2c_master` adapter and
+`app_main` CLI. The ESP-IDF example preserves the Arduino CLI command contract
+without including Arduino source or compatibility facades.
 
 ## Quick Start
 
@@ -78,8 +75,8 @@ void loop() {
 ```
 
 The example adapter maps Arduino `Wire` failures to specific `I2C_*` status codes and keeps
-bus timeout ownership in `transport::initWire()`. If you do not inject `Config::nowMs`, the
-driver falls back to `millis()` on Arduino/native-test builds.
+bus timeout ownership in `transport::initWire()`. Inject `Config::nowMs` for real timestamps;
+the framework-neutral core fallback is intentionally inert.
 `common/I2cTransport.h` is example-only glue; when manually copying only `include/` and
 `src/`, provide equivalent `Config::i2cWrite` and `Config::i2cWriteRead` callbacks in
 your application.
@@ -186,7 +183,7 @@ Invalid combinations are rejected in `begin()` and typed setters before touching
 ## Examples
 
 - `01_basic_bringup_cli/` - Interactive CLI for testing
-- `idf/basic/` - ESP-IDF example using the new `i2c_master` driver and the same user-facing CLI workflow as Arduino
+- `idf/basic/` - Native ESP-IDF example using `app_main`, `driver/i2c_master.h`, FreeRTOS timing, fixed command buffers, and the same user-facing CLI workflow as Arduino
 - CLI register diagnostics: `reg <addr>` and `wreg <addr> <val>` provide tracked raw register access for bring-up and service work. Raw writes bypass the typed config helpers; use `recover()` or `begin()` to restore cached settings after manual register edits.
 
 ### Example Helpers (`examples/common/`)
@@ -207,7 +204,6 @@ Not part of the library. These simulate project-level glue and keep examples sel
 | `HealthView.h` | Compact health status display |
 | `HealthDiag.h` | Verbose health diagnostics with color, snapshots, and `HealthMonitor` |
 | `TransportAdapter.h` | Transport function pointer adapter |
-| `IdfArduinoCompat.h` | ESP-IDF-example-only console/timing/String compatibility layer for sharing the CLI source |
 
 ## Behavioral Contracts
 

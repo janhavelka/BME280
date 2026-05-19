@@ -11,40 +11,12 @@
 
 #pragma once
 
-#if defined(BME280_EXAMPLE_PLATFORM_IDF)
-#include "IdfI2cTransport.h"
-#else
 #include <Arduino.h>
 #include <Wire.h>
-#endif
 
 #include "BME280/Status.h"
 
 namespace transport {
-
-#if defined(BME280_EXAMPLE_PLATFORM_IDF)
-
-inline BME280::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
-                                uint32_t timeoutMs, void* user) {
-  return idfI2cWrite(addr, data, len, timeoutMs, user);
-}
-
-inline BME280::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
-                                    uint8_t* rx, size_t rxLen, uint32_t timeoutMs,
-                                    void* user) {
-  return idfI2cWriteRead(addr, tx, txLen, rx, rxLen, timeoutMs, user);
-}
-
-inline bool initWire(int sda, int scl, uint32_t freq = 400000,
-                     uint16_t timeoutMs = 50) {
-  return bme280IdfInitI2c(sda, scl, freq, timeoutMs, 0x76);
-}
-
-inline void* configUser() {
-  return &bme280IdfI2cContext();
-}
-
-#else
 
 inline BME280::Status mapWireResult(uint8_t result, const char* context) {
   switch (result) {
@@ -209,7 +181,5 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
 inline void* configUser() {
   return &Wire;
 }
-
-#endif
 
 }  // namespace transport
