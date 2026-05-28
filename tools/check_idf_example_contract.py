@@ -24,6 +24,11 @@ FORBIDDEN_IDF_TOKENS = [
     "loop();",
 ]
 
+FORBIDDEN_IDF_PATTERNS = {
+    "millis() shim or call": re.compile(r"\bmillis\s*\("),
+    "Arduino delay() call": re.compile(r"\bdelay\s*\("),
+}
+
 REQUIRED_IDF_TOKENS = [
     'extern "C" void app_main(void)',
     "driver/i2c_master.h",
@@ -116,6 +121,10 @@ def main() -> int:
     for token in FORBIDDEN_IDF_TOKENS:
         if token in combined_idf:
             fail(f"IDF example uses forbidden Arduino/compat token: {token}")
+
+    for label, pattern in FORBIDDEN_IDF_PATTERNS.items():
+        if pattern.search(combined_idf):
+            fail(f"IDF example uses forbidden Arduino-style timing token: {label}")
 
     if "driver/i2c.h" in combined_idf:
         fail("IDF example must use driver/i2c_master.h, not legacy driver/i2c.h")

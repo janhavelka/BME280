@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Core timing guard now rejects Arduino and ESP-IDF framework headers in core/public headers and `src/`.
 - README and ESP-IDF port documentation now describe the native-IDF component/example flow and full Arduino/ESP-IDF CLI parity.
 - `library.json` now advertises both Arduino and ESP-IDF framework support.
+- Native ESP-IDF example timing now uses an explicitly named `currentMs()`
+  helper instead of an Arduino-style `millis()` shim; the IDF example contract
+  rejects future `millis()` / `delay()` timing regressions.
 
 ### Removed
 - Removed the stale ESP-IDF Arduino compatibility shim and documentation that described compiling Arduino CLI source into IDF examples.

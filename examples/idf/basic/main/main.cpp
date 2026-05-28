@@ -112,7 +112,7 @@ uint32_t nowMs(void*) {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000LL);
 }
 
-uint32_t millis() {
+uint32_t currentMs() {
   return nowMs(nullptr);
 }
 
@@ -344,7 +344,7 @@ void printCompactHealth() {
 }
 
 void printDriverHealth() {
-  const uint32_t now = millis();
+  const uint32_t now = currentMs();
   const uint32_t totalOk = device.totalSuccess();
   const uint32_t totalFail = device.totalFailures();
   const uint32_t total = totalOk + totalFail;
@@ -640,7 +640,7 @@ BME280::Status scheduleMeasurement() {
   BME280::Status st = device.requestMeasurement();
   if (st.code == BME280::Err::IN_PROGRESS) {
     gPendingRead = true;
-    gPendingStartMs = millis();
+    gPendingStartMs = currentMs();
     if (gVerbose && !gStress.active) {
       LOGI("Measurement requested at %lu ms", static_cast<unsigned long>(gPendingStartMs));
     }
@@ -659,9 +659,9 @@ BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t tim
   if (st.code != BME280::Err::IN_PROGRESS) {
     return st;
   }
-  const uint32_t start = millis();
+  const uint32_t start = currentMs();
   while (!device.measurementReady()) {
-    const uint32_t now = millis();
+    const uint32_t now = currentMs();
     device.tick(now);
     if (static_cast<uint32_t>(now - start) > timeoutMs) {
       return BME280::Status::Error(BME280::Err::TIMEOUT, "Measurement wait timeout");
@@ -674,7 +674,7 @@ BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t tim
 void resetStressStats(int target) {
   gStress = StressStats{};
   gStress.active = true;
-  gStress.startMs = millis();
+  gStress.startMs = currentMs();
   gStress.target = target;
 }
 
@@ -711,7 +711,7 @@ void updateStressStats(const BME280::Measurement& sample) {
 }
 
 void finishStressStats() {
-  const uint32_t elapsed = millis() - gStress.startMs;
+  const uint32_t elapsed = currentMs() - gStress.startMs;
   const float successRate =
       (gStress.attempts > 0) ? (100.0f * static_cast<float>(gStress.success) / gStress.attempts) : 0.0f;
   std::printf("=== Stress Summary ===\n");
@@ -1169,7 +1169,7 @@ void inputTask(void* arg) {
 }
 
 void tickApp() {
-  device.tick(millis());
+  device.tick(currentMs());
   if (gStress.active && gStressRemaining > 0 && !gPendingRead) {
     const BME280::Status st = scheduleMeasurement();
     if (st.code != BME280::Err::IN_PROGRESS) {
