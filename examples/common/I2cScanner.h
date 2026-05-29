@@ -101,4 +101,8 @@ inline void scan(TwoWire& wire, uint16_t timeoutMs = 50) {
   }
 }
 
+inline void scanDefault(uint16_t timeoutMs = 50) {
+  scan(Wire, timeoutMs);
+}
+
 }  // namespace i2c_scanner

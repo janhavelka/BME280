@@ -377,7 +377,7 @@ void test_begin_forced_mode_keeps_hardware_sleep_until_requested() {
                           bus.reg[cmd::REG_CTRL_MEAS] & cmd::MASK_CTRL_MEAS_MODE);
 }
 
-void test_now_ms_fallback_uses_millis_when_callback_missing() {
+void test_missing_now_ms_fallback_is_framework_neutral() {
   FakeBus bus;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
@@ -388,10 +388,10 @@ void test_now_ms_fallback_uses_millis_when_callback_missing() {
   setMillis(4321);
   Status st = dev.recover();
   TEST_ASSERT_TRUE(st.ok());
-  TEST_ASSERT_EQUAL_UINT32(4321u, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
 }
 
-void test_begin_without_now_ms_uses_millis_fallback() {
+void test_begin_without_now_ms_uses_framework_neutral_fallback() {
   FakeBus bus;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
@@ -403,7 +403,7 @@ void test_begin_without_now_ms_uses_millis_fallback() {
   setMillis(4242u);
   st = dev.setMode(Mode::NORMAL);
   TEST_ASSERT_TRUE(st.ok());
-  TEST_ASSERT_EQUAL_UINT32(4242u, dev.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
 }
 
 void test_probe_failure_does_not_update_health() {
@@ -859,7 +859,7 @@ int main() {
   RUN_TEST(test_begin_waits_for_nvm_update_before_reading_calibration);
   RUN_TEST(test_begin_times_out_when_nvm_update_stuck);
   RUN_TEST(test_begin_forced_mode_keeps_hardware_sleep_until_requested);
-  RUN_TEST(test_now_ms_fallback_uses_millis_when_callback_missing);
+  RUN_TEST(test_missing_now_ms_fallback_is_framework_neutral);
   RUN_TEST(test_probe_failure_does_not_update_health);
   RUN_TEST(test_recover_failure_updates_health_once);
   RUN_TEST(test_recover_success_returns_ready);
@@ -877,7 +877,7 @@ int main() {
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
   RUN_TEST(test_set_mode_sleep_cancels_pending_measurement_request);
   RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
-  RUN_TEST(test_begin_without_now_ms_uses_millis_fallback);
+  RUN_TEST(test_begin_without_now_ms_uses_framework_neutral_fallback);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);
   return UNITY_END();
 }

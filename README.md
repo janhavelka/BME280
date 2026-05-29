@@ -1,10 +1,11 @@
 # BME280 Driver Library
 
-Production-grade BME280 I2C driver for ESP32 (Arduino/PlatformIO).
+Production-grade BME280 I2C driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
 
 ## Features
 
 - **Injected I2C transport** - no Wire dependency in library code
+- **Framework-neutral core** - Arduino and ESP-IDF integration live behind callbacks/adapters
 - **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
 - **Deterministic behavior** - no unbounded loops, no heap allocations
 - **Managed synchronous lifecycle** - blocking I2C ops with tick-based polling for waits
@@ -24,6 +25,20 @@ lib_deps =
 
 Copy `include/BME280/` and `src/` to your project.
 
+### ESP-IDF Component
+
+The repository root can be used as an ESP-IDF component. Add it to an IDF
+project through `EXTRA_COMPONENT_DIRS` or your component manager workflow and
+provide application-owned I2C callbacks through `BME280::Config`.
+
+The core component does not configure pins, create I2C buses, log, or include
+Arduino or ESP-IDF framework headers. Applications should inject `Config::nowMs`
+so health timestamps and scheduler timing share the application clock.
+
+See `examples/idf/basic` for a native ESP-IDF v6-style `i2c_master` adapter and
+`app_main` CLI. The ESP-IDF example preserves the Arduino CLI command contract
+without including Arduino source or compatibility facades.
+
 ## Quick Start
 
 ```cpp
@@ -40,7 +55,7 @@ void setup() {
   BME280::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
+  cfg.i2cUser = transport::configUser();
   cfg.i2cAddress = 0x76;
   
   auto status = device.begin(cfg);
@@ -60,8 +75,8 @@ void loop() {
 ```
 
 The example adapter maps Arduino `Wire` failures to specific `I2C_*` status codes and keeps
-bus timeout ownership in `transport::initWire()`. If you do not inject `Config::nowMs`, the
-driver falls back to `millis()` on Arduino/native-test builds.
+bus timeout ownership in `transport::initWire()`. Inject `Config::nowMs` for real timestamps;
+the framework-neutral core fallback is intentionally inert.
 `common/I2cTransport.h` is example-only glue; when manually copying only `include/` and
 `src/`, provide equivalent `Config::i2cWrite` and `Config::i2cWriteRead` callbacks in
 your application.
@@ -168,6 +183,7 @@ Invalid combinations are rejected in `begin()` and typed setters before touching
 ## Examples
 
 - `01_basic_bringup_cli/` - Interactive CLI for testing
+- `idf/basic/` - Native ESP-IDF example using `app_main`, `driver/i2c_master.h`, FreeRTOS timing, fixed command buffers, and the same user-facing CLI workflow as Arduino
 - CLI register diagnostics: `reg <addr>` and `wreg <addr> <val>` provide tracked raw register access for bring-up and service work. Raw writes bypass the typed config helpers; use `recover()` or `begin()` to restore cached settings after manual register edits.
 
 ### Example Helpers (`examples/common/`)
@@ -204,14 +220,20 @@ Not part of the library. These simulate project-level glue and keep examples sel
 pio test -e native
 python tools/check_cli_contract.py
 python tools/check_core_timing_guard.py
+python tools/check_idf_example_contract.py
 pio run -e esp32s3dev
 pio run -e esp32s2dev
+idf.py -C examples/idf/basic set-target esp32s3
+idf.py -C examples/idf/basic build
+idf.py -C examples/idf/basic set-target esp32s2
+idf.py -C examples/idf/basic build
 ```
 
 ## Documentation
 
 - `CHANGELOG.md` - full release history
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
+- `docs/IDF_PORT_IMPLEMENTATION.md` - implemented IDF component/example notes
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 

@@ -17,17 +17,16 @@ FORBIDDEN_CALLS = {
     "yield": re.compile(r"\byield\s*\("),
 }
 
-INCLUDE_ARDUINO_RE = re.compile(r'^\s*#\s*include\s*[<\"]Arduino\.h[>\"]', re.MULTILINE)
+FORBIDDEN_INCLUDE_RE = re.compile(
+    r'^\s*#\s*include\s*[<\"](?:Arduino\.h|Wire\.h|driver/[^>\"]+|esp_[^>\"]+|freertos/[^>\"]+)[>\"]',
+    re.MULTILINE,
+)
 BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
 
-ALLOWED_CALL_COUNTS: Dict[str, Dict[str, int]] = {
-    "src/BME280.cpp": {"millis": 1},
-}
-ALLOWED_INCLUDE_COUNTS: Dict[str, int] = {
-    "src/BME280.cpp": 1,
-}
+ALLOWED_CALL_COUNTS: Dict[str, Dict[str, int]] = {}
+ALLOWED_INCLUDE_COUNTS: Dict[str, int] = {}
 
 
 def strip_non_code(text: str) -> str:
@@ -65,7 +64,7 @@ def main() -> int:
         if call_counts:
             observed_calls[rel] = call_counts
 
-        include_count = len(INCLUDE_ARDUINO_RE.findall(raw))
+        include_count = len(FORBIDDEN_INCLUDE_RE.findall(raw))
         if include_count > 0:
             observed_includes[rel] = include_count
 
@@ -121,4 +120,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

@@ -82,7 +82,7 @@ struct Config {
   void* i2cUser = nullptr;               ///< User context for callbacks
 
   // === Timing Hooks (optional) ===
-  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source
+  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source; IDF apps should inject this explicitly
   void* timeUser = nullptr;              ///< User context for timing hook
   
   // === Device Settings ===

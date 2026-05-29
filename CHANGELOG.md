@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ESP-IDF component metadata for building the framework-neutral core with `idf_component_register`.
+- ESP-IDF basic example with an application-owned `i2c_master` bus/device and transport callbacks.
+- Native ESP-IDF CLI preserving Arduino command coverage without Arduino compatibility facades.
+- ESP-IDF example contract check covering native IDF glue, forbidden Arduino compatibility tokens, component metadata, and required command coverage.
+- `docs/IDF_PORT_IMPLEMENTATION.md` with the implemented port structure, validation notes, and remaining hardware checks.
+
+### Changed
+- Core timing guard now rejects Arduino and ESP-IDF framework headers in core/public headers and `src/`.
+- README and ESP-IDF port documentation now describe the native-IDF component/example flow and full Arduino/ESP-IDF CLI parity.
+- `library.json` now advertises both Arduino and ESP-IDF framework support.
+- Native ESP-IDF example timing now uses an explicitly named `currentMs()`
+  helper instead of an Arduino-style `millis()` shim; the IDF example contract
+  rejects future `millis()` / `delay()` timing regressions.
+
+### Removed
+- Removed the stale ESP-IDF Arduino compatibility shim and documentation that described compiling Arduino CLI source into IDF examples.
+
 ## [1.5.0] - 2026-05-14
 
 ### Added

@@ -87,7 +87,7 @@ BME280::Config makeDefaultConfig() {
   BME280::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
+  cfg.i2cUser = transport::configUser();
   cfg.i2cAddress = 0x76;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.nowMs = exampleNowMs;
