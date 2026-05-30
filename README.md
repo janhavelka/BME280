@@ -48,6 +48,10 @@ without including Arduino source or compatibility facades.
 
 BME280::BME280 device;
 
+uint32_t appNowMs(void*) {
+  return millis();
+}
+
 void setup() {
   Serial.begin(115200);
   transport::initWire(8, 9, 400000, 50);
@@ -56,6 +60,7 @@ void setup() {
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
   cfg.i2cUser = transport::configUser();
+  cfg.nowMs = appNowMs;
   cfg.i2cAddress = 0x76;
   
   auto status = device.begin(cfg);
@@ -213,6 +218,10 @@ Not part of the library. These simulate project-level glue and keep examples sel
 4. Memory behavior: no heap allocation in steady-state library operation.
 5. Error handling: all fallible APIs return `Status`; no exceptions and no silent failures.
 6. Health behavior: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds.
+7. Measurement scheduling requires `Config::nowMs`. `begin()` does not fail without it, but `requestMeasurement()` returns `INVALID_CONFIG` if no monotonic clock is injected.
+8. Multi-register configuration failures set `hardwareConfigDirty()` and expose the original dirty-state error in `hardwareConfigDirtyError()` and `SettingsSnapshot`.
+9. Driver instances are not thread-safe and public APIs are not ISR-safe. Shared-bus users must serialize access externally.
+10. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
 
 ## Running Tests
 

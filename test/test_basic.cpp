@@ -2,6 +2,7 @@
 /// @brief Native contract tests for BME280 lifecycle and health behavior.
 
 #include <unity.h>
+#include <type_traits>
 
 #include "Arduino.h"
 #include "Wire.h"
@@ -29,6 +30,7 @@ struct FakeBus {
 
   int readErrorRemaining = 0;
   int writeErrorRemaining = 0;
+  uint32_t failWriteOnCall = 0;
   Status readError = Status::Error(Err::I2C_ERROR, "forced read error", -1);
   Status writeError = Status::Error(Err::I2C_ERROR, "forced write error", -2);
   uint8_t lastWriteReg = 0;
@@ -40,6 +42,10 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
   bus->writeCalls++;
   if (data == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "invalid fake write args");
+  }
+  if (bus->failWriteOnCall != 0 && bus->writeCalls == bus->failWriteOnCall) {
+    bus->failWriteOnCall = 0;
+    return bus->writeError;
   }
   if (bus->writeErrorRemaining > 0) {
     bus->writeErrorRemaining--;
@@ -185,6 +191,18 @@ void test_config_defaults() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::FORCED), static_cast<uint8_t>(cfg.mode));
 }
 
+void test_driver_is_not_copyable_or_movable() {
+  static_assert(!std::is_copy_constructible<BME280::BME280>::value,
+                "BME280 must not be copy constructible");
+  static_assert(!std::is_copy_assignable<BME280::BME280>::value,
+                "BME280 must not be copy assignable");
+  static_assert(!std::is_move_constructible<BME280::BME280>::value,
+                "BME280 must not be move constructible");
+  static_assert(!std::is_move_assignable<BME280::BME280>::value,
+                "BME280 must not be move assignable");
+  TEST_ASSERT_TRUE(true);
+}
+
 void test_get_settings_snapshot() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -222,6 +240,8 @@ void test_get_settings_snapshot() {
   TEST_ASSERT_FALSE(snap.measurementRequested);
   TEST_ASSERT_FALSE(snap.measurementReady);
   TEST_ASSERT_FALSE(snap.hasSample);
+  TEST_ASSERT_FALSE(snap.hardwareConfigDirty);
+  TEST_ASSERT_TRUE(snap.hardwareConfigDirtyError.ok());
   TEST_ASSERT_EQUAL_UINT32(0u, snap.measurementStartMs);
   TEST_ASSERT_EQUAL_UINT32(0u, snap.sampleTimestampMs);
   TEST_ASSERT_EQUAL_INT32(0, snap.tFine);
@@ -406,6 +426,22 @@ void test_begin_without_now_ms_uses_framework_neutral_fallback() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
 }
 
+void test_request_measurement_requires_now_ms_hook() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.nowMs = nullptr;
+  cfg.timeUser = nullptr;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint32_t writesBefore = bus.writeCalls;
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+  TEST_ASSERT_FALSE(dev.measurementReady());
+}
+
 void test_probe_failure_does_not_update_health() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -418,12 +454,39 @@ void test_probe_failure_does_not_update_health() {
   bus.readErrorRemaining = 1;
   bus.readError = Status::Error(Err::I2C_ERROR, "forced probe error", -7);
   Status st = dev.probe();
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(beforeState),
                           static_cast<uint8_t>(dev.state()));
+}
+
+void test_probe_address_nack_maps_to_device_not_found() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "forced address nack", -17);
+  Status st = dev.probe();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-17, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
+}
+
+void test_begin_preserves_timeout_transport_error() {
+  FakeBus bus;
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_TIMEOUT, "chip id timeout", -21);
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-21, st.detail);
+  TEST_ASSERT_FALSE(dev.isInitialized());
 }
 
 void test_recover_failure_updates_health_once() {
@@ -516,6 +579,83 @@ void test_set_oversampling_rejects_invalid_compensation_combo_without_write() {
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
                           static_cast<uint8_t>(osrs));
+}
+
+void test_partial_config_restore_failure_marks_hardware_dirty() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t failCall = bus.writeCalls + 3u;  // sleep write, config write, restore write
+  bus.failWriteOnCall = failCall;
+  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "restore failed", -31);
+
+  Status st = dev.setFilter(Filter::X2);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_INT32(-31, dev.hardwareConfigDirtyError().detail);
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareConfigDirty);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(snap.hardwareConfigDirtyError.code));
+}
+
+void test_dirty_state_clears_after_successful_recover_resync() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 3u;
+  bus.writeError = Status::Error(Err::I2C_BUS, "restore bus error", -32);
+  Status st = dev.setStandby(Standby::MS_250);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+
+  st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
+}
+
+void test_invalid_begin_does_not_clear_existing_dirty_state() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 3u;
+  bus.writeError = Status::Error(Err::I2C_BUS, "restore bus error", -34);
+  Status st = dev.setFilter(Filter::X2);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+
+  Config bad = makeConfig(bus);
+  bad.i2cAddress = 0x75;
+  st = dev.begin(bad);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-34, dev.hardwareConfigDirtyError().detail);
+}
+
+void test_apply_config_partial_failure_marks_dirty_and_preserves_error() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 2u;  // ctrl_meas sleep succeeds, config write fails
+  bus.writeError = Status::Error(Err::I2C_NACK_DATA, "config write nack", -33);
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_INT32(-33, dev.hardwareConfigDirtyError().detail);
 }
 
 void test_set_mode_forced_does_not_trigger_conversion() {
@@ -850,6 +990,7 @@ int main() {
   RUN_TEST(test_status_error);
   RUN_TEST(test_status_in_progress);
   RUN_TEST(test_config_defaults);
+  RUN_TEST(test_driver_is_not_copyable_or_movable);
   RUN_TEST(test_get_settings_snapshot);
   RUN_TEST(test_begin_rejects_missing_callbacks);
   RUN_TEST(test_begin_rejects_invalid_oversampling_combination);
@@ -860,12 +1001,20 @@ int main() {
   RUN_TEST(test_begin_times_out_when_nvm_update_stuck);
   RUN_TEST(test_begin_forced_mode_keeps_hardware_sleep_until_requested);
   RUN_TEST(test_missing_now_ms_fallback_is_framework_neutral);
+  RUN_TEST(test_begin_without_now_ms_uses_framework_neutral_fallback);
+  RUN_TEST(test_request_measurement_requires_now_ms_hook);
   RUN_TEST(test_probe_failure_does_not_update_health);
+  RUN_TEST(test_probe_address_nack_maps_to_device_not_found);
+  RUN_TEST(test_begin_preserves_timeout_transport_error);
   RUN_TEST(test_recover_failure_updates_health_once);
   RUN_TEST(test_recover_success_returns_ready);
   RUN_TEST(test_recover_chip_id_mismatch_updates_health);
   RUN_TEST(test_recover_preserves_transport_error_code);
   RUN_TEST(test_set_oversampling_rejects_invalid_compensation_combo_without_write);
+  RUN_TEST(test_partial_config_restore_failure_marks_hardware_dirty);
+  RUN_TEST(test_dirty_state_clears_after_successful_recover_resync);
+  RUN_TEST(test_invalid_begin_does_not_clear_existing_dirty_state);
+  RUN_TEST(test_apply_config_partial_failure_marks_dirty_and_preserves_error);
   RUN_TEST(test_set_mode_forced_does_not_trigger_conversion);
   RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
@@ -877,7 +1026,6 @@ int main() {
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
   RUN_TEST(test_set_mode_sleep_cancels_pending_measurement_request);
   RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
-  RUN_TEST(test_begin_without_now_ms_uses_framework_neutral_fallback);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);
   return UNITY_END();
 }

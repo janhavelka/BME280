@@ -3,7 +3,7 @@
 ## Role and Target
 You are a professional embedded software engineer building a production-grade BME280 environmental sensor library.
 
-- Target: ESP32-S2 / ESP32-S3, Arduino framework, PlatformIO.
+- Target: ESP32-S2 / ESP32-S3, Arduino and ESP-IDF consumers, PlatformIO/ESP-IDF.
 - Goals: deterministic behavior, long-term stability, clean API contracts, portability, no surprises in the field.
 - These rules are binding.
 
@@ -61,6 +61,8 @@ Rules:
 - `Config` MUST accept a transport adapter (function pointers or abstract interface).
 - Transport errors MUST map to `Status` (no leaking `Wire`, `esp_err_t`, etc.).
 - The library MUST NOT configure bus timeouts or pins.
+- The library must be transport-injected and non-owning. Application transport owns bus handles, pins, locks, and timeout policy.
+- Transport callbacks must not recursively call into the same driver instance.
 
 ---
 
@@ -78,6 +80,19 @@ struct Status {
 
 - Silent failure is unacceptable.
 - No exceptions.
+- Do not collapse distinguishable transport errors. Use `DEVICE_NOT_FOUND` only for definite absence/address NACK; preserve timeout, data NACK, bus, and generic I2C statuses when the transport can distinguish them.
+- Public fallible APIs must return `Status` or explicitly document best-effort behavior.
+
+---
+
+## Concurrency, ISR, and Partial Hardware State
+
+- Driver instances are not thread-safe. Applications must externally serialize access when multiple tasks share a driver or I2C bus.
+- Public APIs are not ISR-safe unless a specific API explicitly documents and proves otherwise. I2C, measurement scheduling, and health bookkeeping are task-context operations.
+- Multi-register hardware updates must either keep cache and hardware synchronized or expose an explicit dirty/resync-needed diagnostic.
+- Dirty or partial hardware state may be cleared only after a successful full resync, recover, or documented verification path.
+- Tests, reports, README, and hardware validation matrices must not invent results. If hardware, ESP-IDF, or fault-path validation was not run, say so.
+- Examples must be labeled honestly as diagnostic, bring-up, or production templates. A production shared-bus example must show ownership, locking, timeout policy, and scheduling.
 
 ---
 

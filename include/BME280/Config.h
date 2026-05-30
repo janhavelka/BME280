@@ -81,8 +81,8 @@ struct Config {
   I2cWriteReadFn i2cWriteRead = nullptr; ///< I2C write-read function pointer
   void* i2cUser = nullptr;               ///< User context for callbacks
 
-  // === Timing Hooks (optional) ===
-  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source; IDF apps should inject this explicitly
+  // === Timing Hooks (optional for begin, required for measurement scheduling) ===
+  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source; required by requestMeasurement()
   void* timeUser = nullptr;              ///< User context for timing hook
   
   // === Device Settings ===

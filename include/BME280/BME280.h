@@ -89,6 +89,8 @@ struct SettingsSnapshot {
   bool measurementRequested = false;          ///< True after forced-mode trigger
   bool measurementReady = false;              ///< True when data registers are ready
   bool hasSample = false;                     ///< True when a compensated sample is cached
+  bool hardwareConfigDirty = false;           ///< True when hardware config may differ from cache
+  Status hardwareConfigDirtyError = Status::Ok(); ///< First error that made config state uncertain
   uint32_t measurementStartMs = 0;            ///< Timestamp of last measurement trigger
   uint32_t sampleTimestampMs = 0;             ///< Timestamp of the last cached sample
   int32_t tFine = 0;                          ///< Last t_fine intermediate value
@@ -100,6 +102,13 @@ struct SettingsSnapshot {
 /// BME280 driver class
 class BME280 {
 public:
+  BME280() = default;
+  ~BME280() = default;
+  BME280(const BME280&) = delete;
+  BME280& operator=(const BME280&) = delete;
+  BME280(BME280&&) = delete;
+  BME280& operator=(BME280&&) = delete;
+
   // =========================================================================
   // Lifecycle
   // =========================================================================
@@ -138,6 +147,14 @@ public:
   /// @param[out] out Snapshot to fill
   /// @return Status::Ok() always
   Status getSettings(SettingsSnapshot& out) const;
+
+  /// True when a failed multi-register config operation may have left sensor
+  /// registers different from the cached settings. Cleared only by a complete
+  /// successful config resync in begin(), recover(), or softReset().
+  bool hardwareConfigDirty() const { return _hardwareConfigDirty; }
+
+  /// First transport/status error that made hardware config state uncertain.
+  Status hardwareConfigDirtyError() const { return _hardwareConfigDirtyError; }
   
   // =========================================================================
   // Driver State
@@ -372,6 +389,8 @@ private:
   /// Record non-transport semantic failures that make recovery unsuccessful.
   Status _recordFailure(const Status& st);
   void _reassertOfflineLatch();
+  void _markHardwareConfigDirty(const Status& st);
+  void _clearHardwareConfigDirty();
 
   // =========================================================================
   // Internal
@@ -401,6 +420,8 @@ private:
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
   bool _allowOfflineI2c = false;
+  bool _hardwareConfigDirty = false;
+  Status _hardwareConfigDirtyError = Status::Ok();
 
   // Calibration data
   uint16_t _digT1 = 0;
