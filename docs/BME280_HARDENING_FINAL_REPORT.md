@@ -1,5 +1,9 @@
 # BME280 Hardening Final Report
 
+> Superseded historical report: this report captured an earlier hardening pass.
+> For the current Phase 06 final state, validation results, and merge verdict,
+> use `docs/BME280_INDUSTRY_STANDARD_FINAL_REPORT.md`.
+
 Branch: `hardening/bme280-industry-readiness`
 
 ## Summary

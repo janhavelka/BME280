@@ -1,5 +1,9 @@
 # BME280 Prompts 00-06 Comprehensive Report
 
+> Superseded historical report: this document was produced before Phase 05 and
+> Phase 06 were completed. For the current final state, validation results, and
+> merge verdict, use `docs/BME280_INDUSTRY_STANDARD_FINAL_REPORT.md`.
+
 Date: 2026-05-31
 Branch: `hardening/bme280-industry-readiness`
 Prior consolidated-report HEAD: `1c0d409807d43ad2790306d3bff6d20112e5b084`

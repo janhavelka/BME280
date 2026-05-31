@@ -14,6 +14,11 @@ REQUIRED_SUFFIXES = {
     "include/BME280/Config.h",
     "include/BME280/Status.h",
     "include/BME280/Version.h",
+    "CMakeLists.txt",
+    "idf_component.yml",
+    "examples/idf/basic/CMakeLists.txt",
+    "examples/idf/basic/main/CMakeLists.txt",
+    "examples/idf/basic/main/main.cpp",
     "src/BME280.cpp",
 }
 

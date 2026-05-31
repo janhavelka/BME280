@@ -187,7 +187,7 @@ ESP-IDF examples:
   only. Arduino-ESP32 builds do not prove pure ESP-IDF v6.0.1 compatibility.
 - Compile native tests to preserve framework-neutral behavior.
 - Run `python tools/check_idf_example_contract.py` to verify the IDF example is native, rejects Arduino compatibility facades, and preserves the command contract.
-- Add an ESP-IDF v6.0.1 example build for ESP32-S2 and ESP32-S3 in CI.
+- CI includes an ESP-IDF v6.0.1 example build for ESP32-S2 and ESP32-S3.
 - Hardware smoke test both valid addresses, `0x76` and `0x77`.
 - Verify `begin()` fails cleanly when the bus is absent, the address is wrong, or chip ID is not `0x60`.
 - Verify raw burst read from `0xF7..0xFE` and compensation output against known environmental ranges.
