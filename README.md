@@ -131,9 +131,9 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 
 - `Status requestMeasurement()` - Start a forced measurement or schedule a fresh normal-mode cycle; returns `IN_PROGRESS` when accepted
 - `bool measurementReady()` - True after `tick()` captures and compensates a sample
-- `Status getMeasurement(Measurement& out)` - Get floating-point temperature, pressure, and humidity
-- `Status getRawSample(RawSample& out)` - Get the latest raw ADC sample after at least one capture
-- `Status getCompensatedSample(CompensatedSample& out)` - Get fixed-point compensated values after at least one capture
+- `Status getMeasurement(Measurement& out)` - Get floating-point temperature, pressure, and humidity plus per-channel validity flags
+- `Status getRawSample(RawSample& out)` - Get the latest raw ADC sample plus per-channel validity flags after at least one capture
+- `Status getCompensatedSample(CompensatedSample& out)` - Get fixed-point compensated values plus per-channel validity flags after at least one capture
 - `Status getCalibration(Calibration& out)` - Return cached calibration coefficients
 - `Status readCalibrationRaw(CalibrationRaw& out)` - Read calibration register blocks from the device
 
@@ -155,6 +155,22 @@ relative to the request.
 Temperature oversampling must be enabled whenever pressure or humidity is enabled because
 Bosch compensation requires `t_fine`. At least one measured channel must be enabled.
 Invalid combinations are rejected in `begin()` and typed setters before touching I2C.
+
+Sample numeric units are stable: `Measurement` returns degrees Celsius, Pascals,
+and percent RH; `CompensatedSample` returns `tempC_x100`, integer Pascals, and
+`humidityPct_x1024` (Q22.10). Skipped or invalid channels keep numeric fields at
+zero for compatibility, so callers must check `temperatureValid`,
+`pressureValid`, and `humidityValid` before using a channel. The raw Bosch
+skipped sentinels are exposed as `cmd::RAW_PRESSURE_SKIPPED`,
+`cmd::RAW_TEMPERATURE_SKIPPED`, and `cmd::RAW_HUMIDITY_SKIPPED`.
+
+Calibration coefficients are read from `0x88..0xA1` and `0xE1..0xE7` during
+`begin()`. `dig_T1` and `dig_P1` are unsigned 16-bit values; the other
+temperature/pressure coefficients are signed 16-bit values. `dig_H4` and
+`dig_H5` are signed 12-bit humidity coefficients packed across `0xE4`, `0xE5`,
+and `0xE6`. Compensation follows the Bosch integer flow: temperature is computed
+first to produce `t_fine`; pressure uses the 64-bit path with a divide-by-zero
+guard; humidity is clamped to `0..100%RH`.
 
 ### Raw Register Access
 

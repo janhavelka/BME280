@@ -475,6 +475,9 @@ Status BME280::getMeasurement(Measurement& out) {
   out.temperatureC = static_cast<float>(_compSample.tempC_x100) / 100.0f;
   out.pressurePa = static_cast<float>(_compSample.pressurePa);
   out.humidityPct = static_cast<float>(_compSample.humidityPct_x1024) / 1024.0f;
+  out.temperatureValid = _compSample.temperatureValid;
+  out.pressureValid = _compSample.pressureValid;
+  out.humidityValid = _compSample.humidityValid;
 
   _measurementReady = false;
   return Status::Ok();
@@ -571,6 +574,7 @@ Status BME280::setMode(Mode mode) {
   }
 
   _config.mode = mode;
+  _invalidateSampleCache();
   if (mode == Mode::SLEEP) {
     _measurementRequested = false;
   }
@@ -603,6 +607,7 @@ Status BME280::setOversamplingT(Oversampling osrs) {
     return st;
   }
   _config.osrsT = osrs;
+  _invalidateSampleCache();
   return Status::Ok();
 }
 
@@ -624,6 +629,7 @@ Status BME280::setOversamplingP(Oversampling osrs) {
     return st;
   }
   _config.osrsP = osrs;
+  _invalidateSampleCache();
   return Status::Ok();
 }
 
@@ -653,6 +659,7 @@ Status BME280::setOversamplingH(Oversampling osrs) {
   }
 
   _config.osrsH = osrs;
+  _invalidateSampleCache();
   return Status::Ok();
 }
 
@@ -689,6 +696,7 @@ Status BME280::setFilter(Filter filter) {
   }
 
   _config.filter = filter;
+  _invalidateSampleCache();
   return Status::Ok();
 }
 
@@ -725,6 +733,7 @@ Status BME280::setStandby(Standby standby) {
   }
 
   _config.standby = standby;
+  _invalidateSampleCache();
   return Status::Ok();
 }
 
@@ -1226,6 +1235,7 @@ Status BME280::_readRawData() {
     return st;
   }
 
+  _rawSample = RawSample{};
   _rawSample.adcP = (static_cast<int32_t>(data[0]) << 12) |
                     (static_cast<int32_t>(data[1]) << 4) |
                     (static_cast<int32_t>(data[2]) >> 4);
@@ -1234,25 +1244,25 @@ Status BME280::_readRawData() {
                     (static_cast<int32_t>(data[5]) >> 4);
   _rawSample.adcH = (static_cast<int32_t>(data[6]) << 8) |
                     static_cast<int32_t>(data[7]);
+  _rawSample.pressureValid = (_config.osrsP != Oversampling::SKIP) &&
+                             (_rawSample.adcP != cmd::RAW_PRESSURE_SKIPPED);
+  _rawSample.temperatureValid = (_config.osrsT != Oversampling::SKIP) &&
+                                (_rawSample.adcT != cmd::RAW_TEMPERATURE_SKIPPED);
+  _rawSample.humidityValid = (_config.osrsH != Oversampling::SKIP) &&
+                             (_rawSample.adcH != cmd::RAW_HUMIDITY_SKIPPED);
 
   return Status::Ok();
 }
 
 Status BME280::_compensate() {
-  const bool tempSkipped  = (_config.osrsT == Oversampling::SKIP);
+  _compSample = CompensatedSample{};
   const bool pressSkipped = (_config.osrsP == Oversampling::SKIP);
-  const bool humSkipped   = (_config.osrsH == Oversampling::SKIP);
+  const bool humSkipped = (_config.osrsH == Oversampling::SKIP);
 
   // Temperature compensation is required for pressure and humidity.
-  if (tempSkipped) {
-    if (!pressSkipped || !humSkipped) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Temperature required for P/H compensation");
-    }
-    // All channels skipped — nothing to compute.
+  if (!_rawSample.temperatureValid) {
     _tFine = 0;
-    _compSample = CompensatedSample{};
-    return Status::Ok();
+    return Status::Error(Err::COMPENSATION_ERROR, "Temperature sample skipped");
   }
 
   // --- Temperature (Bosch int32 reference) ---
@@ -1266,11 +1276,16 @@ Status BME280::_compensate() {
 
   _tFine = var1 + var2;
   _compSample.tempC_x100 = (_tFine * 5 + 128) >> 8;
+  _compSample.temperatureValid = true;
 
   // --- Pressure (Bosch int64 reference) ---
   if (pressSkipped) {
     _compSample.pressurePa = 0;
+    _compSample.pressureValid = false;
   } else {
+    if (!_rawSample.pressureValid) {
+      return Status::Error(Err::COMPENSATION_ERROR, "Pressure sample skipped");
+    }
     const int32_t adcP = _rawSample.adcP;
 
     int64_t pVar1 = static_cast<int64_t>(_tFine) - 128000;
@@ -1297,12 +1312,17 @@ Status BME280::_compensate() {
       pressurePa = static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
     }
     _compSample.pressurePa = static_cast<uint32_t>(pressurePa);
+    _compSample.pressureValid = true;
   }
 
   // --- Humidity (Bosch int32 reference, widened to int64 for safety) ---
   if (humSkipped) {
     _compSample.humidityPct_x1024 = 0;
+    _compSample.humidityValid = false;
   } else {
+    if (!_rawSample.humidityValid) {
+      return Status::Error(Err::COMPENSATION_ERROR, "Humidity sample skipped");
+    }
     const int32_t adcH = _rawSample.adcH;
 
     int64_t h = static_cast<int64_t>(_tFine) - 76800;
@@ -1323,9 +1343,21 @@ Status BME280::_compensate() {
       h = HUMIDITY_MAX_X4096;
     }
     _compSample.humidityPct_x1024 = static_cast<uint32_t>(h >> 12);
+    _compSample.humidityValid = true;
   }
 
   return Status::Ok();
+}
+
+void BME280::_invalidateSampleCache() {
+  _measurementRequested = false;
+  _measurementReady = false;
+  _hasSample = false;
+  _measurementStartMs = 0;
+  _sampleTimestampMs = 0;
+  _tFine = 0;
+  _rawSample = RawSample{};
+  _compSample = CompensatedSample{};
 }
 
 uint32_t BME280::_nowMs() const {

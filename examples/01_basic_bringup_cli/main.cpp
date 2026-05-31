@@ -390,9 +390,9 @@ void printDataRegisters() {
                 static_cast<long>(adcT),
                 static_cast<long>(adcH));
   Serial.printf("  Sentinel check: P_skip=%d T_skip=%d H_skip=%d\n",
-                adcP == 0x80000L ? 1 : 0,
-                adcT == 0x80000L ? 1 : 0,
-                adcH == 0x8000L ? 1 : 0);
+                adcP == BME280::cmd::RAW_PRESSURE_SKIPPED ? 1 : 0,
+                adcT == BME280::cmd::RAW_TEMPERATURE_SKIPPED ? 1 : 0,
+                adcH == BME280::cmd::RAW_HUMIDITY_SKIPPED ? 1 : 0);
 }
 
 void printTimingInfo() {

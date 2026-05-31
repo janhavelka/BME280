@@ -35,6 +35,33 @@ struct FakeBus {
   Status writeError = Status::Error(Err::I2C_ERROR, "forced write error", -2);
   uint8_t lastWriteReg = 0;
   uint8_t lastWriteValue = 0;
+  bool failReadRegEnabled = false;
+  uint8_t failReadReg = 0;
+  uint8_t lastReadReg = 0;
+  size_t lastReadLen = 0;
+
+  FakeBus() {
+    loadDefaultCalibration();
+  }
+
+  void loadDefaultCalibration() {
+    for (size_t i = 0; i < cmd::REG_CALIB_TP_LEN; ++i) {
+      reg[static_cast<uint8_t>(cmd::REG_CALIB_TP_START + static_cast<uint8_t>(i))] =
+          static_cast<uint8_t>(i + 1);
+    }
+    reg[cmd::REG_DIG_T1_LSB] = 0x88;
+    reg[cmd::REG_DIG_T1_MSB] = 0x01;  // digT1 = 0x0188
+    reg[cmd::REG_DIG_P1_LSB] = 0x34;
+    reg[cmd::REG_DIG_P1_MSB] = 0x12;  // digP1 = 0x1234
+    reg[cmd::REG_DIG_H1] = 0x01;
+    reg[cmd::REG_DIG_H2_LSB] = 0x11;
+    reg[cmd::REG_DIG_H2_MSB] = 0x22;
+    reg[cmd::REG_DIG_H3] = 0x33;
+    reg[cmd::REG_DIG_H4_MSB] = 0x44;
+    reg[cmd::REG_DIG_H4_H5] = 0x55;
+    reg[cmd::REG_DIG_H5_MSB] = 0x66;
+    reg[cmd::REG_DIG_H6] = 0x77;
+  }
 };
 
 Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user) {
@@ -74,6 +101,12 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
   }
 
   const uint8_t reg = txData[0];
+  bus->lastReadReg = reg;
+  bus->lastReadLen = rxLen;
+  if (bus->failReadRegEnabled && reg == bus->failReadReg) {
+    bus->failReadRegEnabled = false;
+    return bus->readError;
+  }
   for (size_t i = 0; i < rxLen; ++i) {
     rxData[i] = 0;
   }
@@ -86,22 +119,14 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
       bus->calibrationReadWhileImUpdate = true;
     }
     for (size_t i = 0; i < rxLen; ++i) {
-      rxData[i] = static_cast<uint8_t>(i + 1);
+      rxData[i] = bus->reg[static_cast<uint8_t>(reg + static_cast<uint8_t>(i))];
     }
-    rxData[0] = 0x88;
-    rxData[1] = 0x01;  // digT1 = 0x0188
-    rxData[6] = 0x34;
-    rxData[7] = 0x12;  // digP1 = 0x1234
   } else if (reg == cmd::REG_CALIB_H1 && rxLen >= 1) {
-    rxData[0] = 0x01;
+    rxData[0] = bus->reg[cmd::REG_CALIB_H1];
   } else if (reg == cmd::REG_CALIB_H_START && rxLen == cmd::REG_CALIB_H_LEN) {
-    rxData[0] = 0x11;
-    rxData[1] = 0x22;
-    rxData[2] = 0x33;
-    rxData[3] = 0x44;
-    rxData[4] = 0x55;
-    rxData[5] = 0x66;
-    rxData[6] = 0x77;
+    for (size_t i = 0; i < rxLen; ++i) {
+      rxData[i] = bus->reg[static_cast<uint8_t>(reg + static_cast<uint8_t>(i))];
+    }
   } else if (reg == cmd::REG_STATUS && rxLen >= 1) {
     bus->statusReadCalls++;
     uint8_t status = bus->reg[cmd::REG_STATUS];
@@ -138,6 +163,100 @@ Config makeConfig(FakeBus& bus) {
   cfg.offlineThreshold = 3;
   cfg.mode = Mode::FORCED;
   return cfg;
+}
+
+void putLe16(FakeBus& bus, uint8_t reg, uint16_t value) {
+  bus.reg[reg] = static_cast<uint8_t>(value & 0xFF);
+  bus.reg[static_cast<uint8_t>(reg + 1)] = static_cast<uint8_t>(value >> 8);
+}
+
+void putS16(FakeBus& bus, uint8_t reg, int16_t value) {
+  putLe16(bus, reg, static_cast<uint16_t>(value));
+}
+
+void setH4H5(FakeBus& bus, int16_t h4, int16_t h5) {
+  const uint16_t h4Raw = static_cast<uint16_t>(h4) & 0x0FFF;
+  const uint16_t h5Raw = static_cast<uint16_t>(h5) & 0x0FFF;
+  bus.reg[cmd::REG_DIG_H4_MSB] = static_cast<uint8_t>(h4Raw >> 4);
+  bus.reg[cmd::REG_DIG_H4_H5] = static_cast<uint8_t>(((h5Raw & 0x000F) << 4) |
+                                                     (h4Raw & 0x000F));
+  bus.reg[cmd::REG_DIG_H5_MSB] = static_cast<uint8_t>(h5Raw >> 4);
+}
+
+void setBoschSyntheticCalibration(FakeBus& bus) {
+  putLe16(bus, cmd::REG_DIG_T1_LSB, 27504);
+  putS16(bus, cmd::REG_DIG_T2_LSB, 26435);
+  putS16(bus, cmd::REG_DIG_T3_LSB, -1000);
+
+  putLe16(bus, cmd::REG_DIG_P1_LSB, 36477);
+  putS16(bus, cmd::REG_DIG_P2_LSB, -10685);
+  putS16(bus, cmd::REG_DIG_P3_LSB, 3024);
+  putS16(bus, cmd::REG_DIG_P4_LSB, 2855);
+  putS16(bus, cmd::REG_DIG_P5_LSB, 140);
+  putS16(bus, cmd::REG_DIG_P6_LSB, -7);
+  putS16(bus, cmd::REG_DIG_P7_LSB, 15500);
+  putS16(bus, cmd::REG_DIG_P8_LSB, -14600);
+  putS16(bus, cmd::REG_DIG_P9_LSB, 6000);
+
+  bus.reg[cmd::REG_DIG_H1] = 75;
+  putS16(bus, cmd::REG_DIG_H2_LSB, 362);
+  bus.reg[cmd::REG_DIG_H3] = 0;
+  setH4H5(bus, 325, 50);
+  bus.reg[cmd::REG_DIG_H6] = static_cast<uint8_t>(30);
+}
+
+void setPressureDenominatorZeroCalibration(FakeBus& bus) {
+  putLe16(bus, cmd::REG_DIG_T1_LSB, 32327);
+  putS16(bus, cmd::REG_DIG_T2_LSB, 28683);
+  putS16(bus, cmd::REG_DIG_T3_LSB, -12560);
+  putLe16(bus, cmd::REG_DIG_P1_LSB, 1);
+  putS16(bus, cmd::REG_DIG_P2_LSB, 31186);
+  putS16(bus, cmd::REG_DIG_P3_LSB, -22662);
+  putS16(bus, cmd::REG_DIG_P4_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P5_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P6_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P7_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P8_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P9_LSB, 0);
+}
+
+void setRawBurstBytes(FakeBus& bus,
+                      uint8_t pMsb,
+                      uint8_t pLsb,
+                      uint8_t pXlsb,
+                      uint8_t tMsb,
+                      uint8_t tLsb,
+                      uint8_t tXlsb,
+                      uint8_t hMsb,
+                      uint8_t hLsb) {
+  bus.reg[cmd::REG_PRESS_MSB] = pMsb;
+  bus.reg[cmd::REG_PRESS_LSB] = pLsb;
+  bus.reg[cmd::REG_PRESS_XLSB] = pXlsb;
+  bus.reg[cmd::REG_TEMP_MSB] = tMsb;
+  bus.reg[cmd::REG_TEMP_LSB] = tLsb;
+  bus.reg[cmd::REG_TEMP_XLSB] = tXlsb;
+  bus.reg[cmd::REG_HUM_MSB] = hMsb;
+  bus.reg[cmd::REG_HUM_LSB] = hLsb;
+}
+
+void setRawSample(FakeBus& bus, int32_t adcP, int32_t adcT, int32_t adcH) {
+  setRawBurstBytes(bus,
+                   static_cast<uint8_t>((adcP >> 12) & 0xFF),
+                   static_cast<uint8_t>((adcP >> 4) & 0xFF),
+                   static_cast<uint8_t>((adcP & 0x0F) << 4),
+                   static_cast<uint8_t>((adcT >> 12) & 0xFF),
+                   static_cast<uint8_t>((adcT >> 4) & 0xFF),
+                   static_cast<uint8_t>((adcT & 0x0F) << 4),
+                   static_cast<uint8_t>((adcH >> 8) & 0xFF),
+                   static_cast<uint8_t>(adcH & 0xFF));
+}
+
+void captureForcedSample(BME280::BME280& dev, FakeBus& bus) {
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(st.code));
+  bus.nowMs += dev.estimateMeasurementTimeMs();
+  dev.tick(bus.nowMs);
 }
 
 }  // namespace
@@ -955,6 +1074,281 @@ void test_raw_and_compensated_samples_remain_available_after_measurement_read() 
   TEST_ASSERT_TRUE(st.ok());
 }
 
+void test_calibration_parses_bosch_synthetic_coefficients() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Calibration calib{};
+  TEST_ASSERT_TRUE(dev.getCalibration(calib).ok());
+  TEST_ASSERT_EQUAL_UINT16(27504, calib.digT1);
+  TEST_ASSERT_EQUAL_INT16(26435, calib.digT2);
+  TEST_ASSERT_EQUAL_INT16(-1000, calib.digT3);
+  TEST_ASSERT_EQUAL_UINT16(36477, calib.digP1);
+  TEST_ASSERT_EQUAL_INT16(-10685, calib.digP2);
+  TEST_ASSERT_EQUAL_INT16(3024, calib.digP3);
+  TEST_ASSERT_EQUAL_INT16(2855, calib.digP4);
+  TEST_ASSERT_EQUAL_INT16(140, calib.digP5);
+  TEST_ASSERT_EQUAL_INT16(-7, calib.digP6);
+  TEST_ASSERT_EQUAL_INT16(15500, calib.digP7);
+  TEST_ASSERT_EQUAL_INT16(-14600, calib.digP8);
+  TEST_ASSERT_EQUAL_INT16(6000, calib.digP9);
+  TEST_ASSERT_EQUAL_UINT8(75, calib.digH1);
+  TEST_ASSERT_EQUAL_INT16(362, calib.digH2);
+  TEST_ASSERT_EQUAL_UINT8(0, calib.digH3);
+  TEST_ASSERT_EQUAL_INT16(325, calib.digH4);
+  TEST_ASSERT_EQUAL_INT16(50, calib.digH5);
+  TEST_ASSERT_EQUAL_INT8(30, calib.digH6);
+}
+
+void test_calibration_parses_signed_boundaries_and_humidity_nibbles() {
+  FakeBus bus;
+  putLe16(bus, cmd::REG_DIG_T1_LSB, 1);
+  putS16(bus, cmd::REG_DIG_T2_LSB, -32768);
+  putS16(bus, cmd::REG_DIG_T3_LSB, 32767);
+  putLe16(bus, cmd::REG_DIG_P1_LSB, 2);
+  putS16(bus, cmd::REG_DIG_P2_LSB, -32768);
+  putS16(bus, cmd::REG_DIG_P3_LSB, -1);
+  putS16(bus, cmd::REG_DIG_P4_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P5_LSB, 32767);
+  putS16(bus, cmd::REG_DIG_P6_LSB, -123);
+  putS16(bus, cmd::REG_DIG_P7_LSB, 123);
+  putS16(bus, cmd::REG_DIG_P8_LSB, -32768);
+  putS16(bus, cmd::REG_DIG_P9_LSB, 32767);
+  bus.reg[cmd::REG_DIG_H1] = 255;
+  putS16(bus, cmd::REG_DIG_H2_LSB, -32768);
+  bus.reg[cmd::REG_DIG_H3] = 255;
+  setH4H5(bus, 2047, -2048);
+  bus.reg[cmd::REG_DIG_H6] = static_cast<uint8_t>(-128);
+
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Calibration calib{};
+  TEST_ASSERT_TRUE(dev.getCalibration(calib).ok());
+  TEST_ASSERT_EQUAL_INT16(-32768, calib.digT2);
+  TEST_ASSERT_EQUAL_INT16(32767, calib.digT3);
+  TEST_ASSERT_EQUAL_INT16(-32768, calib.digP2);
+  TEST_ASSERT_EQUAL_INT16(-1, calib.digP3);
+  TEST_ASSERT_EQUAL_INT16(32767, calib.digP5);
+  TEST_ASSERT_EQUAL_INT16(-32768, calib.digP8);
+  TEST_ASSERT_EQUAL_UINT8(255, calib.digH1);
+  TEST_ASSERT_EQUAL_INT16(-32768, calib.digH2);
+  TEST_ASSERT_EQUAL_UINT8(255, calib.digH3);
+  TEST_ASSERT_EQUAL_INT16(2047, calib.digH4);
+  TEST_ASSERT_EQUAL_INT16(-2048, calib.digH5);
+  TEST_ASSERT_EQUAL_INT8(-128, calib.digH6);
+}
+
+void test_invalid_pressure_calibration_is_rejected() {
+  FakeBus busZero;
+  setBoschSyntheticCalibration(busZero);
+  putLe16(busZero, cmd::REG_DIG_P1_LSB, 0);
+  BME280::BME280 zeroDev;
+  Status st = zeroDev.begin(makeConfig(busZero));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(zeroDev.isInitialized());
+
+  FakeBus busFfff;
+  setBoschSyntheticCalibration(busFfff);
+  putLe16(busFfff, cmd::REG_DIG_P1_LSB, 0xFFFF);
+  BME280::BME280 ffffDev;
+  st = ffffDev.begin(makeConfig(busFfff));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(ffffDev.isInitialized());
+}
+
+void test_read_calibration_raw_uses_register_bytes_and_preserves_error() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  CalibrationRaw raw{};
+  TEST_ASSERT_TRUE(dev.readCalibrationRaw(raw).ok());
+  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_T1_LSB],
+                          raw.tp[cmd::REG_DIG_T1_LSB - cmd::REG_CALIB_TP_START]);
+  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_P9_MSB],
+                          raw.tp[cmd::REG_DIG_P9_MSB - cmd::REG_CALIB_TP_START]);
+  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H1], raw.h1);
+  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H4_MSB],
+                          raw.h[cmd::REG_DIG_H4_MSB - cmd::REG_CALIB_H_START]);
+  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H4_H5],
+                          raw.h[cmd::REG_DIG_H4_H5 - cmd::REG_CALIB_H_START]);
+  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H5_MSB],
+                          raw.h[cmd::REG_DIG_H5_MSB - cmd::REG_CALIB_H_START]);
+
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = cmd::REG_CALIB_H_START;
+  bus.readError = Status::Error(Err::I2C_NACK_DATA, "forced h calib nack", -31);
+  Status st = dev.readCalibrationRaw(raw);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-31, st.detail);
+}
+
+void test_raw_burst_reconstructs_20_and_16_bit_samples() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawBurstBytes(bus, 0xAB, 0xCD, 0xEF, 0x54, 0x32, 0x1F, 0xBE, 0xEF);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.hasSample());
+
+  RawSample raw{};
+  TEST_ASSERT_TRUE(dev.getRawSample(raw).ok());
+  TEST_ASSERT_EQUAL_INT32(0x54321, raw.adcT);
+  TEST_ASSERT_EQUAL_INT32(0xABCDE, raw.adcP);
+  TEST_ASSERT_EQUAL_INT32(0xBEEF, raw.adcH);
+  TEST_ASSERT_TRUE(raw.temperatureValid);
+  TEST_ASSERT_TRUE(raw.pressureValid);
+  TEST_ASSERT_TRUE(raw.humidityValid);
+}
+
+void test_compensation_matches_datasheet_derived_synthetic_vector() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.measurementReady());
+
+  CompensatedSample comp{};
+  TEST_ASSERT_TRUE(dev.getCompensatedSample(comp).ok());
+  TEST_ASSERT_EQUAL_INT32(2508, comp.tempC_x100);
+  TEST_ASSERT_EQUAL_UINT32(100653, comp.pressurePa);
+  TEST_ASSERT_EQUAL_UINT32(51941, comp.humidityPct_x1024);
+  TEST_ASSERT_TRUE(comp.temperatureValid);
+  TEST_ASSERT_TRUE(comp.pressureValid);
+  TEST_ASSERT_TRUE(comp.humidityValid);
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_EQUAL_INT32(128422, snap.tFine);
+
+  Measurement measurement{};
+  TEST_ASSERT_TRUE(dev.getMeasurement(measurement).ok());
+  TEST_ASSERT_TRUE(measurement.temperatureValid);
+  TEST_ASSERT_TRUE(measurement.pressureValid);
+  TEST_ASSERT_TRUE(measurement.humidityValid);
+}
+
+void test_humidity_compensation_clamps_low_and_high() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  setRawSample(bus, 415148, 519888, 0);
+  captureForcedSample(dev, bus);
+  CompensatedSample comp{};
+  TEST_ASSERT_TRUE(dev.getCompensatedSample(comp).ok());
+  TEST_ASSERT_EQUAL_UINT32(0, comp.humidityPct_x1024);
+  TEST_ASSERT_TRUE(comp.humidityValid);
+
+  setRawSample(bus, 415148, 519888, 40000);
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.getCompensatedSample(comp).ok());
+  TEST_ASSERT_EQUAL_UINT32(102400, comp.humidityPct_x1024);
+  TEST_ASSERT_TRUE(comp.humidityValid);
+}
+
+void test_skipped_sentinels_are_explicit_validity_flags() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus,
+               cmd::RAW_PRESSURE_SKIPPED,
+               519888,
+               cmd::RAW_HUMIDITY_SKIPPED);
+  Config cfg = makeConfig(bus);
+  cfg.osrsP = Oversampling::SKIP;
+  cfg.osrsH = Oversampling::SKIP;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.hasSample());
+
+  RawSample raw{};
+  TEST_ASSERT_TRUE(dev.getRawSample(raw).ok());
+  TEST_ASSERT_EQUAL_INT32(519888, raw.adcT);
+  TEST_ASSERT_EQUAL_INT32(cmd::RAW_PRESSURE_SKIPPED, raw.adcP);
+  TEST_ASSERT_EQUAL_INT32(cmd::RAW_HUMIDITY_SKIPPED, raw.adcH);
+  TEST_ASSERT_TRUE(raw.temperatureValid);
+  TEST_ASSERT_FALSE(raw.pressureValid);
+  TEST_ASSERT_FALSE(raw.humidityValid);
+
+  CompensatedSample comp{};
+  TEST_ASSERT_TRUE(dev.getCompensatedSample(comp).ok());
+  TEST_ASSERT_TRUE(comp.temperatureValid);
+  TEST_ASSERT_FALSE(comp.pressureValid);
+  TEST_ASSERT_FALSE(comp.humidityValid);
+  TEST_ASSERT_EQUAL_UINT32(0, comp.pressurePa);
+  TEST_ASSERT_EQUAL_UINT32(0, comp.humidityPct_x1024);
+
+  Measurement measurement{};
+  TEST_ASSERT_TRUE(dev.getMeasurement(measurement).ok());
+  TEST_ASSERT_TRUE(measurement.temperatureValid);
+  TEST_ASSERT_FALSE(measurement.pressureValid);
+  TEST_ASSERT_FALSE(measurement.humidityValid);
+}
+
+void test_enabled_raw_sentinel_rejects_compensated_sample() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, cmd::RAW_PRESSURE_SKIPPED, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_FALSE(dev.measurementReady());
+  TEST_ASSERT_FALSE(dev.hasSample());
+
+  CompensatedSample comp{};
+  Status st = dev.getCompensatedSample(comp);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+}
+
+void test_pressure_compensation_divide_by_zero_guard_blocks_sample() {
+  FakeBus bus;
+  setPressureDenominatorZeroCalibration(bus);
+  setRawSample(bus, 415148, 211674, cmd::RAW_HUMIDITY_SKIPPED);
+  Config cfg = makeConfig(bus);
+  cfg.osrsH = Oversampling::SKIP;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_FALSE(dev.measurementReady());
+  TEST_ASSERT_FALSE(dev.hasSample());
+}
+
+void test_config_change_invalidates_cached_samples() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_TRUE(dev.setOversamplingP(Oversampling::SKIP).ok());
+  TEST_ASSERT_FALSE(dev.hasSample());
+
+  RawSample raw{};
+  Status st = dev.getRawSample(raw);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+}
+
 void test_register_access_after_end_does_not_touch_bus() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -1026,6 +1420,17 @@ int main() {
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
   RUN_TEST(test_set_mode_sleep_cancels_pending_measurement_request);
   RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
+  RUN_TEST(test_calibration_parses_bosch_synthetic_coefficients);
+  RUN_TEST(test_calibration_parses_signed_boundaries_and_humidity_nibbles);
+  RUN_TEST(test_invalid_pressure_calibration_is_rejected);
+  RUN_TEST(test_read_calibration_raw_uses_register_bytes_and_preserves_error);
+  RUN_TEST(test_raw_burst_reconstructs_20_and_16_bit_samples);
+  RUN_TEST(test_compensation_matches_datasheet_derived_synthetic_vector);
+  RUN_TEST(test_humidity_compensation_clamps_low_and_high);
+  RUN_TEST(test_skipped_sentinels_are_explicit_validity_flags);
+  RUN_TEST(test_enabled_raw_sentinel_rejects_compensated_sample);
+  RUN_TEST(test_pressure_compensation_divide_by_zero_guard_blocks_sample);
+  RUN_TEST(test_config_change_invalidates_cached_samples);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);
   return UNITY_END();
 }

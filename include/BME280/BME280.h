@@ -24,13 +24,19 @@ struct Measurement {
   float temperatureC = 0.0f; ///< Temperature in Celsius
   float pressurePa = 0.0f;   ///< Pressure in Pascals
   float humidityPct = 0.0f;  ///< Relative humidity in percent
+  bool temperatureValid = false; ///< True when temperature was measured and compensated
+  bool pressureValid = false;    ///< True when pressure was measured and compensated
+  bool humidityValid = false;    ///< True when humidity was measured and compensated
 };
 
 /// Raw ADC values
 struct RawSample {
-  int32_t adcT = 0; ///< Raw temperature ADC (20-bit)
-  int32_t adcP = 0; ///< Raw pressure ADC (20-bit)
-  int32_t adcH = 0; ///< Raw humidity ADC (16-bit)
+  int32_t adcT = 0; ///< Raw temperature ADC (20-bit; 0x80000 when skipped)
+  int32_t adcP = 0; ///< Raw pressure ADC (20-bit; 0x80000 when skipped)
+  int32_t adcH = 0; ///< Raw humidity ADC (16-bit; 0x8000 when skipped)
+  bool temperatureValid = false; ///< True when adcT is a measured value
+  bool pressureValid = false;    ///< True when adcP is a measured value
+  bool humidityValid = false;    ///< True when adcH is a measured value
 };
 
 /// Fixed-point compensated values (no float)
@@ -38,6 +44,9 @@ struct CompensatedSample {
   int32_t tempC_x100 = 0;        ///< Temperature * 100 (e.g., 2534 = 25.34 degC)
   uint32_t pressurePa = 0;       ///< Pressure in Pa
   uint32_t humidityPct_x1024 = 0; ///< Humidity * 1024 (Q22.10 format)
+  bool temperatureValid = false; ///< True when tempC_x100 is usable
+  bool pressureValid = false;    ///< True when pressurePa is usable
+  bool humidityValid = false;    ///< True when humidityPct_x1024 is usable
 };
 
 /// Cached calibration coefficients from the device
@@ -67,8 +76,8 @@ struct Calibration {
 
 /// Raw calibration register blocks
 struct CalibrationRaw {
-  uint8_t tp[cmd::REG_CALIB_TP_LEN] = {}; ///< Raw 0x88..0xA1 temperature/pressure block
-  uint8_t h1 = 0;                         ///< Raw 0xA1 humidity byte
+  uint8_t tp[cmd::REG_CALIB_TP_LEN] = {}; ///< Raw 0x88..0xA1 block; last byte is dig_H1
+  uint8_t h1 = 0;                         ///< Raw 0xA1 humidity byte, duplicated for clarity
   uint8_t h[cmd::REG_CALIB_H_LEN] = {};   ///< Raw 0xE1..0xE7 humidity block
 };
 
@@ -221,20 +230,26 @@ public:
     return _hasSample ? (nowMs - _sampleTimestampMs) : 0;
   }
 
-  /// Get measurement result (float)
+  /// Get measurement result (float).
   /// Returns MEASUREMENT_NOT_READY if not available
   /// Clears ready flag after successful read
   /// Does not invalidate cached raw/fixed-point samples.
+  /// Numeric fields remain zero for skipped/invalid channels; check the
+  /// matching validity flag before using a channel.
   Status getMeasurement(Measurement& out);
 
   /// Get raw ADC values.
   /// @param[out] out Last cached raw ADC sample
   /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
+  /// Channels skipped by configuration or reported as Bosch skipped sentinels
+  /// have their validity flag set false.
   Status getRawSample(RawSample& out) const;
 
   /// Get fixed-point compensated values.
   /// @param[out] out Last cached fixed-point compensated sample
   /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
+  /// Numeric fields remain zero for skipped/invalid channels; check the
+  /// matching validity flag before using a channel.
   Status getCompensatedSample(CompensatedSample& out) const;
 
   /// Get cached calibration coefficients.
@@ -402,6 +417,7 @@ private:
   Status _validateCalibration();
   Status _readRawData();
   Status _compensate();
+  void _invalidateSampleCache();
   uint32_t _nowMs() const;
   
   // =========================================================================

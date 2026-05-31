@@ -45,12 +45,15 @@ static constexpr uint8_t REG_HUM_LSB = 0xFE;
 
 static constexpr uint8_t REG_DATA_START = REG_PRESS_MSB;
 static constexpr uint8_t DATA_LEN = 8;
+static constexpr int32_t RAW_PRESSURE_SKIPPED = 0x80000;
+static constexpr int32_t RAW_TEMPERATURE_SKIPPED = 0x80000;
+static constexpr int32_t RAW_HUMIDITY_SKIPPED = 0x8000;
 
 // ============================================================================
 // Calibration Registers
 // ============================================================================
 
-static constexpr uint8_t REG_CALIB_TP_START = 0x88;  // T1..T3, P1..P9 (26 bytes)
+static constexpr uint8_t REG_CALIB_TP_START = 0x88;  // 0x88..0xA1: T/P coeffs plus H1
 static constexpr uint8_t REG_CALIB_TP_LEN = 26;
 static constexpr uint8_t REG_CALIB_H1 = 0xA1;        // H1 (1 byte)
 static constexpr uint8_t REG_CALIB_H_START = 0xE1;   // H2..H6 (7 bytes)
@@ -90,8 +93,9 @@ static constexpr uint8_t REG_DIG_H2_LSB = 0xE1;
 static constexpr uint8_t REG_DIG_H2_MSB = 0xE2;
 static constexpr uint8_t REG_DIG_H3 = 0xE3;
 static constexpr uint8_t REG_DIG_H4_MSB = 0xE4;
-static constexpr uint8_t REG_DIG_H4_H5 = 0xE5;  // H4 LSB (bits 3:0), H5 MSB (bits 7:4)
-static constexpr uint8_t REG_DIG_H5_LSB = 0xE6;
+static constexpr uint8_t REG_DIG_H4_H5 = 0xE5;  // H4 bits [3:0], H5 bits [3:0]
+static constexpr uint8_t REG_DIG_H5_MSB = 0xE6; // H5 bits [11:4]
+static constexpr uint8_t REG_DIG_H5_LSB = REG_DIG_H5_MSB; // Backward-compatible legacy name
 static constexpr uint8_t REG_DIG_H6 = 0xE7;
 
 // ============================================================================
