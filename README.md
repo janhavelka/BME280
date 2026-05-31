@@ -395,6 +395,7 @@ idf.py -C examples/idf/basic build
 - `docs/IDF_PORT_IMPLEMENTATION.md` - implemented IDF component/example notes
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` - explicit hardware validation status
+- `docs/BME280_PRE_HIL_READINESS_REPORT.md` - pre-HIL checklist, command plan, and remaining HIL-only risks
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
 ## Known Limitations

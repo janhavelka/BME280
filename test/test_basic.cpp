@@ -19,11 +19,13 @@ namespace {
 
 struct FakeBus {
   uint8_t reg[256] = {};
+  uint8_t deviceAddress = 0x76;
   uint8_t chipId = cmd::CHIP_ID_BME280;
   uint32_t nowMs = 1000;
   uint32_t writeCalls = 0;
   uint32_t readCalls = 0;
   uint32_t statusReadCalls = 0;
+  uint32_t statusReadNowAdvanceMs = 0;
   uint32_t measuringStatusReadsRemaining = 0;
   uint32_t measuringOnStatusReadCall = 0;
   uint32_t imUpdateStatusReadsRemaining = 0;
@@ -69,9 +71,12 @@ struct FakeBus {
   }
 };
 
-Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user) {
+Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t, void* user) {
   FakeBus* bus = static_cast<FakeBus*>(user);
   bus->writeCalls++;
+  if (addr != bus->deviceAddress) {
+    return Status::Error(Err::I2C_NACK_ADDR, "fake address nack", addr);
+  }
   if (data == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "invalid fake write args");
   }
@@ -98,10 +103,13 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
   return Status::Ok();
 }
 
-Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxData,
+Status fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen, uint8_t* rxData,
                      size_t rxLen, uint32_t, void* user) {
   FakeBus* bus = static_cast<FakeBus*>(user);
   bus->readCalls++;
+  if (addr != bus->deviceAddress) {
+    return Status::Error(Err::I2C_NACK_ADDR, "fake address nack", addr);
+  }
   if (txData == nullptr || txLen == 0 || (rxLen > 0 && rxData == nullptr)) {
     return Status::Error(Err::INVALID_PARAM, "invalid fake write-read args");
   }
@@ -157,6 +165,7 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
       status |= cmd::MASK_STATUS_IM_UPDATE;
       bus->imUpdateStatusReadsRemaining--;
     }
+    bus->nowMs += bus->statusReadNowAdvanceMs;
     rxData[0] = status;
   } else {
     for (size_t i = 0; i < rxLen; ++i) {
@@ -343,6 +352,7 @@ void test_driver_is_not_copyable_or_movable() {
 
 void test_get_settings_snapshot() {
   FakeBus bus;
+  bus.deviceAddress = 0x77;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
   cfg.i2cAddress = 0x77;
@@ -416,6 +426,7 @@ void test_begin_rejects_invalid_oversampling_combination() {
 
 void test_invalid_begin_after_success_resets_default_runtime() {
   FakeBus bus;
+  bus.deviceAddress = 0x77;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
   cfg.i2cAddress = 0x77;
@@ -502,6 +513,21 @@ void test_begin_waits_for_nvm_update_before_reading_calibration() {
   TEST_ASSERT_EQUAL_UINT32(5u, bus.statusReadCalls);
   TEST_ASSERT_FALSE(bus.calibrationReadWhileImUpdate);
   TEST_ASSERT_TRUE(dev.isInitialized());
+}
+
+void test_begin_nvm_wait_handles_monotonic_wraparound() {
+  FakeBus bus;
+  bus.nowMs = 0xFFFFFFFCu;
+  bus.imUpdateStatusReadsRemaining = 4;
+  bus.statusReadNowAdvanceMs = 2;
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(dev.isInitialized());
+  TEST_ASSERT_FALSE(bus.calibrationReadWhileImUpdate);
+  TEST_ASSERT_TRUE(bus.nowMs < 20u);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(7u, bus.statusReadCalls);
 }
 
 void test_begin_defers_apply_config_when_device_measuring_without_write() {
@@ -671,6 +697,45 @@ void test_probe_chip_id_mismatch_does_not_update_health() {
                           static_cast<uint8_t>(dev.state()));
 }
 
+void test_begin_accepts_both_supported_addresses_and_rejects_wrong_address() {
+  FakeBus bus76;
+  BME280::BME280 dev76;
+  TEST_ASSERT_TRUE(dev76.begin(makeConfig(bus76)).ok());
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev76.getSettings(snap).ok());
+  TEST_ASSERT_EQUAL_UINT8(0x76, snap.i2cAddress);
+
+  FakeBus bus77;
+  bus77.deviceAddress = 0x77;
+  Config cfg77 = makeConfig(bus77);
+  cfg77.i2cAddress = 0x77;
+  BME280::BME280 dev77;
+  TEST_ASSERT_TRUE(dev77.begin(cfg77).ok());
+  TEST_ASSERT_TRUE(dev77.getSettings(snap).ok());
+  TEST_ASSERT_EQUAL_UINT8(0x77, snap.i2cAddress);
+
+  FakeBus wrongAddressBus;
+  wrongAddressBus.deviceAddress = 0x77;
+  BME280::BME280 wrongAddressDev;
+  Status st = wrongAddressDev.begin(makeConfig(wrongAddressBus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(0x76, st.detail);
+  TEST_ASSERT_FALSE(wrongAddressDev.isInitialized());
+
+  FakeBus wrongChipIdBus;
+  wrongChipIdBus.deviceAddress = 0x77;
+  wrongChipIdBus.chipId = 0x61;
+  Config wrongChipCfg = makeConfig(wrongChipIdBus);
+  wrongChipCfg.i2cAddress = 0x77;
+  BME280::BME280 wrongChipDev;
+  st = wrongChipDev.begin(wrongChipCfg);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CHIP_ID_MISMATCH),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(0x61, st.detail);
+  TEST_ASSERT_FALSE(wrongChipDev.isInitialized());
+}
+
 void test_begin_rejects_wrong_chip_id() {
   FakeBus bus;
   bus.chipId = 0x61;
@@ -681,6 +746,20 @@ void test_begin_rejects_wrong_chip_id() {
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_INT32(0x61, st.detail);
   TEST_ASSERT_FALSE(dev.isInitialized());
+}
+
+void test_begin_address_nack_maps_to_device_not_found() {
+  FakeBus bus;
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "chip id address nack", -22);
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-22, st.detail);
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
 }
 
 void test_begin_preserves_timeout_transport_error() {
@@ -1009,6 +1088,61 @@ void test_dirty_state_clears_after_successful_recover_resync() {
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
   TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
+}
+
+void test_recover_preserves_cached_sample_and_dirty_until_successful_resync() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.hasSample());
+  const uint32_t sampleTimestamp = dev.sampleTimestampMs();
+  RawSample rawBefore{};
+  CompensatedSample compBefore{};
+  TEST_ASSERT_TRUE(dev.getRawSample(rawBefore).ok());
+  TEST_ASSERT_TRUE(dev.getCompensatedSample(compBefore).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 3u;  // sleep write, config write, restore write
+  bus.writeError = Status::Error(Err::I2C_BUS, "make dirty before recover", -35);
+  Status st = dev.setFilter(Filter::X2);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-35, dev.hardwareConfigDirtyError().detail);
+  TEST_ASSERT_TRUE(dev.hasSample());
+
+  bus.failWriteOnCall = bus.writeCalls + 2u;  // recover sleep write succeeds, config write fails
+  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "recover resync timeout", -36);
+  st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-35, dev.hardwareConfigDirtyError().detail);
+  TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_EQUAL_UINT32(sampleTimestamp, dev.sampleTimestampMs());
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareConfigDirty);
+  TEST_ASSERT_TRUE(snap.hasSample);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Filter::OFF),
+                          static_cast<uint8_t>(snap.filter));
+  TEST_ASSERT_EQUAL_INT32(rawBefore.adcT, snap.rawSample.adcT);
+  TEST_ASSERT_EQUAL_INT32(rawBefore.adcP, snap.rawSample.adcP);
+  TEST_ASSERT_EQUAL_INT32(rawBefore.adcH, snap.rawSample.adcH);
+  TEST_ASSERT_EQUAL_INT32(compBefore.tempC_x100, snap.compSample.tempC_x100);
+  TEST_ASSERT_EQUAL_UINT32(compBefore.pressurePa, snap.compSample.pressurePa);
+  TEST_ASSERT_EQUAL_UINT32(compBefore.humidityPct_x1024, snap.compSample.humidityPct_x1024);
+
+  st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
+  TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_EQUAL_UINT32(sampleTimestamp, dev.sampleTimestampMs());
 }
 
 void test_invalid_begin_does_not_clear_existing_dirty_state() {
@@ -2017,6 +2151,7 @@ int main() {
   RUN_TEST(test_begin_normalizes_offline_threshold_on_stored_copy);
   RUN_TEST(test_begin_success_sets_ready_without_health_counts);
   RUN_TEST(test_begin_waits_for_nvm_update_before_reading_calibration);
+  RUN_TEST(test_begin_nvm_wait_handles_monotonic_wraparound);
   RUN_TEST(test_begin_defers_apply_config_when_device_measuring_without_write);
   RUN_TEST(test_begin_times_out_when_nvm_update_stuck);
   RUN_TEST(test_begin_forced_mode_keeps_hardware_sleep_until_requested);
@@ -2027,7 +2162,9 @@ int main() {
   RUN_TEST(test_probe_address_nack_maps_to_device_not_found);
   RUN_TEST(test_probe_preserves_non_address_transport_errors_without_health_update);
   RUN_TEST(test_probe_chip_id_mismatch_does_not_update_health);
+  RUN_TEST(test_begin_accepts_both_supported_addresses_and_rejects_wrong_address);
   RUN_TEST(test_begin_rejects_wrong_chip_id);
+  RUN_TEST(test_begin_address_nack_maps_to_device_not_found);
   RUN_TEST(test_begin_preserves_timeout_transport_error);
   RUN_TEST(test_begin_preserves_chip_id_bus_and_data_errors);
   RUN_TEST(test_recover_failure_updates_health_once);
@@ -2046,6 +2183,7 @@ int main() {
   RUN_TEST(test_measurement_time_estimate_uses_oversampling_formula);
   RUN_TEST(test_partial_config_restore_failure_marks_hardware_dirty);
   RUN_TEST(test_dirty_state_clears_after_successful_recover_resync);
+  RUN_TEST(test_recover_preserves_cached_sample_and_dirty_until_successful_resync);
   RUN_TEST(test_invalid_begin_does_not_clear_existing_dirty_state);
   RUN_TEST(test_apply_config_partial_failure_marks_dirty_and_preserves_error);
   RUN_TEST(test_soft_reset_write_timeout_marks_dirty_and_preserves_error);
