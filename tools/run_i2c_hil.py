@@ -394,10 +394,17 @@ def build_command_sequence(args: argparse.Namespace) -> tuple[list[CommandSpec],
     else:
         checklist.extend(cmd.formatted(address=args.address) for cmd in DESTRUCTIVE_COMMANDS)
 
+    fault_items = [cmd.formatted(address=args.address) for cmd in MANUAL_FAULT_CHECKS]
     if args.include_fault_tests:
-        checklist.extend(cmd.formatted(address=args.address) for cmd in MANUAL_FAULT_CHECKS)
+        checklist.extend(
+            dataclasses.replace(
+                item,
+                notes=f"{item.notes} Requested via --include-fault-tests; execute and sign off manually.",
+            )
+            for item in fault_items
+        )
     else:
-        checklist.extend(cmd.formatted(address=args.address) for cmd in MANUAL_FAULT_CHECKS)
+        checklist.extend(fault_items)
 
     return executable, checklist
 

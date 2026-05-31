@@ -109,16 +109,16 @@ Commands were run locally on 2026-05-31.
 
 | Command | Result |
 | --- | --- |
-| `python -m py_compile tools/run_i2c_hil.py` | PASS, no output |
-| `python tools/run_i2c_hil.py --dry-run` | PASS, wrote ignored artifacts under `hil_logs/i2c_20260531_151231`, final verdict `INCOMPLETE`, no physical HIL validation |
+| `python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py` | PASS, no output |
+| `python tools/run_i2c_hil.py --dry-run` | PASS, wrote ignored artifacts under `hil_logs/i2c_20260531_151611`, final verdict `INCOMPLETE`, no physical HIL validation |
 | `python tools/check_hil_contract.py` | PASS, `HIL contract PASSED` |
 | `python tools/check_core_timing_guard.py` | PASS, `Core timing guard PASSED` |
 | `python tools/check_cli_contract.py` | PASS, `CLI contract PASSED` |
 | `python tools/check_idf_example_contract.py` | PASS, `IDF example contract PASSED` |
 | `python scripts/generate_version.py check` | PASS, `Version.h` up to date |
-| `python -m platformio test -e native` | PASS, 88/88 tests, `00:00:05.365` |
-| `python -m platformio run -e esp32s3dev` | PASS, `00:00:27.622` |
-| `python -m platformio run -e esp32s2dev` | PASS, `00:00:27.357` |
+| `python -m platformio test -e native` | PASS, 88/88 tests, `00:00:05.454` |
+| `python -m platformio run -e esp32s3dev` | PASS, `00:00:37.535` |
+| `python -m platformio run -e esp32s2dev` | PASS, `00:00:46.095` |
 | `python -m platformio pkg pack` | PASS, wrote `BME280-1.5.0.tar.gz` |
 | `python tools/check_package_contents.py` | PASS, `Package contents PASSED (BME280-1.5.0.tar.gz)` |
 | Package archive cleanup | PASS, `BME280-1.5.0.tar.gz` removed |

@@ -126,6 +126,18 @@ def main() -> int:
     if "cfg" not in destructive_sequence[wreg_index + 1:]:
         fail("--include-destructive sequence must include config evidence after raw write")
 
+    fault_args = types.SimpleNamespace(
+        address="0x76",
+        commands=None,
+        include_soak=False,
+        include_destructive=False,
+        include_fault_tests=True,
+        timeout=8.0,
+    )
+    _, fault_manual = runner.build_command_sequence(fault_args)
+    if not any("Requested via --include-fault-tests" in item.notes for item in fault_manual):
+        fail("--include-fault-tests must be visible in manual checklist notes")
+
     for path, text in ((RUNBOOK, runbook_text), (REPORT, report_text)):
         assert_contains(text, "scan", path)
         assert_contains(text, "ACK", path)
