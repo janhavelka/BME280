@@ -18,6 +18,9 @@ report or attached transcript:
 - Full CLI or serial command transcript.
 - Environmental reference used, if any.
 - Pass/fail result and notes for each test row below.
+- HIL runner artifacts from `tools/run_i2c_hil.py`, if used:
+  `serial_transcript.txt`, `summary.md`, `summary.json`, and
+  `operator_checklist.md`.
 
 | Area | Target / condition | Status | Evidence |
 |------|--------------------|--------|----------|
@@ -38,23 +41,51 @@ Minimum bring-up command evidence:
 
 ```text
 version
+help
 scan
+addr 0x76 or addr 0x77
+begin
 probe
 chipid
 cfg
 calib
+calib raw
 status
+timing
+reg 0xD0
 read
-repeat read 10 times or record stress 10 as the available counted-read equivalent
+raw
+comp
+data
 force
 read
 normal on
-repeat read 20 times; record that true `read 20` is not currently a CLI command
-reset
-probe
-cfg
 read
+normal off
+reset
+recover
 selftest
+stress 10
+drv
+state
+```
+
+Use stress 10 as an automated forced-measurement stress substitute, not a true
+counted-read command. There is no `read 10` or `read 20` CLI command.
+
+Default runner example:
+
+```bash
+python tools/run_i2c_hil.py --port <PORT> --baud 115200 --address 0x76 --out hil_logs
+```
+
+Optional longer soak evidence:
+
+```text
+normal on
+periodic repeated read commands
+normal off
+cfg
 stress 500
 ```
 

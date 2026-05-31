@@ -3,8 +3,9 @@
 Branch: `hardening/bme280-industry-readiness`
 
 Note: this is a historical baseline audit. Several findings about dirty
-configuration diagnostics, compensation vectors, and reset/NVM fault handling
-are superseded by the dedicated Phase 01-04 reports.
+configuration diagnostics, compensation vectors, reset/NVM fault handling, and
+pre-HIL readiness are superseded by the later phase reports, the pre-HIL
+readiness report, and the I2C HIL runbook.
 
 ## Executive Summary
 

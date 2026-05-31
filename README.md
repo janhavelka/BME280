@@ -373,14 +373,15 @@ Not part of the library. These simulate project-level glue and keep examples sel
 ## Running Tests
 
 ```bash
-pio test -e native
+python -m platformio test -e native
 python tools/check_cli_contract.py
 python tools/check_core_timing_guard.py
+python tools/check_hil_contract.py
 python tools/check_idf_example_contract.py
 python scripts/generate_version.py check
-pio run -e esp32s3dev
-pio run -e esp32s2dev
-pio pkg pack
+python -m platformio run -e esp32s3dev
+python -m platformio run -e esp32s2dev
+python -m platformio pkg pack
 python tools/check_package_contents.py
 idf.py -C examples/idf/basic set-target esp32s3
 idf.py -C examples/idf/basic build
@@ -396,6 +397,9 @@ idf.py -C examples/idf/basic build
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` - explicit hardware validation status
 - `docs/BME280_PRE_HIL_READINESS_REPORT.md` - pre-HIL checklist, command plan, and remaining HIL-only risks
+- `docs/I2C_HIL_RUNBOOK.md` - serial HIL runner procedure and evidence rules
+- `docs/I2C_HIL_TARGET_TEMPLATE.md` - per-target HIL evidence template
+- `docs/I2C_HIL_SELFTEST_REPORT.md` - report for the host-side HIL runner addition
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
 ## Known Limitations

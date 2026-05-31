@@ -3,7 +3,7 @@
 Date: 2026-05-31
 Branch: `hardening/bme280-industry-readiness`
 Starting HEAD: `2c4098ec027cfc3d07ea323b204fdb86d94c8cfa`
-Final HEAD: this pass commit; exact hash is returned by Git in the final response.
+Final HEAD: `e4e859c44efe61aba27eb6784a576aed79b82d5c`
 
 ## Scope
 
@@ -94,10 +94,12 @@ Example defaults to verify or override:
   timeout.
 - PlatformIO board targets: `esp32s3dev` and `esp32s2dev`.
 
-## Recommended HIL Command Sequence
+## Superseded HIL Command Sequence
 
-Use the actual supported commands below. Commands marked as equivalents are
-intentional because the CLI does not implement the exact requested spelling.
+This pre-HIL plan is historical and is superseded by `docs/I2C_HIL_RUNBOOK.md`
+and `tools/run_i2c_hil.py`. Use the default guarded sequence in the runbook for
+new evidence. The sequence below remains only as the original pre-HIL operator
+plan and includes optional soak work that is now gated by `--include-soak`.
 
 ```text
 version
@@ -108,7 +110,7 @@ cfg
 calib
 status
 read
-repeat read 10 times, or run stress 10 and record that it is the available counted-read equivalent
+repeat read 10 times, or run stress 10 and record that it is an automated forced-measurement stress substitute
 force
 read
 normal on
@@ -128,8 +130,9 @@ Supported equivalents:
 - `normal` setup: `normal on`; use `normal off` to return to sleep.
 - `softreset` equivalent: `reset`.
 - `read 10` / `read 20`: no exact counted-read command. Use repeated manual
-  `read` commands for normal-mode evidence, and optionally `stress N` for an
-  automated forced-measurement stress equivalent.
+  `read` commands for normal-mode evidence, and optionally `stress N` as an
+  automated forced-measurement stress substitute, not a true counted-read
+  command.
 
 ## Fault-Path HIL Plan
 
@@ -159,7 +162,7 @@ Supported equivalents:
 
 ## Readiness Verdict
 
-Ready for HIL: YES, with no software blocker before connecting hardware.
+Software-prepared for HIL: YES. Physical HIL validation: NOT RUN.
 
 The only pre-connection requirements are operator-owned: select the board and
 BME280 module, wire SDO/CSB/SDA/SCL/VDD/VDDIO deliberately, document pull-ups
