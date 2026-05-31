@@ -132,7 +132,7 @@ BASE_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         command="calib raw",
         purpose="Capture raw calibration register bytes.",
-        expected=("Raw", "0x"),
+        expected=("Calibration (Raw Registers)", "TP:", "H:"),
         timeout_s=5.0,
     ),
     CommandSpec(
@@ -144,7 +144,7 @@ BASE_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         command="timing",
         purpose="Record measurement timing estimates for the current config.",
-        expected=("Estimated", "Measurement"),
+        expected=("Estimated measurement time", "Estimated normal cycle"),
         timeout_s=5.0,
     ),
     CommandSpec(
@@ -165,13 +165,13 @@ BASE_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         command="raw",
         purpose="Capture cached raw ADC sample and validity flags.",
-        expected=("Raw ADC", "Validity"),
+        expected=("Raw ADC", "Valid channels: T=", "Cached sample age"),
         timeout_s=5.0,
     ),
     CommandSpec(
         command="comp",
         purpose="Capture cached fixed-point compensated sample and validity flags.",
-        expected=("Compensated", "Validity"),
+        expected=("Compensated", "Valid channels: T="),
         timeout_s=5.0,
     ),
     CommandSpec(
