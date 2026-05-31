@@ -110,7 +110,7 @@ Commands were run locally on 2026-05-31.
 | Command | Result |
 | --- | --- |
 | `python -m py_compile tools/run_i2c_hil.py` | PASS, no output |
-| `python tools/run_i2c_hil.py --dry-run` | PASS, wrote ignored artifacts under `hil_logs/i2c_20260531_150948`, final verdict `INCOMPLETE`, no physical HIL validation |
+| `python tools/run_i2c_hil.py --dry-run` | PASS, wrote ignored artifacts under `hil_logs/i2c_20260531_151231`, final verdict `INCOMPLETE`, no physical HIL validation |
 | `python tools/check_hil_contract.py` | PASS, `HIL contract PASSED` |
 | `python tools/check_core_timing_guard.py` | PASS, `Core timing guard PASSED` |
 | `python tools/check_cli_contract.py` | PASS, `CLI contract PASSED` |
