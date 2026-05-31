@@ -24,7 +24,9 @@ REQUIRED_COMMON = [
 
 MANDATORY_COMMANDS = [
     "help",
+    "version",
     "scan",
+    "addr",
     "probe",
     "recover",
     "drv",
@@ -34,7 +36,10 @@ MANDATORY_COMMANDS = [
     "comp",
     "timing",
     "status",
+    "id",
     "chipid",
+    "force",
+    "normal",
     "mode",
     "osrs",
     "filter",
@@ -49,7 +54,9 @@ MANDATORY_COMMANDS = [
 ]
 
 HANDLED_COMMANDS = [
+    "version",
     "scan",
+    "addr",
     "probe",
     "recover",
     "drv",
@@ -59,7 +66,10 @@ HANDLED_COMMANDS = [
     "comp",
     "timing",
     "status",
+    "id",
     "chipid",
+    "force",
+    "normal",
     "mode",
     "osrs",
     "filter",

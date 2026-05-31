@@ -91,6 +91,22 @@ the framework-neutral core fallback is intentionally inert.
 `src/`, provide equivalent `Config::i2cWrite` and `Config::i2cWriteRead` callbacks in
 your application.
 
+## Hardware Integration Notes
+
+- I2C address is selected by SDO: `0x76` when SDO is tied to GND, `0x77` when SDO is tied to VDDIO. Do not leave SDO floating.
+- For I2C operation, tie CSB high to VDDIO before power-on reset. Driving CSB low can select SPI mode and interfere with I2C until POR.
+- BME280 has separate VDD and VDDIO rails. Do not drive SDA, SCL, SDO, or CSB high while VDDIO is off.
+- Use external SDA/SCL pullups to VDDIO for production hardware. Example internal pullups are bring-up aids, not a production signal-integrity design.
+- Place local decoupling close to the sensor VDD/VDDIO/GND pins and keep humidity exposure away from condensation, contamination, and board heat sources.
+
+### Shared Bus Guidance
+
+The library does not own I2C. A production shared-bus application should own the bus handle, pins, clock, pullups, timeout policy, and lock/mutex outside the driver. Serialize every driver call that can touch I2C, do not call driver APIs from ISRs, and call `tick()` from a task or scheduler that is not blocked by console input. Transport callbacks must complete synchronously and must not recursively call into the same `BME280::BME280` instance.
+
+### Humidity Handling
+
+Humidity readings are for non-condensing environments. Soldering/reflow, contamination, condensation, or storage outside the operating range can temporarily shift humidity output. Treat the broad example self-test humidity range as a smoke check only; use application-specific plausibility limits and follow Bosch handling/reconditioning guidance for production calibration work.
+
 ## Health Monitoring
 
 The driver tracks I2C communication health:
@@ -216,6 +232,10 @@ polling uses health-tracked I2C, so repeated status-read transport failures can
 move the driver to `DEGRADED` or `OFFLINE` while preserving the root-cause
 `Status`.
 
+Cached raw and compensated samples may predate `recover()`. After recovery,
+request a fresh measurement before using `getRawSample()` or
+`getCompensatedSample()` for control decisions.
+
 ### Public I2C Transaction Shape
 
 | API | Typical I2C transactions | Notes |
@@ -228,6 +248,20 @@ move the driver to `DEGRADED` or `OFFLINE` while preserving the root-cause
 | `setFilter()` / `setStandby()` | status read, sleep write, status read, `config` write, restore write | Returns `BUSY` without writes if already measuring; skips `config` and marks dirty if still measuring after sleep write |
 | `recover()` | chip ID read, bounded NVM polling, calibration reads, status guard, config resync writes | Allowed while OFFLINE; reloads calibration before config reapply |
 | `softReset()` | reset write, bounded NVM polling, calibration reads, status guard, config resync writes | Marks dirty if reset succeeds but any later step fails |
+
+### Blocking Latency Bounds
+
+All library I2C calls are synchronous and bounded by the injected transport timeout and driver poll limits.
+
+| API | Blocking bound |
+|-----|----------------|
+| `begin()` | A fixed sequence of I2C operations plus bounded NVM polling; each transport callback receives `Config::i2cTimeoutMs` |
+| `probe()` | One chip-ID register read through raw I2C, bounded by `Config::i2cTimeoutMs` |
+| `requestMeasurement()` | Forced mode performs one status read and one mode write; normal mode schedules work and returns |
+| `tick()` | Before deadline: no I2C. After deadline: one status read and one `0xF7..0xFE` burst read |
+| Typed setters | One or a small fixed sequence of register reads/writes; `setFilter()` and `setStandby()` use a sleep/config/restore sequence |
+| `recover()` | Chip-ID read, bounded NVM polling, calibration reload, and full config resync |
+| `softReset()` | Reset write, bounded NVM polling with a 10 ms real-clock deadline when `Config::nowMs` is supplied, calibration reload, and config resync |
 
 Sample numeric units are stable: `Measurement` returns degrees Celsius, Pascals,
 and percent RH; `CompensatedSample` returns `tempC_x100`, integer Pascals, and
@@ -244,6 +278,10 @@ temperature/pressure coefficients are signed 16-bit values. `dig_H4` and
 and `0xE6`. Compensation follows the Bosch integer flow: temperature is computed
 first to produce `t_fine`; pressure uses the 64-bit path with a divide-by-zero
 guard; humidity is clamped to `0..100%RH`.
+
+The IIR filter affects pressure and temperature only; humidity is not filtered
+by the BME280 IIR path. Changing filter settings resets the hardware filter
+memory, so the next sample seeds the filter again.
 
 ### Raw Register Access
 
@@ -293,9 +331,10 @@ estimateNormalCycleMs = estimateMeasurementTimeMs + getStandbyTimeMs()
 
 ## Examples
 
-- `01_basic_bringup_cli/` - Interactive CLI for testing
-- `idf/basic/` - Native ESP-IDF example using `app_main`, `driver/i2c_master.h`, FreeRTOS timing, fixed command buffers, and the same user-facing CLI workflow as Arduino
+- `01_basic_bringup_cli/` - Arduino/PlatformIO bring-up and diagnostic CLI; not a production firmware template
+- `idf/basic/` - Native ESP-IDF bring-up and diagnostic CLI using `app_main`, `driver/i2c_master.h`, FreeRTOS timing, fixed command buffers, and the same user-facing CLI workflow as Arduino
 - CLI register diagnostics: `reg <addr>` and `wreg <addr> <val>` provide tracked raw register access for bring-up and service work. Raw writes bypass the typed config helpers; use `recover()` or `begin()` to restore cached settings after manual register edits.
+- CLI diagnostics include `addr [0x76|0x77]`, `id`/`chipid`, `status`, `calib`, `force`, `normal on/off`, `reset`, `probe`, `recover`, `selftest`, `stress N`, and `stress_mix N`. `selftest` is a safe command smoke check with loose environment-dependent plausibility ranges; it is not factory calibration or hardware qualification.
 
 ### Example Helpers (`examples/common/`)
 
@@ -338,8 +377,11 @@ pio test -e native
 python tools/check_cli_contract.py
 python tools/check_core_timing_guard.py
 python tools/check_idf_example_contract.py
+python scripts/generate_version.py check
 pio run -e esp32s3dev
 pio run -e esp32s2dev
+pio pkg pack
+python tools/check_package_contents.py
 idf.py -C examples/idf/basic set-target esp32s3
 idf.py -C examples/idf/basic build
 idf.py -C examples/idf/basic set-target esp32s2
@@ -352,7 +394,14 @@ idf.py -C examples/idf/basic build
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
 - `docs/IDF_PORT_IMPLEMENTATION.md` - implemented IDF component/example notes
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
+- `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` - explicit hardware validation status
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
+
+## Known Limitations
+
+- Hardware validation is not claimed until a report records board, wiring, address, commands, and results.
+- Local pure ESP-IDF `idf.py` builds are not claimed unless the command results are recorded; CI is configured for ESP-IDF v6.0.1 on ESP32-S2 and ESP32-S3.
+- The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should add application-owned locking, scheduling, and timeout policy around the injected transport.
 
 ## License
 

@@ -71,6 +71,7 @@ bool bme280IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
   busConfig.scl_io_num = static_cast<gpio_num_t>(scl);
   busConfig.clk_source = I2C_CLK_SRC_DEFAULT;
   busConfig.glitch_ignore_cnt = 7;
+  // Bring-up aid only; production hardware should use external pullups to VDDIO.
   busConfig.flags.enable_internal_pullup = true;
 
   esp_err_t err = i2c_new_master_bus(&busConfig, &gContext.bus);

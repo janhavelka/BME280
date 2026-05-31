@@ -97,7 +97,7 @@ struct Config {
   void* timeUser = nullptr;              ///< User context for timing hook
   
   // === Device Settings ===
-  uint8_t i2cAddress = 0x76;             ///< 0x76 (SDO=GND) or 0x77 (SDO=VDD)
+  uint8_t i2cAddress = 0x76;             ///< 0x76 (SDO=GND) or 0x77 (SDO=VDDIO)
   uint32_t i2cTimeoutMs = 50;            ///< I2C transaction timeout in ms
 
   // === Measurement Settings ===

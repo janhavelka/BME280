@@ -1,6 +1,6 @@
 # BME280 ESP-IDF v6.0.1 Port Status
 
-Last updated: 2026-05-19
+Last updated: 2026-05-31
 
 Scope: implemented core portability changes plus an ESP-IDF component/example. Arduino/PlatformIO support remains intact.
 
@@ -19,7 +19,8 @@ Official ESP-IDF references:
 - `begin()` probes the configured address by reading the chip ID and configures the device from `Config`.
 - Supported device addresses are `0x76` and `0x77`; expected chip ID is `0x60`.
 - The driver supports sleep, forced, and normal mode, oversampling, filter, standby, raw and compensated pressure/temperature/humidity, soft reset, register access, and health tracking.
-- `tick(uint32_t nowMs)` drives non-blocking measurement and reset wait paths.
+- `tick(uint32_t nowMs)` drives measurement polling only. Reset/NVM waits are
+  blocking but bounded inside `begin()`, `recover()`, and `softReset()`.
 - Native tests and Arduino examples remain organized around the PlatformIO layout; `examples/idf/basic` is a native ESP-IDF project.
 
 ## Arduino Dependencies
@@ -186,7 +187,7 @@ ESP-IDF examples:
   only. Arduino-ESP32 builds do not prove pure ESP-IDF v6.0.1 compatibility.
 - Compile native tests to preserve framework-neutral behavior.
 - Run `python tools/check_idf_example_contract.py` to verify the IDF example is native, rejects Arduino compatibility facades, and preserves the command contract.
-- Add an ESP-IDF example build for ESP32-S2 and ESP32-S3.
+- Add an ESP-IDF v6.0.1 example build for ESP32-S2 and ESP32-S3 in CI.
 - Hardware smoke test both valid addresses, `0x76` and `0x77`.
 - Verify `begin()` fails cleanly when the bus is absent, the address is wrong, or chip ID is not `0x60`.
 - Verify raw burst read from `0xF7..0xFE` and compensation output against known environmental ranges.
@@ -213,7 +214,7 @@ ESP-IDF examples:
 4. Add `examples/idf/basic` with bus setup, adapter callbacks, and the full native-IDF CLI workflow. Done.
    Include top-level and `main` CMake files, component path wiring, and
    `extern "C" void app_main(void)`. Done.
-5. Build with ESP-IDF v6.0.1 for ESP32-S2 and ESP32-S3. Pending local ESP-IDF environment.
+5. Build with ESP-IDF v6.0.1 for ESP32-S2 and ESP32-S3. CI is configured; local ESP-IDF environment remains pending unless a phase report records successful `idf.py` runs.
 6. Run Arduino and native builds to confirm existing users are unaffected. Done with PlatformIO native, ESP32-S3, and ESP32-S2 builds.
 7. Run hardware tests for probe, forced mode, normal mode, reset, compensation, and fault injection. Pending hardware.
 8. Update README and changelog for the implemented port. Done.

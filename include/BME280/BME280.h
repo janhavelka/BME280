@@ -166,6 +166,8 @@ public:
   /// Attempt to recover from DEGRADED/OFFLINE state by verifying chip ID,
   /// waiting for NVM copy, reloading calibration, validating it, and reapplying
   /// cached config.
+  /// Cached raw/compensated samples may predate recovery; request a fresh
+  /// measurement before using cached samples after recovery.
   /// @return Status::Ok() if device now responsive, error otherwise
   Status recover();
 
@@ -318,8 +320,10 @@ public:
   /// Set IIR filter coefficient. The driver verifies the device is not
   /// currently measuring, switches to sleep, verifies again before writing
   /// config, then restores the cached mode. A successful change invalidates the
-  /// cached sample. If measuring appears after the sleep write, config is
-  /// skipped and dirty state is set.
+  /// cached sample. The BME280 IIR filter applies to pressure and temperature,
+  /// not humidity, and changing it resets the hardware filter memory. If
+  /// measuring appears after the sleep write, config is skipped and dirty state
+  /// is set.
   Status setFilter(Filter filter);
 
   /// Set standby time (normal mode only). The driver verifies the device is not

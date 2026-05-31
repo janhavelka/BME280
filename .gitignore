@@ -37,5 +37,5 @@ wifi_credentials.h
 *.bak
 *.log
 
-# Auto-generated files
-include/BME280/Version.h
+# Generated PlatformIO package archives
+BME280-*.tar.gz
