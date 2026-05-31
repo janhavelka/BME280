@@ -95,6 +95,19 @@ static Status mapPresenceError(const Status& st) {
   return st;
 }
 
+static bool isTransportFailure(const Status& st) {
+  switch (st.code) {
+    case Err::I2C_ERROR:
+    case Err::I2C_NACK_ADDR:
+    case Err::I2C_NACK_DATA:
+    case Err::I2C_TIMEOUT:
+    case Err::I2C_BUS:
+      return true;
+    default:
+      return false;
+  }
+}
+
 static bool isValidMeasurementSelection(Oversampling osrsT,
                                         Oversampling osrsP,
                                         Oversampling osrsH) {
@@ -217,7 +230,7 @@ Status BME280::begin(const Config& config) {
     return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
   }
 
-  st = _waitForNvmReady();
+  st = _waitForNvmReady(false);
   if (!st.ok()) {
     return st;
   }
@@ -364,10 +377,28 @@ Status BME280::recover() {
           Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId));
     }
 
-    // Re-apply configuration: after a power glitch or external reset
-    // device registers revert to defaults.
+    st = _waitForNvmReady(true);
+    if (!st.ok()) {
+      return isTransportFailure(st) ? st : _recordFailure(st);
+    }
+
+    st = _readCalibration();
+    if (!st.ok()) {
+      return st.code == Err::CALIBRATION_INVALID ? _recordFailure(st) : st;
+    }
+    st = _validateCalibration();
+    if (!st.ok()) {
+      return _recordFailure(st);
+    }
+
+    // Re-apply configuration: after a power glitch or external reset the
+    // device registers revert to defaults and calibration registers may have
+    // just been copied from NVM.
     st = _applyConfig();
     if (!st.ok()) {
+      if (st.code == Err::BUSY) {
+        return _recordFailure(st);
+      }
       return st;
     }
 
@@ -858,23 +889,37 @@ Status BME280::softReset() {
 
     Status st = writeRegister(cmd::REG_RESET, cmd::RESET_VALUE);
     if (!st.ok()) {
+      if (st.code != Err::I2C_NACK_ADDR && st.code != Err::DEVICE_NOT_FOUND) {
+        _markHardwareConfigDirty(st);
+      }
       return st;
     }
 
-    st = _waitForNvmReady();
+    st = _waitForNvmReady(true);
     if (!st.ok()) {
-      return st;
+      _markHardwareConfigDirty(st);
+      return isTransportFailure(st) ? st : _recordFailure(st);
     }
 
     st = _readCalibration();
     if (!st.ok()) {
-      return st;
+      _markHardwareConfigDirty(st);
+      return st.code == Err::CALIBRATION_INVALID ? _recordFailure(st) : st;
     }
     st = _validateCalibration();
     if (!st.ok()) {
+      _markHardwareConfigDirty(st);
+      return _recordFailure(st);
+    }
+    st = _applyConfig();
+    if (!st.ok()) {
+      _markHardwareConfigDirty(st);
+      if (st.code == Err::BUSY) {
+        return _recordFailure(st);
+      }
       return st;
     }
-    return _applyConfig();
+    return Status::Ok();
   }();
   if (startedOffline && !result.ok() && !result.inProgress()) {
     _reassertOfflineLatch();
@@ -1247,21 +1292,37 @@ Status BME280::_applyConfig() {
   return Status::Ok();
 }
 
-Status BME280::_waitForNvmReady() {
+Status BME280::_waitForNvmReady(bool tracked) {
   const uint32_t deadline = _nowMs() + NVM_READY_TIMEOUT_MS;
+  Status firstTransportError = Status::Ok();
+  bool sawSuccessfulStatusRead = false;
+
   for (uint16_t poll = 0; poll < NVM_READY_MAX_POLLS; ++poll) {
     if (deadlineReached(_nowMs(), deadline)) {
+      if (!sawSuccessfulStatusRead && !firstTransportError.ok()) {
+        return firstTransportError;
+      }
       return Status::Error(Err::TIMEOUT, "NVM ready timeout");
     }
 
     uint8_t status = 0;
-    const Status st = _readRegisterRaw(cmd::REG_STATUS, status);
-    if (st.ok() && (status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
-      return Status::Ok();
+    const Status st = tracked ? readRegister(cmd::REG_STATUS, status)
+                              : _readRegisterRaw(cmd::REG_STATUS, status);
+    if (st.ok()) {
+      sawSuccessfulStatusRead = true;
+      if ((status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
+        return Status::Ok();
+      }
     }
-    // I2C errors and im_update=1 are both expected during reset/POR.
+    if (!st.ok() && firstTransportError.ok()) {
+      firstTransportError = st;
+    }
+    // Transient I2C errors and im_update=1 are both expected during reset/POR.
   }
 
+  if (!sawSuccessfulStatusRead && !firstTransportError.ok()) {
+    return firstTransportError;
+  }
   return Status::Error(Err::TIMEOUT, "NVM ready polling limit reached",
                        NVM_READY_MAX_POLLS);
 }
@@ -1273,26 +1334,25 @@ Status BME280::_readCalibration() {
     return st;
   }
 
-  _digT1 = static_cast<uint16_t>((calibTP[1] << 8) | calibTP[0]);
-  _digT2 = static_cast<int16_t>((calibTP[3] << 8) | calibTP[2]);
-  _digT3 = static_cast<int16_t>((calibTP[5] << 8) | calibTP[4]);
+  const uint16_t digT1 = static_cast<uint16_t>((calibTP[1] << 8) | calibTP[0]);
+  const int16_t digT2 = static_cast<int16_t>((calibTP[3] << 8) | calibTP[2]);
+  const int16_t digT3 = static_cast<int16_t>((calibTP[5] << 8) | calibTP[4]);
 
-  _digP1 = static_cast<uint16_t>((calibTP[7] << 8) | calibTP[6]);
-  _digP2 = static_cast<int16_t>((calibTP[9] << 8) | calibTP[8]);
-  _digP3 = static_cast<int16_t>((calibTP[11] << 8) | calibTP[10]);
-  _digP4 = static_cast<int16_t>((calibTP[13] << 8) | calibTP[12]);
-  _digP5 = static_cast<int16_t>((calibTP[15] << 8) | calibTP[14]);
-  _digP6 = static_cast<int16_t>((calibTP[17] << 8) | calibTP[16]);
-  _digP7 = static_cast<int16_t>((calibTP[19] << 8) | calibTP[18]);
-  _digP8 = static_cast<int16_t>((calibTP[21] << 8) | calibTP[20]);
-  _digP9 = static_cast<int16_t>((calibTP[23] << 8) | calibTP[22]);
+  const uint16_t digP1 = static_cast<uint16_t>((calibTP[7] << 8) | calibTP[6]);
+  const int16_t digP2 = static_cast<int16_t>((calibTP[9] << 8) | calibTP[8]);
+  const int16_t digP3 = static_cast<int16_t>((calibTP[11] << 8) | calibTP[10]);
+  const int16_t digP4 = static_cast<int16_t>((calibTP[13] << 8) | calibTP[12]);
+  const int16_t digP5 = static_cast<int16_t>((calibTP[15] << 8) | calibTP[14]);
+  const int16_t digP6 = static_cast<int16_t>((calibTP[17] << 8) | calibTP[16]);
+  const int16_t digP7 = static_cast<int16_t>((calibTP[19] << 8) | calibTP[18]);
+  const int16_t digP8 = static_cast<int16_t>((calibTP[21] << 8) | calibTP[20]);
+  const int16_t digP9 = static_cast<int16_t>((calibTP[23] << 8) | calibTP[22]);
 
   uint8_t h1 = 0;
   st = readRegs(cmd::REG_CALIB_H1, &h1, 1);
   if (!st.ok()) {
     return st;
   }
-  _digH1 = h1;
 
   uint8_t calibH[cmd::REG_CALIB_H_LEN] = {};
   st = readRegs(cmd::REG_CALIB_H_START, calibH, sizeof(calibH));
@@ -1300,14 +1360,40 @@ Status BME280::_readCalibration() {
     return st;
   }
 
-  _digH2 = static_cast<int16_t>((calibH[1] << 8) | calibH[0]);
-  _digH3 = calibH[2];
+  const int16_t digH2 = static_cast<int16_t>((calibH[1] << 8) | calibH[0]);
+  const uint8_t digH3 = calibH[2];
 
   int16_t h4 = static_cast<int16_t>((calibH[3] << 4) | (calibH[4] & 0x0F));
   int16_t h5 = static_cast<int16_t>((calibH[5] << 4) | (calibH[4] >> 4));
-  _digH4 = signExtend12(h4);
-  _digH5 = signExtend12(h5);
-  _digH6 = static_cast<int8_t>(calibH[6]);
+  const int16_t digH4 = signExtend12(h4);
+  const int16_t digH5 = signExtend12(h5);
+  const int8_t digH6 = static_cast<int8_t>(calibH[6]);
+
+  if (digT1 == 0 || digT1 == 0xFFFF) {
+    return Status::Error(Err::CALIBRATION_INVALID, "Invalid temperature calibration");
+  }
+  if (digP1 == 0 || digP1 == 0xFFFF) {
+    return Status::Error(Err::CALIBRATION_INVALID, "Invalid pressure calibration");
+  }
+
+  _digT1 = digT1;
+  _digT2 = digT2;
+  _digT3 = digT3;
+  _digP1 = digP1;
+  _digP2 = digP2;
+  _digP3 = digP3;
+  _digP4 = digP4;
+  _digP5 = digP5;
+  _digP6 = digP6;
+  _digP7 = digP7;
+  _digP8 = digP8;
+  _digP9 = digP9;
+  _digH1 = h1;
+  _digH2 = digH2;
+  _digH3 = digH3;
+  _digH4 = digH4;
+  _digH5 = digH5;
+  _digH6 = digH6;
 
   return Status::Ok();
 }

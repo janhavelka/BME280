@@ -2,6 +2,10 @@
 
 Branch: `hardening/bme280-industry-readiness`
 
+Note: this is a historical baseline audit. Several findings about dirty
+configuration diagnostics, compensation vectors, and reset/NVM fault handling
+are superseded by the dedicated Phase 01-04 reports.
+
 ## Executive Summary
 
 The BME280 library has a clean framework-neutral core, injected/non-owning I2C transport, chip-ID validation, calibration parsing, health tracking, and a real native ESP-IDF example. It is not yet fully industry-grade because multi-register configuration writes can leave hardware and cached settings divergent without an explicit dirty diagnostic, ESP-IDF builds are not covered in CI/local validation, and several device-specific fault tests are missing.

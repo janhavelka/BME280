@@ -128,7 +128,11 @@ public:
   // Lifecycle
   // =========================================================================
   
-  /// Initialize the driver with configuration
+  /// Initialize the driver with configuration.
+  /// Verifies chip ID 0x60, waits for NVM copy to finish, reads calibration,
+  /// validates coefficients, and applies cached config. Call after device POR
+  /// and I2C bus readiness; address NACK maps to DEVICE_NOT_FOUND while other
+  /// transport errors are preserved.
   /// @param config Configuration including transport callbacks
   /// @return Status::Ok() on success, error otherwise
   Status begin(const Config& config);
@@ -153,11 +157,15 @@ public:
   // Diagnostics
   // =========================================================================
   
-  /// Check if device is present on the bus (no health tracking)
-  /// @return Status::Ok() if device responds, error otherwise
+  /// Check if device is present on the bus (raw I2C, no health tracking).
+  /// Address NACK maps to DEVICE_NOT_FOUND; other transport errors and chip-ID
+  /// mismatch are preserved. Does not clear OFFLINE.
+  /// @return Status::Ok() if device responds with chip ID 0x60, error otherwise
   Status probe();
   
-  /// Attempt to recover from DEGRADED/OFFLINE state by probing and reapplying cached config
+  /// Attempt to recover from DEGRADED/OFFLINE state by verifying chip ID,
+  /// waiting for NVM copy, reloading calibration, validating it, and reapplying
+  /// cached config.
   /// @return Status::Ok() if device now responsive, error otherwise
   Status recover();
 
@@ -166,7 +174,7 @@ public:
   /// @return Status::Ok() always
   Status getSettings(SettingsSnapshot& out) const;
 
-  /// True when a failed multi-register config operation may have left sensor
+  /// True when a failed config/resync/reset operation may have left sensor
   /// registers different from the cached settings. Cleared only by a complete
   /// successful config resync in begin(), recover(), or softReset().
   bool hardwareConfigDirty() const { return _hardwareConfigDirty; }
@@ -336,7 +344,10 @@ public:
   /// Get standby time
   Status getStandby(Standby& out) const;
 
-  /// Soft reset device
+  /// Soft reset device. Writes 0xB6 to 0xE0, polls status.im_update with a
+  /// bounded deadline/poll limit, reloads calibration, validates it, and
+  /// reapplies cached config. If reset write succeeds but a later step fails,
+  /// hardwareConfigDirty() remains set with the root-cause status.
   Status softReset();
 
   /// Read chip ID
@@ -446,7 +457,7 @@ private:
 
   Status _applyConfig();
   Status _ensureConfigWriteReady();
-  Status _waitForNvmReady();
+  Status _waitForNvmReady(bool tracked);
   Status _readCalibration();
   Status _validateCalibration();
   Status _readRawData();

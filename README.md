@@ -1,6 +1,11 @@
 # BME280 Driver Library
 
-Production-grade BME280 I2C driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
+Production-oriented BME280 I2C driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
+
+Validation status: host/native tests, guard scripts, and Arduino PlatformIO
+builds are run in this repository. Physical BME280 hardware validation and
+local pure ESP-IDF `idf.py` builds are not claimed unless a phase report records
+the exact commands and hardware setup.
 
 ## Features
 
@@ -8,7 +13,7 @@ Production-grade BME280 I2C driver for ESP32 (Arduino/PlatformIO and ESP-IDF com
 - **Framework-neutral core** - Arduino and ESP-IDF integration live behind callbacks/adapters
 - **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
 - **Deterministic behavior** - no unbounded loops, no heap allocations
-- **Managed synchronous lifecycle** - blocking I2C ops with tick-based polling for waits
+- **Managed synchronous lifecycle** - blocking bounded reset/NVM polling and tick-driven measurement polling
 
 ## Installation
 
@@ -115,7 +120,7 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 
 ### Lifecycle
 
-- `Status begin(const Config& config)` - Initialize driver
+- `Status begin(const Config& config)` - Initialize driver, verify chip ID `0x60`, wait for NVM copy, read calibration, and apply config
 - `void tick(uint32_t nowMs)` - Process pending measurement operations; `nowMs` must use the same monotonic timebase as `Config::nowMs`
 - `void end()` - Shutdown driver and best-effort return the sensor to sleep
 - `bool isInitialized()` - True after successful `begin()` until `end()`
@@ -123,8 +128,8 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 
 ### Diagnostics
 
-- `Status probe()` - Check device presence (no health tracking)
-- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE (re-applies config)
+- `Status probe()` - Check device presence and chip ID through raw I2C without health tracking
+- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE; waits for NVM, reloads calibration, and reapplies cached config
 - `Status getSettings(SettingsSnapshot& out)` - Populate a snapshot of cached config and runtime state (no I2C)
 - `Status lastMeasurementStatus()` - Last measurement request, polling, raw-read, or compensation status retained because `tick()` is void
 
@@ -155,7 +160,7 @@ burst-read, or compensation step fails.
 - `Status setOversamplingT/P/H(Oversampling osrs)` - Configure temperature, pressure, or humidity oversampling
 - `Status setFilter(Filter filter)` - Configure the IIR filter coefficient through a safe sleep/config/restore sequence
 - `Status setStandby(Standby standby)` - Configure standby interval for normal mode through a safe sleep/config/restore sequence
-- `Status softReset()` - Write the Bosch reset command, reload calibration, and reapply cached config
+- `Status softReset()` - Write `0xB6` to reset register `0xE0`, wait for NVM copy, reload calibration, and reapply cached config
 - `Status readChipId/readStatus/readCtrlHum/readCtrlMeas/readConfig(...)` - Read status/config registers
 - `Status isMeasuring(bool& measuring)` - Read the measuring bit
 
@@ -180,17 +185,49 @@ driver sets `hardwareConfigDirty()` and preserves the original error in
 The dirty flag is cleared only by a complete successful resync through
 `begin()`, `recover()`, or `softReset()`.
 
+### Probe, Begin, Recover, and Reset Diagnostics
+
+`begin()` reads chip ID register `0xD0` once after configuration validation.
+Applications should call it after the BME280 has completed POR and is reachable
+on I2C. A value other than `0x60` returns `CHIP_ID_MISMATCH` with the observed
+ID in `Status::detail`. A definite address NACK maps to `DEVICE_NOT_FOUND`;
+timeouts, bus errors, data NACK, and generic I2C errors are preserved when the
+transport reports them.
+
+`probe()` is diagnostic-only. It uses raw I2C so it does not update health
+counters or clear an `OFFLINE` latch. It maps only definite address NACK to
+`DEVICE_NOT_FOUND`; other transport errors and chip-ID mismatch are returned
+unchanged.
+
+`softReset()` writes the Bosch reset command, then polls status bit `im_update`
+until NVM copy completes. Polling is bounded by both a 10 ms deadline when a real
+`Config::nowMs` hook is injected and a fixed poll limit when no real clock is
+available. Transient status-read errors are tolerated during reset/POR if a
+later poll succeeds. If NVM never becomes ready, the first useful transport
+error is returned; if status reads succeed but `im_update` remains set, the
+result is `TIMEOUT`.
+
+After a successful reset write, hardware config may be back at defaults. If NVM
+polling, calibration reload, validation, or config reapply fails,
+`hardwareConfigDirty()` remains set with the root-cause status. A successful
+`softReset()` or `recover()` reloads calibration and clears dirty state only
+after the full cached configuration is reapplied. Runtime reset/recover NVM
+polling uses health-tracked I2C, so repeated status-read transport failures can
+move the driver to `DEGRADED` or `OFFLINE` while preserving the root-cause
+`Status`.
+
 ### Public I2C Transaction Shape
 
 | API | Typical I2C transactions | Notes |
 |-----|--------------------------|-------|
-| `begin()` | chip ID read, bounded NVM status polling, calibration reads, status guard, config writes | Does not require `Config::nowMs`; can return `BUSY` without config writes if the device is measuring |
+| `begin()` | chip ID read, bounded NVM status polling, calibration reads, status guard, config writes | Does not require `Config::nowMs`; call after device POR/I2C readiness |
 | `requestMeasurement()` in forced mode | status read, `ctrl_meas` write | Returns `IN_PROGRESS` when accepted |
 | `tick()` after deadline | status read, one `0xF7..0xFE` burst read | Captures coherent pressure, temperature, and humidity ADC bytes |
 | `setOversamplingT/P()` | one `ctrl_meas` write | Invalid combinations are rejected before I2C |
 | `setOversamplingH()` | `ctrl_hum` write, `ctrl_meas` write | `ctrl_meas` latches humidity oversampling |
 | `setFilter()` / `setStandby()` | status read, sleep write, status read, `config` write, restore write | Returns `BUSY` without writes if already measuring; skips `config` and marks dirty if still measuring after sleep write |
-| `recover()` | chip ID read, status guard, config resync writes | Used after bus/device recovery or manual register edits |
+| `recover()` | chip ID read, bounded NVM polling, calibration reads, status guard, config resync writes | Allowed while OFFLINE; reloads calibration before config reapply |
+| `softReset()` | reset write, bounded NVM polling, calibration reads, status guard, config resync writes | Marks dirty if reset succeeds but any later step fails |
 
 Sample numeric units are stable: `Measurement` returns degrees Celsius, Pascals,
 and percent RH; `CompensatedSample` returns `tempC_x100`, integer Pascals, and
@@ -286,12 +323,13 @@ Not part of the library. These simulate project-level glue and keep examples sel
 3. Resource ownership: bus, pins, and timeout policy remain application-owned via `Config`.
 4. Memory behavior: no heap allocation in steady-state library operation.
 5. Error handling: all fallible APIs return `Status`; no exceptions and no silent failures.
-6. Health behavior: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds.
+6. Health behavior: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds. `probe()` remains raw diagnostic I2C and does not clear the latch.
 7. Measurement scheduling requires `Config::nowMs`. `begin()` does not fail without it, but `requestMeasurement()` returns `INVALID_CONFIG` if no monotonic clock is injected.
 8. Multi-register configuration failures set `hardwareConfigDirty()` and expose the original dirty-state error in `hardwareConfigDirtyError()` and `SettingsSnapshot`.
 9. Driver instances are not thread-safe and public APIs are not ISR-safe. Shared-bus users must serialize access externally.
 10. `setFilter()` and `setStandby()` return `BUSY` without config writes when the device initially reports `measuring`; if `measuring` appears after the sleep write, config is skipped and dirty state is set.
 11. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
+12. Reset and NVM polling are bounded. If status reads never succeed, the first transport error is returned; if successful status reads keep reporting `im_update`, the result is `TIMEOUT`.
 
 ## Running Tests
 

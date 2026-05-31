@@ -41,6 +41,7 @@ struct FakeBus {
   uint8_t writeLogLen = 0;
   bool failReadRegEnabled = false;
   uint8_t failReadReg = 0;
+  uint32_t failReadRegRemaining = 0;
   uint8_t lastReadReg = 0;
   size_t lastReadLen = 0;
 
@@ -114,6 +115,10 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
   bus->lastReadLen = rxLen;
   if (bus->failReadRegEnabled && reg == bus->failReadReg) {
     bus->failReadRegEnabled = false;
+    return bus->readError;
+  }
+  if (bus->failReadRegRemaining > 0 && reg == bus->failReadReg) {
+    bus->failReadRegRemaining--;
     return bus->readError;
   }
   for (size_t i = 0; i < rxLen; ++i) {
@@ -623,6 +628,61 @@ void test_probe_address_nack_maps_to_device_not_found() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
 }
 
+void test_probe_preserves_non_address_transport_errors_without_health_update() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t beforeFailures = dev.totalFailures();
+  const uint32_t beforeSuccess = dev.totalSuccess();
+  const DriverState beforeState = dev.state();
+
+  const Err errors[] = {Err::I2C_TIMEOUT, Err::I2C_BUS, Err::I2C_NACK_DATA, Err::I2C_ERROR};
+  for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+    bus.readErrorRemaining = 1;
+    bus.readError = Status::Error(errors[i], "forced probe transport error",
+                                  static_cast<int32_t>(-60 - static_cast<int32_t>(i)));
+    Status st = dev.probe();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(errors[i]), static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(static_cast<int32_t>(-60 - static_cast<int32_t>(i)), st.detail);
+    TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
+    TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(beforeState),
+                            static_cast<uint8_t>(dev.state()));
+  }
+}
+
+void test_probe_chip_id_mismatch_does_not_update_health() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t beforeFailures = dev.totalFailures();
+  const uint32_t beforeSuccess = dev.totalSuccess();
+  bus.chipId = 0x61;
+
+  Status st = dev.probe();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CHIP_ID_MISMATCH),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(0x61, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_begin_rejects_wrong_chip_id() {
+  FakeBus bus;
+  bus.chipId = 0x61;
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CHIP_ID_MISMATCH),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(0x61, st.detail);
+  TEST_ASSERT_FALSE(dev.isInitialized());
+}
+
 void test_begin_preserves_timeout_transport_error() {
   FakeBus bus;
   bus.readErrorRemaining = 1;
@@ -634,6 +694,22 @@ void test_begin_preserves_timeout_transport_error() {
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_INT32(-21, st.detail);
   TEST_ASSERT_FALSE(dev.isInitialized());
+}
+
+void test_begin_preserves_chip_id_bus_and_data_errors() {
+  const Err errors[] = {Err::I2C_BUS, Err::I2C_NACK_DATA, Err::I2C_ERROR};
+  for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+    FakeBus bus;
+    bus.readErrorRemaining = 1;
+    bus.readError = Status::Error(errors[i], "chip id transport error",
+                                  static_cast<int32_t>(-70 - static_cast<int32_t>(i)));
+    BME280::BME280 dev;
+
+    Status st = dev.begin(makeConfig(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(errors[i]), static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(static_cast<int32_t>(-70 - static_cast<int32_t>(i)), st.detail);
+    TEST_ASSERT_FALSE(dev.isInitialized());
+  }
 }
 
 void test_recover_failure_updates_health_once() {
@@ -971,6 +1047,279 @@ void test_apply_config_partial_failure_marks_dirty_and_preserves_error() {
   TEST_ASSERT_EQUAL_INT32(-33, dev.hardwareConfigDirtyError().detail);
 }
 
+void test_soft_reset_write_timeout_marks_dirty_and_preserves_error() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 1u;
+  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "reset write timeout", -80);
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-80, st.detail);
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-80, dev.hardwareConfigDirtyError().detail);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_soft_reset_write_address_nack_preserves_error_without_dirty_state() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 1u;
+  bus.writeError = Status::Error(Err::I2C_NACK_ADDR, "reset address nack", -91);
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-91, st.detail);
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_soft_reset_nvm_im_update_timeout_marks_dirty_and_health_failure() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(dev.lastError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_begin_nvm_transport_error_preserved() {
+  FakeBus bus;
+  bus.failReadReg = cmd::REG_STATUS;
+  bus.failReadRegRemaining = 300;
+  bus.readError = Status::Error(Err::I2C_TIMEOUT, "nvm status timeout", -81);
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-81, st.detail);
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.writeCalls);
+}
+
+void test_begin_calibration_read_failure_preserves_transport_error() {
+  FakeBus bus;
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = cmd::REG_CALIB_TP_START;
+  bus.readError = Status::Error(Err::I2C_NACK_DATA, "begin calibration nack", -89);
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-89, st.detail);
+  TEST_ASSERT_FALSE(dev.isInitialized());
+}
+
+void test_begin_apply_config_failure_marks_dirty_and_stays_uninitialized() {
+  FakeBus bus;
+  bus.failWriteOnCall = 1;
+  bus.writeError = Status::Error(Err::I2C_BUS, "begin apply bus error", -90);
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-90, dev.hardwareConfigDirtyError().detail);
+}
+
+void test_soft_reset_nvm_transport_error_preserved_and_marks_dirty() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failReadReg = cmd::REG_STATUS;
+  bus.failReadRegRemaining = 300;
+  bus.readError = Status::Error(Err::I2C_NACK_DATA, "nvm status data nack", -82);
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-82, st.detail);
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_soft_reset_nvm_status_successes_with_stuck_im_update_return_timeout() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
+  bus.failReadReg = cmd::REG_STATUS;
+  bus.failReadRegRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_TIMEOUT, "first nvm status timeout", -92);
+
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(dev.lastError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_soft_reset_calibration_read_failure_marks_dirty() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  Calibration before{};
+  TEST_ASSERT_TRUE(dev.getCalibration(before).ok());
+
+  setBoschSyntheticCalibration(bus);
+
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = cmd::REG_CALIB_H_START;
+  bus.readError = Status::Error(Err::I2C_BUS, "reset calibration bus error", -83);
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+
+  Calibration after{};
+  TEST_ASSERT_TRUE(dev.getCalibration(after).ok());
+  TEST_ASSERT_EQUAL_UINT16(before.digT1, after.digT1);
+  TEST_ASSERT_EQUAL_INT16(before.digT2, after.digT2);
+  TEST_ASSERT_EQUAL_UINT16(before.digP1, after.digP1);
+}
+
+void test_soft_reset_invalid_calibration_marks_dirty_and_records_health_failure() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.reg[cmd::REG_DIG_T1_LSB] = 0;
+  bus.reg[cmd::REG_DIG_T1_MSB] = 0;
+
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                          static_cast<uint8_t>(dev.lastError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_soft_reset_apply_config_failure_marks_dirty_and_preserves_error() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 2u;  // reset write succeeds, apply sleep write fails
+  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "reset apply timeout", -84);
+  Status st = dev.softReset();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-84, dev.hardwareConfigDirtyError().detail);
+}
+
+void test_soft_reset_success_reloads_calibration_and_clears_dirty() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 3u;
+  bus.writeError = Status::Error(Err::I2C_BUS, "make dirty before reset", -85);
+  Status st = dev.setFilter(Filter::X2);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+
+  setBoschSyntheticCalibration(bus);
+  st = dev.softReset();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+
+  Calibration calib{};
+  TEST_ASSERT_TRUE(dev.getCalibration(calib).ok());
+  TEST_ASSERT_EQUAL_UINT16(27504, calib.digT1);
+  TEST_ASSERT_EQUAL_INT16(26435, calib.digT2);
+  TEST_ASSERT_EQUAL_UINT16(36477, calib.digP1);
+}
+
+void test_recover_waits_for_nvm_and_reloads_calibration_before_apply() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  setBoschSyntheticCalibration(bus);
+  bus.imUpdateStatusReadsRemaining = 2;
+  Status st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(bus.calibrationReadWhileImUpdate);
+
+  Calibration calib{};
+  TEST_ASSERT_TRUE(dev.getCalibration(calib).ok());
+  TEST_ASSERT_EQUAL_UINT16(27504, calib.digT1);
+  TEST_ASSERT_EQUAL_INT16(26435, calib.digT2);
+}
+
+void test_recover_nvm_transport_error_updates_health_and_preserves_error() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failReadReg = cmd::REG_STATUS;
+  bus.failReadRegRemaining = 300;
+  bus.readError = Status::Error(Err::I2C_TIMEOUT, "recover nvm timeout", -86);
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-86, st.detail);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(dev.lastError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_recover_invalid_calibration_records_health_failure() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.reg[cmd::REG_DIG_T1_LSB] = 0;
+  bus.reg[cmd::REG_DIG_T1_MSB] = 0;
+
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                          static_cast<uint8_t>(dev.lastError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+}
+
 void test_set_mode_forced_does_not_trigger_conversion() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -1089,6 +1438,53 @@ void test_offline_latches_public_register_read_without_i2c() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_STRING("Driver is offline; call recover()", st.msg);
   TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+}
+
+void test_probe_works_while_offline_without_clearing_latch() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.offlineThreshold = 1;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -87);
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+
+  const uint32_t failuresBefore = dev.totalFailures();
+  st = dev.probe();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT32(failuresBefore, dev.totalFailures());
+}
+
+void test_successful_recover_from_offline_clears_latch_and_allows_i2c() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.offlineThreshold = 1;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -88);
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+
+  st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
+
+  const uint32_t readsBefore = bus.readCalls;
+  uint8_t value = 0;
+  st = dev.readRegister(cmd::REG_CHIP_ID, value);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_GREATER_THAN_UINT32(readsBefore, bus.readCalls);
 }
 
 void test_failed_recover_from_offline_keeps_latch_after_intermediate_success() {
@@ -1629,7 +2025,11 @@ int main() {
   RUN_TEST(test_request_measurement_requires_now_ms_hook);
   RUN_TEST(test_probe_failure_does_not_update_health);
   RUN_TEST(test_probe_address_nack_maps_to_device_not_found);
+  RUN_TEST(test_probe_preserves_non_address_transport_errors_without_health_update);
+  RUN_TEST(test_probe_chip_id_mismatch_does_not_update_health);
+  RUN_TEST(test_begin_rejects_wrong_chip_id);
   RUN_TEST(test_begin_preserves_timeout_transport_error);
+  RUN_TEST(test_begin_preserves_chip_id_bus_and_data_errors);
   RUN_TEST(test_recover_failure_updates_health_once);
   RUN_TEST(test_recover_success_returns_ready);
   RUN_TEST(test_recover_chip_id_mismatch_updates_health);
@@ -1648,11 +2048,28 @@ int main() {
   RUN_TEST(test_dirty_state_clears_after_successful_recover_resync);
   RUN_TEST(test_invalid_begin_does_not_clear_existing_dirty_state);
   RUN_TEST(test_apply_config_partial_failure_marks_dirty_and_preserves_error);
+  RUN_TEST(test_soft_reset_write_timeout_marks_dirty_and_preserves_error);
+  RUN_TEST(test_soft_reset_write_address_nack_preserves_error_without_dirty_state);
+  RUN_TEST(test_soft_reset_nvm_im_update_timeout_marks_dirty_and_health_failure);
+  RUN_TEST(test_begin_nvm_transport_error_preserved);
+  RUN_TEST(test_begin_calibration_read_failure_preserves_transport_error);
+  RUN_TEST(test_begin_apply_config_failure_marks_dirty_and_stays_uninitialized);
+  RUN_TEST(test_soft_reset_nvm_transport_error_preserved_and_marks_dirty);
+  RUN_TEST(test_soft_reset_nvm_status_successes_with_stuck_im_update_return_timeout);
+  RUN_TEST(test_soft_reset_calibration_read_failure_marks_dirty);
+  RUN_TEST(test_soft_reset_invalid_calibration_marks_dirty_and_records_health_failure);
+  RUN_TEST(test_soft_reset_apply_config_failure_marks_dirty_and_preserves_error);
+  RUN_TEST(test_soft_reset_success_reloads_calibration_and_clears_dirty);
+  RUN_TEST(test_recover_waits_for_nvm_and_reloads_calibration_before_apply);
+  RUN_TEST(test_recover_nvm_transport_error_updates_health_and_preserves_error);
+  RUN_TEST(test_recover_invalid_calibration_records_health_failure);
   RUN_TEST(test_set_mode_forced_does_not_trigger_conversion);
   RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
   RUN_TEST(test_offline_latches_public_register_read_without_i2c);
+  RUN_TEST(test_probe_works_while_offline_without_clearing_latch);
+  RUN_TEST(test_successful_recover_from_offline_clears_latch_and_allows_i2c);
   RUN_TEST(test_failed_recover_from_offline_keeps_latch_after_intermediate_success);
   RUN_TEST(test_forced_measurement_timing_wraparound_reaches_ready);
   RUN_TEST(test_normal_mode_request_waits_for_fresh_cycle);

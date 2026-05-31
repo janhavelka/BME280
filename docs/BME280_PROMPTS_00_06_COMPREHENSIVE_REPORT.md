@@ -7,18 +7,18 @@ Phase 03 final commit: see `git log` and the Phase 03 final response.
 
 ## Executive Summary
 
-Prompts 00, 01, 02, and 03 have repository evidence of execution on
-`hardening/bme280-industry-readiness`. Prompts 04, 05, and 06 were pasted after
+Prompts 00, 01, 02, 03, and 04 have repository evidence of execution on
+`hardening/bme280-industry-readiness`. Prompts 05 and 06 were pasted after
 Phase 02 work had started, but they remain unexecuted because the workflow
 prompt requires each phase to finish before later phases begin.
 
-The Phase 03 follow-up updates this comprehensive report and adds the dedicated
-Phase 03 report. The final Phase 03 commit hash is intentionally reported by
-Git after commit creation rather than embedded here.
+The Phase 03 and Phase 04 follow-up passes update this comprehensive report and
+add dedicated phase reports. Final phase commit hashes are intentionally
+reported by Git after commit creation rather than embedded here.
 
-No hardware validation was run. No local ESP-IDF build was run because `idf.py`
-is not available in this shell. Do not claim field validation, hardware soak,
-or local ESP-IDF validation from this work.
+No hardware validation was run. No local pure ESP-IDF `idf.py` build was run.
+Do not claim field validation, hardware soak, or local ESP-IDF validation from
+this work.
 
 ## Prompt Inventory
 
@@ -28,7 +28,7 @@ or local ESP-IDF validation from this work.
 | 01 | Baseline audit, fact lock, AGENTS rules | Completed | `docs/BME280_PHASE_01_BASELINE_FACT_LOCK_REPORT.md` |
 | 02 | Compensation, calibration parsing, golden vectors | Completed in current HEAD | `docs/BME280_PHASE_02_COMPENSATION_CALIBRATION_REPORT.md` |
 | 03 | Config sequencing, timing, sample semantics | Completed | `docs/BME280_PHASE_03_CONFIG_TIMING_SAMPLE_SEMANTICS_REPORT.md` |
-| 04 | Reset/NVM handling and fault diagnostics | Received, not executed as Phase 04 | Pending |
+| 04 | Reset/NVM handling and fault diagnostics | Completed | `docs/BME280_PHASE_04_RESET_NVM_FAULT_DIAGNOSTICS_REPORT.md` |
 | 05 | Examples, ESP-IDF CI, packaging, documentation | Received, not executed as Phase 05 | Pending |
 | 06 | Hardware validation, final integration review, final report | Received, not executed as Phase 06 | Pending |
 
@@ -216,20 +216,22 @@ Objective from pasted prompt:
 
 Execution status:
 
-- Not executed as Phase 04.
-- No `docs/BME280_PHASE_04_RESET_NVM_FAULT_DIAGNOSTICS_REPORT.md` exists.
-- Phase 01 identified reset/NVM and transport-error precision as remaining
-  work; Phase 04 is still the intended owner for that work.
+- Executed as Phase 04 in the reset/NVM hardening pass.
+- Created `docs/BME280_PHASE_04_RESET_NVM_FAULT_DIAGNOSTICS_REPORT.md`.
+- Preserved probe/begin transport error precision, made runtime NVM polling
+  health-tracked, preserved first useful NVM transport errors, reloaded
+  calibration during recover/reset, made calibration reload atomic, and
+  tightened dirty/offline reset diagnostics.
 
-Required future artifact:
+Artifact:
 
 - `docs/BME280_PHASE_04_RESET_NVM_FAULT_DIAGNOSTICS_REPORT.md`
 
-Required future commit message:
+Commit message:
 
 - `hardening: improve BME280 reset and fault diagnostics`
 
-Status: pending.
+Status: complete.
 
 ## Prompt 05 - Examples, ESP-IDF CI, Packaging, And Documentation
 
@@ -353,8 +355,10 @@ environmental reference comparison was recorded during these prompts.
 
 Safe statement:
 
-- The current branch has host/native, Arduino PlatformIO, guard-script, and
-  package-pack validation as listed above.
+- The current branch has Phase 04 host/native, Arduino PlatformIO, guard-script,
+  version-check, and contract-check validation as listed in the Phase 04 report.
+- Package-pack validation was recorded earlier in this consolidated report but
+  was not rerun during Phase 04.
 
 Unsafe statements to avoid:
 
@@ -365,12 +369,6 @@ Unsafe statements to avoid:
 - Do not say long soak or environmental humidity behavior has been validated.
 
 ## Remaining Work By Prompt
-
-Phase 04 pending:
-
-- Full reset/NVM transport-error matrix.
-- `softReset()` and recover dirty-state precision.
-- More precise probe/begin/recover diagnostics.
 
 Phase 05 pending:
 
@@ -388,13 +386,13 @@ Phase 06 pending:
 
 ## Readiness Verdict
 
-Current readiness after prompts 00-03:
+Current readiness after prompts 00-04:
 
-- Ready to proceed to Phase 04.
+- Ready to proceed to Phase 05.
 - Not ready to claim completion of the full 00-06 hardening workflow.
-- Not ready for final industry-standard release claims until Phases 04-06 are
+- Not ready for final industry-standard release claims until Phases 05-06 are
   actually executed and reported.
 
 Recommended next action:
 
-- Start Phase 04 only after the Phase 03 commit is synced.
+- Start Phase 05 only after the Phase 04 commit is synced.

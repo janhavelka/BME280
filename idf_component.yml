@@ -1,5 +1,5 @@
 version: "1.5.0"
-description: "Production-grade BME280 environmental sensor driver"
+description: "Production-oriented BME280 environmental sensor driver"
 license: "MIT"
 targets:
   - esp32s2
