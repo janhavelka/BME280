@@ -29,7 +29,7 @@ report or attached transcript:
 | Chip ID | Register `0xD0` reads `0x60` | NOT RUN | Pending `id`/`chipid` CLI capture |
 | Soft reset | Write `0xB6` to `0xE0`, wait for `im_update` clear | NOT RUN | Pending `reset` CLI capture |
 | Forced mode | One measurement returns then device sleeps | NOT RUN | Pending `force`/`read` CLI capture |
-| Normal mode | `tick()` polling captures fresh samples across cycles | NOT RUN | Pending `normal on` stress capture |
+| Normal mode | `tick()` polling captures fresh samples across cycles | NOT RUN | Pending repeated `normal on` / `read` / `normal off` captures |
 | Burst read coherency | Single `0xF7..0xFE` transaction | NOT RUN | Pending logic-analyzer or adapter trace |
 | Calibration | `0x88..0xA1` and `0xE1..0xE7` parsed plausibly | NOT RUN | Pending `calib` CLI capture |
 | Compensation | Temperature/pressure/humidity plausible for environment | NOT RUN | Pending controlled environment reading |

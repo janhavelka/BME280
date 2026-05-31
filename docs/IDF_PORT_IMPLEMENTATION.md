@@ -43,18 +43,19 @@ Run these checks from the repository root:
 python tools/check_core_timing_guard.py
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
-pio test -e native
-pio run -e esp32s3dev
-pio run -e esp32s2dev
+python -m platformio test -e native
+python -m platformio run -e esp32s3dev
+python -m platformio run -e esp32s2dev
 ```
 
-Run these checks from `examples/idf/basic` in an ESP-IDF v6 environment:
+Run these optional checks in an ESP-IDF v6 environment when `idf.py` is
+installed:
 
 ```bash
-idf.py set-target esp32s3
-idf.py build
-idf.py set-target esp32s2
-idf.py build
+idf.py -C examples/idf/basic set-target esp32s3
+idf.py -C examples/idf/basic build
+idf.py -C examples/idf/basic set-target esp32s2
+idf.py -C examples/idf/basic build
 ```
 
 ## Remaining Hardware Work

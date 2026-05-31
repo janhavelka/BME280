@@ -14,8 +14,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "tools" / "run_i2c_hil.py"
 RUNBOOK = ROOT / "docs" / "I2C_HIL_RUNBOOK.md"
 TEMPLATE = ROOT / "docs" / "I2C_HIL_TARGET_TEMPLATE.md"
-REPORT = ROOT / "docs" / "I2C_HIL_SELFTEST_REPORT.md"
 MATRIX = ROOT / "docs" / "BME280_HARDWARE_VALIDATION_MATRIX.md"
+SUMMARY = ROOT / "docs" / "BME280_INDUSTRY_HARDENING_SUMMARY.md"
 GITIGNORE = ROOT / ".gitignore"
 
 
@@ -61,15 +61,15 @@ def assert_contains(text: str, needle: str, path: pathlib.Path) -> None:
 
 
 def main() -> int:
-    for path in (RUNNER, RUNBOOK, TEMPLATE, REPORT, MATRIX):
+    for path in (RUNNER, RUNBOOK, TEMPLATE, MATRIX, SUMMARY):
         if not path.exists():
             fail(f"missing required file: {path.relative_to(ROOT)}")
 
     py_compile.compile(str(RUNNER), doraise=True)
     runner_text = read(RUNNER)
     runbook_text = read(RUNBOOK)
-    report_text = read(REPORT)
     matrix_text = read(MATRIX)
+    summary_text = read(SUMMARY)
     gitignore_text = read(GITIGNORE)
 
     assert_contains(runner_text, "--dry-run", RUNNER)
@@ -90,11 +90,8 @@ def main() -> int:
     runner_sequence = [spec.command for spec in executable]
 
     runbook_sequence = extract_sequence(runbook_text, RUNBOOK)
-    report_sequence = extract_sequence(report_text, REPORT)
     if runbook_sequence != runner_sequence:
         fail("runbook command sequence differs from tools/run_i2c_hil.py")
-    if report_sequence != runner_sequence:
-        fail("selftest report command sequence differs from tools/run_i2c_hil.py")
 
     default_commands = set(runner_sequence)
     for unsafe in ("wreg", "stress 500"):
@@ -138,25 +135,25 @@ def main() -> int:
     if not any("Requested via --include-fault-tests" in item.notes for item in fault_manual):
         fail("--include-fault-tests must be visible in manual checklist notes")
 
-    for path, text in ((RUNBOOK, runbook_text), (REPORT, report_text)):
+    for path, text in ((RUNBOOK, runbook_text), (SUMMARY, summary_text)):
         assert_contains(text, "scan", path)
         assert_contains(text, "ACK", path)
         assert_contains(text, "0x60", path)
-        assert_contains(text, "No physical HIL validation was performed", path)
+        assert_contains(text, "No physical", path)
 
-    assert_contains(report_text, "Hardware run: NOT RUN", REPORT)
-    assert_contains(read(ROOT / "docs" / "BME280_PRE_HIL_READINESS_REPORT.md"), "superseded by `docs/I2C_HIL_RUNBOOK.md`", ROOT / "docs" / "BME280_PRE_HIL_READINESS_REPORT.md")
     forbidden_report_claims = (
         "Hardware run: PASS",
         "Hardware validation: PASS",
         "Physical HIL validation: PASS",
     )
     for claim in forbidden_report_claims:
-        if claim in report_text:
-            fail(f"selftest report contains unsupported hardware claim: {claim}")
+        if claim in runbook_text or claim in summary_text or claim in matrix_text:
+            fail(f"docs contain unsupported hardware claim: {claim}")
 
     assert_contains(matrix_text, "tools/run_i2c_hil.py", MATRIX)
     assert_contains(matrix_text, "stress 10 as an automated forced-measurement stress substitute", MATRIX)
+    assert_contains(summary_text, "industry-readiness branch", SUMMARY)
+    assert_contains(summary_text, "The CLI does not support counted commands", SUMMARY)
 
     print("HIL contract PASSED")
     return 0

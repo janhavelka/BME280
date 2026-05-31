@@ -4,8 +4,8 @@ Production-oriented BME280 I2C driver for ESP32 (Arduino/PlatformIO and ESP-IDF 
 
 Validation status: host/native tests, guard scripts, and Arduino PlatformIO
 builds are run in this repository. Physical BME280 hardware validation and
-local pure ESP-IDF `idf.py` builds are not claimed unless a phase report records
-the exact commands and hardware setup.
+local pure ESP-IDF `idf.py` builds are not claimed unless a hardware matrix,
+HIL artifact package, or validation log records the exact commands and setup.
 
 ## Features
 
@@ -373,6 +373,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 ## Running Tests
 
 ```bash
+python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py
 python -m platformio test -e native
 python tools/check_cli_contract.py
 python tools/check_core_timing_guard.py
@@ -383,6 +384,11 @@ python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
 python -m platformio pkg pack
 python tools/check_package_contents.py
+```
+
+Optional local ESP-IDF checks, when `idf.py` is installed:
+
+```bash
 idf.py -C examples/idf/basic set-target esp32s3
 idf.py -C examples/idf/basic build
 idf.py -C examples/idf/basic set-target esp32s2
@@ -395,17 +401,16 @@ idf.py -C examples/idf/basic build
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
 - `docs/IDF_PORT_IMPLEMENTATION.md` - implemented IDF component/example notes
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
+- `docs/BME280_INDUSTRY_HARDENING_SUMMARY.md` - maintained summary of the industry-readiness branch
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` - explicit hardware validation status
-- `docs/BME280_PRE_HIL_READINESS_REPORT.md` - pre-HIL checklist, command plan, and remaining HIL-only risks
 - `docs/I2C_HIL_RUNBOOK.md` - serial HIL runner procedure and evidence rules
 - `docs/I2C_HIL_TARGET_TEMPLATE.md` - per-target HIL evidence template
-- `docs/I2C_HIL_SELFTEST_REPORT.md` - report for the host-side HIL runner addition
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
 ## Known Limitations
 
-- Hardware validation is not claimed until a report records board, wiring, address, commands, and results.
-- Local pure ESP-IDF `idf.py` builds are not claimed unless the command results are recorded; CI is configured for ESP-IDF v6.0.1 on ESP32-S2 and ESP32-S3.
+- Hardware validation is not claimed until the hardware matrix or HIL artifacts record board, wiring, address, commands, and results.
+- Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v6.0.1 on ESP32-S2 and ESP32-S3.
 - The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should add application-owned locking, scheduling, and timeout policy around the injected transport.
 
 ## License

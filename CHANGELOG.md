@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Dirty hardware-configuration diagnostics with `hardwareConfigDirty()`,
+  `hardwareConfigDirtyError()`, and matching `SettingsSnapshot` fields.
+- `lastMeasurementStatus()` for checking scheduler/capture failures after
+  `tick()`.
+- `tools/check_package_contents.py` for validating generated PlatformIO
+  archives.
+- `tools/run_i2c_hil.py`, `tools/check_hil_contract.py`, an HIL runbook, and a
+  target evidence template for future serial hardware validation.
+- Hardware validation matrix and maintained hardening summary documentation.
 - ESP-IDF component metadata for building the framework-neutral core with `idf_component_register`.
 - ESP-IDF basic example with an application-owned `i2c_master` bus/device and transport callbacks.
 - Native ESP-IDF CLI preserving Arduino command coverage without Arduino compatibility facades.
@@ -24,9 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helper instead of an Arduino-style `millis()` shim; the IDF example contract
   rejects future `millis()` / `delay()` timing regressions.
 - Successful typed configuration changes now invalidate cached samples so old values are not reused under a new measurement configuration.
+- Diagnostic CLIs now include address selection, chip-ID/register checks,
+  reset/recover/selftest/stress commands, and clearer health output for HIL
+  evidence.
+- Public documentation was consolidated around maintained user-facing docs;
+  temporary phase and prompt reports were removed from the docs tree.
+- Generated HIL logs and Doxygen HTML output are ignored by git.
 
 ### Removed
 - Removed the stale ESP-IDF Arduino compatibility shim and documentation that described compiling Arduino CLI source into IDF examples.
+- Removed superseded industry-readiness phase reports after their useful
+  content was folded into the hardening summary, README, changelog, HIL
+  runbook, and hardware matrix.
 
 ## [1.5.0] - 2026-05-14
 
