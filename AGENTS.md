@@ -101,14 +101,17 @@ struct Status {
 - Core code in `include/` and `src/` must stay framework-neutral: no Arduino, Wire, ESP-IDF, FreeRTOS, platform logging, or platform timing calls.
 - The core must not own or mutate the I2C bus; bus setup, locking, recovery, and timeouts belong to the injected transport or application bus manager.
 - Fallible APIs return `Status`; no exceptions and no uncontrolled heap allocation in core.
+- Measurement scheduling must use the injected/application timebase. `tick(uint32_t nowMs)` is caller-driven, and any public operation that needs monotonic time must explicitly require `Config::nowMs` or document best-effort behavior.
 - Public methods are not internally thread-safe and are not ISR-safe unless explicitly implemented and tested.
 - BME280 device facts are mandatory: chip ID `0x60`, addresses `0x76/0x77`, SDO not floating, CSB tied high for I2C, soft reset `0xB6`, status `measuring/im_update` semantics.
 - `ctrl_hum` writes only become effective after `ctrl_meas`; config/filter/standby changes must avoid normal-mode ignored writes.
 - Raw data must be burst-read when coherency matters.
-- Compensation math must match Bosch behavior, including humidity packing, `t_fine`, 64-bit pressure, divide-by-zero guard, and humidity clamp.
+- Calibration and compensation changes must state provenance. Compensation math must match Bosch behavior, including humidity packing, `t_fine`, 64-bit pressure, divide-by-zero guard, and humidity clamp.
+- Reset and NVM-copy polling must be bounded, deadline/poll-limit based, and must preserve distinguishable transport failures where the transport can report them.
 - Multi-register configuration writes that may partially reach hardware must set dirty hardware-config diagnostics and preserve the original error.
 - Samples must not be misleading across config changes; use invalidation or config-generation tagging.
 - Documentation must not claim hardware or ESP-IDF validation unless it was actually run.
+- Hardening phases use scoped review roles: datasheet, core contracts, fault injection, compensation, IDF/CI, docs/hardware, and integration review. Each role must inspect actual repository files before recommendations are accepted.
 
 ---
 
