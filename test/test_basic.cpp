@@ -25,6 +25,7 @@ struct FakeBus {
   uint32_t readCalls = 0;
   uint32_t statusReadCalls = 0;
   uint32_t measuringStatusReadsRemaining = 0;
+  uint32_t measuringOnStatusReadCall = 0;
   uint32_t imUpdateStatusReadsRemaining = 0;
   bool calibrationReadWhileImUpdate = false;
 
@@ -35,6 +36,9 @@ struct FakeBus {
   Status writeError = Status::Error(Err::I2C_ERROR, "forced write error", -2);
   uint8_t lastWriteReg = 0;
   uint8_t lastWriteValue = 0;
+  uint8_t writeRegLog[64] = {};
+  uint8_t writeValueLog[64] = {};
+  uint8_t writeLogLen = 0;
   bool failReadRegEnabled = false;
   uint8_t failReadReg = 0;
   uint8_t lastReadReg = 0;
@@ -84,6 +88,11 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
     bus->reg[reg] = data[i];
     bus->lastWriteReg = reg;
     bus->lastWriteValue = data[i];
+    if (bus->writeLogLen < sizeof(bus->writeRegLog)) {
+      bus->writeRegLog[bus->writeLogLen] = reg;
+      bus->writeValueLog[bus->writeLogLen] = data[i];
+      bus->writeLogLen++;
+    }
   }
   return Status::Ok();
 }
@@ -133,6 +142,11 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
     if (bus->measuringStatusReadsRemaining > 0) {
       status |= cmd::MASK_STATUS_MEASURING;
       bus->measuringStatusReadsRemaining--;
+    }
+    if (bus->measuringOnStatusReadCall != 0 &&
+        bus->statusReadCalls == bus->measuringOnStatusReadCall) {
+      status |= cmd::MASK_STATUS_MEASURING;
+      bus->measuringOnStatusReadCall = 0;
     }
     if (bus->imUpdateStatusReadsRemaining > 0) {
       status |= cmd::MASK_STATUS_IM_UPDATE;
@@ -358,6 +372,7 @@ void test_get_settings_snapshot() {
                           static_cast<uint8_t>(snap.standby));
   TEST_ASSERT_FALSE(snap.measurementRequested);
   TEST_ASSERT_FALSE(snap.measurementReady);
+  TEST_ASSERT_TRUE(snap.lastMeasurementStatus.ok());
   TEST_ASSERT_FALSE(snap.hasSample);
   TEST_ASSERT_FALSE(snap.hardwareConfigDirty);
   TEST_ASSERT_TRUE(snap.hardwareConfigDirtyError.ok());
@@ -479,9 +494,22 @@ void test_begin_waits_for_nvm_update_before_reading_calibration() {
 
   Status st = dev.begin(makeConfig(bus));
   TEST_ASSERT_TRUE(st.ok());
-  TEST_ASSERT_EQUAL_UINT32(3u, bus.statusReadCalls);
+  TEST_ASSERT_EQUAL_UINT32(5u, bus.statusReadCalls);
   TEST_ASSERT_FALSE(bus.calibrationReadWhileImUpdate);
   TEST_ASSERT_TRUE(dev.isInitialized());
+}
+
+void test_begin_defers_apply_config_when_device_measuring_without_write() {
+  FakeBus bus;
+  bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_MEASURING;
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.writeCalls);
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
 }
 
 void test_begin_times_out_when_nvm_update_stuck() {
@@ -698,6 +726,172 @@ void test_set_oversampling_rejects_invalid_compensation_combo_without_write() {
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
                           static_cast<uint8_t>(osrs));
+}
+
+void test_humidity_oversampling_writes_ctrl_hum_then_ctrl_meas() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint8_t writesBefore = bus.writeLogLen;
+  Status st = dev.setOversamplingH(Oversampling::X4);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(writesBefore + 2u), bus.writeLogLen);
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_HUM, bus.writeRegLog[writesBefore]);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X4),
+                          bus.writeValueLog[writesBefore] & cmd::MASK_CTRL_HUM_OSRS_H);
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.writeRegLog[writesBefore + 1u]);
+
+  Oversampling osrs = Oversampling::SKIP;
+  TEST_ASSERT_TRUE(dev.getOversamplingH(osrs).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X4),
+                          static_cast<uint8_t>(osrs));
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+}
+
+void test_config_change_in_normal_mode_sleeps_writes_config_and_restores() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::NORMAL;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint8_t writesBefore = bus.writeLogLen;
+  Status st = dev.setFilter(Filter::X4);
+  TEST_ASSERT_TRUE(st.ok());
+
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(writesBefore + 3u), bus.writeLogLen);
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.writeRegLog[writesBefore]);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SLEEP),
+                          bus.writeValueLog[writesBefore] & cmd::MASK_CTRL_MEAS_MODE);
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CONFIG, bus.writeRegLog[writesBefore + 1u]);
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.writeRegLog[writesBefore + 2u]);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::NORMAL),
+                          bus.writeValueLog[writesBefore + 2u] & cmd::MASK_CTRL_MEAS_MODE);
+
+  Mode mode = Mode::SLEEP;
+  TEST_ASSERT_TRUE(dev.getMode(mode).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::NORMAL), static_cast<uint8_t>(mode));
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+}
+
+void test_config_write_while_measuring_returns_busy_without_write() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::NORMAL;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint32_t writesBefore = bus.writeCalls;
+  const uint8_t writeLogBefore = bus.writeLogLen;
+  bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_MEASURING;
+
+  Status st = dev.setFilter(Filter::X4);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT8(writeLogBefore, bus.writeLogLen);
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+}
+
+void test_config_write_measuring_after_sleep_marks_dirty_without_config_write() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::NORMAL;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint32_t statusBefore = bus.statusReadCalls;
+  const uint8_t writesBefore = bus.writeLogLen;
+  bus.measuringOnStatusReadCall = statusBefore + 2u;
+
+  Status st = dev.setFilter(Filter::X4);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(writesBefore + 2u), bus.writeLogLen);
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.writeRegLog[writesBefore]);
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.writeRegLog[writesBefore + 1u]);
+}
+
+void test_config_change_failure_at_sleep_step_marks_dirty() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 1u;
+  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "sleep write timeout", -41);
+  Status st = dev.setFilter(Filter::X2);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-41, dev.hardwareConfigDirtyError().detail);
+}
+
+void test_config_change_failure_at_config_step_marks_dirty_after_restore() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 2u;
+  bus.writeError = Status::Error(Err::I2C_NACK_DATA, "config write nack", -42);
+  Status st = dev.setStandby(Standby::MS_250);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_INT32(-42, dev.hardwareConfigDirtyError().detail);
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.lastWriteReg);
+}
+
+void test_humidity_ctrl_hum_failure_marks_dirty_and_preserves_error() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 1u;
+  bus.writeError = Status::Error(Err::I2C_BUS, "ctrl_hum bus error", -43);
+  Status st = dev.setOversamplingH(Oversampling::X4);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-43, dev.hardwareConfigDirtyError().detail);
+}
+
+void test_recover_apply_config_first_write_failure_marks_dirty() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 1u;
+  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "apply sleep timeout", -44);
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-44, dev.hardwareConfigDirtyError().detail);
+}
+
+void test_measurement_time_estimate_uses_oversampling_formula() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.osrsT = Oversampling::X1;
+  cfg.osrsP = Oversampling::X1;
+  cfg.osrsH = Oversampling::X1;
+  cfg.standby = Standby::MS_62_5;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_EQUAL_UINT32(11u, dev.estimateMeasurementTimeMs());
+  TEST_ASSERT_EQUAL_UINT32(63u, dev.getStandbyTimeMs());
+  TEST_ASSERT_EQUAL_UINT32(74u, dev.estimateNormalCycleMs());
+
+  TEST_ASSERT_TRUE(dev.setOversamplingT(Oversampling::X16).ok());
+  TEST_ASSERT_TRUE(dev.setOversamplingP(Oversampling::X16).ok());
+  TEST_ASSERT_TRUE(dev.setOversamplingH(Oversampling::X16).ok());
+  TEST_ASSERT_EQUAL_UINT32(114u, dev.estimateMeasurementTimeMs());
 }
 
 void test_partial_config_restore_failure_marks_hardware_dirty() {
@@ -1009,6 +1203,39 @@ void test_forced_measurement_request_while_busy_tracks_completion() {
   TEST_ASSERT_TRUE(st.ok());
 }
 
+void test_tick_raw_read_failure_records_measurement_status() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::FORCED;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
+                          static_cast<uint8_t>(dev.lastMeasurementStatus().code));
+
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = cmd::REG_DATA_START;
+  bus.readError = Status::Error(Err::I2C_NACK_DATA, "forced raw burst nack", -55);
+  bus.nowMs += dev.estimateMeasurementTimeMs();
+  dev.tick(bus.nowMs);
+
+  TEST_ASSERT_FALSE(dev.measurementReady());
+  TEST_ASSERT_FALSE(dev.hasSample());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(dev.lastMeasurementStatus().code));
+  TEST_ASSERT_EQUAL_INT32(-55, dev.lastMeasurementStatus().detail);
+
+  SettingsSnapshot snap{};
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.measurementRequested);
+  TEST_ASSERT_FALSE(snap.hasSample);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(snap.lastMeasurementStatus.code));
+}
+
 void test_set_mode_sleep_cancels_pending_measurement_request() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -1199,6 +1426,8 @@ void test_raw_burst_reconstructs_20_and_16_bit_samples() {
 
   captureForcedSample(dev, bus);
   TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_DATA_START, bus.lastReadReg);
+  TEST_ASSERT_EQUAL_UINT32(cmd::DATA_LEN, bus.lastReadLen);
 
   RawSample raw{};
   TEST_ASSERT_TRUE(dev.getRawSample(raw).ok());
@@ -1392,6 +1621,7 @@ int main() {
   RUN_TEST(test_begin_normalizes_offline_threshold_on_stored_copy);
   RUN_TEST(test_begin_success_sets_ready_without_health_counts);
   RUN_TEST(test_begin_waits_for_nvm_update_before_reading_calibration);
+  RUN_TEST(test_begin_defers_apply_config_when_device_measuring_without_write);
   RUN_TEST(test_begin_times_out_when_nvm_update_stuck);
   RUN_TEST(test_begin_forced_mode_keeps_hardware_sleep_until_requested);
   RUN_TEST(test_missing_now_ms_fallback_is_framework_neutral);
@@ -1405,6 +1635,15 @@ int main() {
   RUN_TEST(test_recover_chip_id_mismatch_updates_health);
   RUN_TEST(test_recover_preserves_transport_error_code);
   RUN_TEST(test_set_oversampling_rejects_invalid_compensation_combo_without_write);
+  RUN_TEST(test_humidity_oversampling_writes_ctrl_hum_then_ctrl_meas);
+  RUN_TEST(test_config_change_in_normal_mode_sleeps_writes_config_and_restores);
+  RUN_TEST(test_config_write_while_measuring_returns_busy_without_write);
+  RUN_TEST(test_config_write_measuring_after_sleep_marks_dirty_without_config_write);
+  RUN_TEST(test_config_change_failure_at_sleep_step_marks_dirty);
+  RUN_TEST(test_config_change_failure_at_config_step_marks_dirty_after_restore);
+  RUN_TEST(test_humidity_ctrl_hum_failure_marks_dirty_and_preserves_error);
+  RUN_TEST(test_recover_apply_config_first_write_failure_marks_dirty);
+  RUN_TEST(test_measurement_time_estimate_uses_oversampling_formula);
   RUN_TEST(test_partial_config_restore_failure_marks_hardware_dirty);
   RUN_TEST(test_dirty_state_clears_after_successful_recover_resync);
   RUN_TEST(test_invalid_begin_does_not_clear_existing_dirty_state);
@@ -1418,6 +1657,7 @@ int main() {
   RUN_TEST(test_forced_measurement_timing_wraparound_reaches_ready);
   RUN_TEST(test_normal_mode_request_waits_for_fresh_cycle);
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
+  RUN_TEST(test_tick_raw_read_failure_records_measurement_status);
   RUN_TEST(test_set_mode_sleep_cancels_pending_measurement_request);
   RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
   RUN_TEST(test_calibration_parses_bosch_synthetic_coefficients);

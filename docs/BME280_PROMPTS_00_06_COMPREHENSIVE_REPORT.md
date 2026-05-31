@@ -2,18 +2,19 @@
 
 Date: 2026-05-31
 Branch: `hardening/bme280-industry-readiness`
-Current HEAD: `1c0d409807d43ad2790306d3bff6d20112e5b084`
-Upstream HEAD: `1c0d409807d43ad2790306d3bff6d20112e5b084`
+Prior consolidated-report HEAD: `1c0d409807d43ad2790306d3bff6d20112e5b084`
+Phase 03 final commit: see `git log` and the Phase 03 final response.
 
 ## Executive Summary
 
-Prompts 00, 01, and 02 have repository evidence of execution on
-`hardening/bme280-industry-readiness`. Prompts 03, 04, 05, and 06 were pasted
-after Phase 02 work had started, but they were not executed as phases because
-the workflow prompt requires each phase to finish before later phases begin.
+Prompts 00, 01, 02, and 03 have repository evidence of execution on
+`hardening/bme280-industry-readiness`. Prompts 04, 05, and 06 were pasted after
+Phase 02 work had started, but they remain unexecuted because the workflow
+prompt requires each phase to finish before later phases begin.
 
-Current repository state is clean and synced with upstream at
-`1c0d409807d43ad2790306d3bff6d20112e5b084`.
+The Phase 03 follow-up updates this comprehensive report and adds the dedicated
+Phase 03 report. The final Phase 03 commit hash is intentionally reported by
+Git after commit creation rather than embedded here.
 
 No hardware validation was run. No local ESP-IDF build was run because `idf.py`
 is not available in this shell. Do not claim field validation, hardware soak,
@@ -26,7 +27,7 @@ or local ESP-IDF validation from this work.
 | 00 | Workflow orchestrator | Completed as branch/workflow setup; no code hardening phase executed | No dedicated report required by prompt |
 | 01 | Baseline audit, fact lock, AGENTS rules | Completed | `docs/BME280_PHASE_01_BASELINE_FACT_LOCK_REPORT.md` |
 | 02 | Compensation, calibration parsing, golden vectors | Completed in current HEAD | `docs/BME280_PHASE_02_COMPENSATION_CALIBRATION_REPORT.md` |
-| 03 | Config sequencing, timing, sample semantics | Received, not executed as Phase 03 | Pending |
+| 03 | Config sequencing, timing, sample semantics | Completed | `docs/BME280_PHASE_03_CONFIG_TIMING_SAMPLE_SEMANTICS_REPORT.md` |
 | 04 | Reset/NVM handling and fault diagnostics | Received, not executed as Phase 04 | Pending |
 | 05 | Examples, ESP-IDF CI, packaging, documentation | Received, not executed as Phase 05 | Pending |
 | 06 | Hardware validation, final integration review, final report | Received, not executed as Phase 06 | Pending |
@@ -183,21 +184,22 @@ Objective from pasted prompt:
 
 Execution status:
 
-- Not executed as Phase 03.
-- No `docs/BME280_PHASE_03_CONFIG_TIMING_SAMPLE_SEMANTICS_REPORT.md` exists.
-- Some Phase 03-relevant work was partially addressed by Phase 02 because
-  Phase 02 added sample cache invalidation after successful typed config
-  changes, but the full Phase 03 scope remains pending.
+- Executed as Phase 03 in the follow-up hardening pass.
+- Created `docs/BME280_PHASE_03_CONFIG_TIMING_SAMPLE_SEMANTICS_REPORT.md`.
+- Enforced `ctrl_hum` before `ctrl_meas`, guarded `config` writes with status
+  checks before and after the sleep write, retained measurement errors through
+  `lastMeasurementStatus()`, preserved dirty partial-config diagnostics, and
+  documented sample invalidation and timing semantics.
 
-Required future artifact:
+Artifact:
 
 - `docs/BME280_PHASE_03_CONFIG_TIMING_SAMPLE_SEMANTICS_REPORT.md`
 
-Required future commit message:
+Commit message:
 
 - `hardening: enforce BME280 config timing semantics`
 
-Status: pending.
+Status: complete.
 
 ## Prompt 04 - Reset/NVM Handling And Fault Diagnostics
 
@@ -364,12 +366,6 @@ Unsafe statements to avoid:
 
 ## Remaining Work By Prompt
 
-Phase 03 pending:
-
-- Full config sequencing tests for `ctrl_hum`, `ctrl_meas`, and `config`.
-- Normal-mode safe config writes and restoration tests.
-- Full timing/deadline and sample freshness semantics.
-
 Phase 04 pending:
 
 - Full reset/NVM transport-error matrix.
@@ -392,14 +388,13 @@ Phase 06 pending:
 
 ## Readiness Verdict
 
-Current readiness after prompts 00-02:
+Current readiness after prompts 00-03:
 
-- Ready to proceed to Phase 03.
+- Ready to proceed to Phase 04.
 - Not ready to claim completion of the full 00-06 hardening workflow.
-- Not ready for final industry-standard release claims until Phases 03-06 are
+- Not ready for final industry-standard release claims until Phases 04-06 are
   actually executed and reported.
 
 Recommended next action:
 
-- Start Phase 03 from clean, synced HEAD
-  `1c0d409807d43ad2790306d3bff6d20112e5b084`.
+- Start Phase 04 only after the Phase 03 commit is synced.

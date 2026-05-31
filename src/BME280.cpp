@@ -156,6 +156,7 @@ Status BME280::begin(const Config& config) {
 
   _measurementRequested = false;
   _measurementReady = false;
+  _lastMeasurementStatus = Status::Ok();
   _hasSample = false;
   _measurementStartMs = 0;
   _sampleTimestampMs = 0;
@@ -247,11 +248,13 @@ void BME280::tick(uint32_t nowMs) {
 
   if (_driverState == DriverState::OFFLINE) {
     _measurementRequested = false;
+    _lastMeasurementStatus = Status::Error(Err::BUSY, "Driver is offline; call recover()");
     return;
   }
 
   if (_config.mode == Mode::SLEEP) {
     _measurementRequested = false;
+    _lastMeasurementStatus = Status::Error(Err::INVALID_PARAM, "Device is in sleep mode");
     return;
   }
 
@@ -268,17 +271,20 @@ void BME280::tick(uint32_t nowMs) {
   bool measuring = false;
   Status st = isMeasuring(measuring);
   if (!st.ok()) {
+    _lastMeasurementStatus = st;
     if (_driverState == DriverState::OFFLINE) {
       _measurementRequested = false;
     }
     return;
   }
   if (measuring) {
+    _lastMeasurementStatus = Status::Error(Err::IN_PROGRESS, "Measurement still running");
     return;
   }
 
   st = _readRawData();
   if (!st.ok()) {
+    _lastMeasurementStatus = st;
     if (_driverState == DriverState::OFFLINE) {
       _measurementRequested = false;
     }
@@ -287,6 +293,7 @@ void BME280::tick(uint32_t nowMs) {
 
   st = _compensate();
   if (!st.ok()) {
+    _lastMeasurementStatus = st;
     _measurementRequested = false;
     return;
   }
@@ -295,6 +302,7 @@ void BME280::tick(uint32_t nowMs) {
   _hasSample = true;
   _sampleTimestampMs = nowMs;
   _measurementRequested = false;
+  _lastMeasurementStatus = Status::Ok();
 }
 
 void BME280::end() {
@@ -312,6 +320,7 @@ void BME280::end() {
   _driverState = DriverState::UNINIT;
   _measurementRequested = false;
   _measurementReady = false;
+  _lastMeasurementStatus = Status::Ok();
   _hasSample = false;
   _measurementStartMs = 0;
   _sampleTimestampMs = 0;
@@ -385,6 +394,7 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   out.standby = _config.standby;
   out.measurementRequested = _measurementRequested;
   out.measurementReady = _measurementReady;
+  out.lastMeasurementStatus = _lastMeasurementStatus;
   out.hasSample = _hasSample;
   out.hardwareConfigDirty = _hardwareConfigDirty;
   out.hardwareConfigDirtyError = _hardwareConfigDirtyError;
@@ -416,19 +426,29 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
 
 Status BME280::requestMeasurement() {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    Status st = Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    _lastMeasurementStatus = st;
+    return st;
   }
   if (_driverState == DriverState::OFFLINE) {
-    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
+    Status st = Status::Error(Err::BUSY, "Driver is offline; call recover()");
+    _lastMeasurementStatus = st;
+    return st;
   }
   if (_config.mode == Mode::SLEEP) {
-    return Status::Error(Err::INVALID_PARAM, "Device is in sleep mode");
+    Status st = Status::Error(Err::INVALID_PARAM, "Device is in sleep mode");
+    _lastMeasurementStatus = st;
+    return st;
   }
   if (_config.nowMs == nullptr) {
-    return Status::Error(Err::INVALID_CONFIG, "nowMs required for measurement scheduling");
+    Status st = Status::Error(Err::INVALID_CONFIG, "nowMs required for measurement scheduling");
+    _lastMeasurementStatus = st;
+    return st;
   }
   if (_measurementRequested && !_measurementReady) {
-    return Status::Error(Err::BUSY, "Measurement in progress");
+    Status st = Status::Error(Err::BUSY, "Measurement in progress");
+    _lastMeasurementStatus = st;
+    return st;
   }
 
   _measurementReady = false;
@@ -437,6 +457,7 @@ Status BME280::requestMeasurement() {
     bool measuring = false;
     Status st = isMeasuring(measuring);
     if (!st.ok()) {
+      _lastMeasurementStatus = st;
       return st;
     }
     if (measuring) {
@@ -444,24 +465,31 @@ Status BME280::requestMeasurement() {
       // Track completion instead of forcing the caller to re-issue the request.
       _measurementRequested = true;
       _measurementStartMs = _nowMs();
-      return Status::Error(Err::IN_PROGRESS, "Measurement already in progress");
+      st = Status::Error(Err::IN_PROGRESS, "Measurement already in progress");
+      _lastMeasurementStatus = st;
+      return st;
     }
 
     const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::FORCED);
     st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
     if (!st.ok()) {
+      _lastMeasurementStatus = st;
       return st;
     }
 
     _measurementRequested = true;
     _measurementStartMs = _nowMs();
 
-    return Status::Error(Err::IN_PROGRESS, "Measurement started");
+    st = Status::Error(Err::IN_PROGRESS, "Measurement started");
+    _lastMeasurementStatus = st;
+    return st;
   }
 
   _measurementRequested = true;
   _measurementStartMs = _nowMs();
-  return Status::Error(Err::IN_PROGRESS, "Measurement scheduled");
+  Status st = Status::Error(Err::IN_PROGRESS, "Measurement scheduled");
+  _lastMeasurementStatus = st;
+  return st;
 }
 
 Status BME280::getMeasurement(Measurement& out) {
@@ -570,6 +598,7 @@ Status BME280::setMode(Mode mode) {
                                          registerModeForConfig(mode));
   Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
   if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     return st;
   }
 
@@ -604,6 +633,7 @@ Status BME280::setOversamplingT(Oversampling osrs) {
                                          registerModeForConfig(_config.mode));
   Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
   if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     return st;
   }
   _config.osrsT = osrs;
@@ -626,6 +656,7 @@ Status BME280::setOversamplingP(Oversampling osrs) {
                                          registerModeForConfig(_config.mode));
   Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
   if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     return st;
   }
   _config.osrsP = osrs;
@@ -647,6 +678,7 @@ Status BME280::setOversamplingH(Oversampling osrs) {
   const uint8_t ctrlHum = buildCtrlHum(osrs);
   Status st = writeRegister(cmd::REG_CTRL_HUM, ctrlHum);
   if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     return st;
   }
 
@@ -676,17 +708,33 @@ Status BME280::setFilter(Filter filter) {
   const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
                                          registerModeForConfig(_config.mode));
 
-  Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeasSleep);
+  Status st = _ensureConfigWriteReady();
   if (!st.ok()) {
     return st;
   }
-  st = writeRegister(cmd::REG_CONFIG, config);
+
+  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeasSleep);
   if (!st.ok()) {
-    // Best-effort restore: always return the original config-write error.
+    _markHardwareConfigDirty(st);
+    return st;
+  }
+
+  st = _ensureConfigWriteReady();
+  if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     const Status restore = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
     if (!restore.ok()) {
-      _markHardwareConfigDirty(st);
+      _markHardwareConfigDirty(restore);
     }
+    return st;
+  }
+
+  st = writeRegister(cmd::REG_CONFIG, config);
+  if (!st.ok()) {
+    _markHardwareConfigDirty(st);
+    // Best-effort restore: always return the original config-write error.
+    const Status restore = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+    (void)restore;
     return st;
   }
   st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
@@ -713,17 +761,33 @@ Status BME280::setStandby(Standby standby) {
   const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
                                          registerModeForConfig(_config.mode));
 
-  Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeasSleep);
+  Status st = _ensureConfigWriteReady();
   if (!st.ok()) {
     return st;
   }
-  st = writeRegister(cmd::REG_CONFIG, config);
+
+  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeasSleep);
   if (!st.ok()) {
-    // Best-effort restore: always return the original config-write error.
+    _markHardwareConfigDirty(st);
+    return st;
+  }
+
+  st = _ensureConfigWriteReady();
+  if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     const Status restore = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
     if (!restore.ok()) {
-      _markHardwareConfigDirty(st);
+      _markHardwareConfigDirty(restore);
     }
+    return st;
+  }
+
+  st = writeRegister(cmd::REG_CONFIG, config);
+  if (!st.ok()) {
+    _markHardwareConfigDirty(st);
+    // Best-effort restore: always return the original config-write error.
+    const Status restore = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+    (void)restore;
     return st;
   }
   st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
@@ -787,6 +851,7 @@ Status BME280::softReset() {
   Status result = [&]() -> Status {
     _measurementRequested = false;
     _measurementReady = false;
+    _lastMeasurementStatus = Status::Ok();
     _hasSample = false;
     _measurementStartMs = 0;
     _sampleTimestampMs = 0;
@@ -1118,6 +1183,20 @@ void BME280::_clearHardwareConfigDirty() {
   _hardwareConfigDirtyError = Status::Ok();
 }
 
+Status BME280::_ensureConfigWriteReady() {
+  uint8_t status = 0;
+  const Status st = _initialized
+      ? readRegister(cmd::REG_STATUS, status)
+      : _readRegisterRaw(cmd::REG_STATUS, status);
+  if (!st.ok()) {
+    return st;
+  }
+  if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+    return Status::Error(Err::BUSY, "Device measuring; config write deferred");
+  }
+  return Status::Ok();
+}
+
 Status BME280::_applyConfig() {
   const uint8_t ctrlHum = buildCtrlHum(_config.osrsH);
   const uint8_t ctrlMeasSleep = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP);
@@ -1125,8 +1204,24 @@ Status BME280::_applyConfig() {
                                          registerModeForConfig(_config.mode));
   const uint8_t config = buildConfig(_config.standby, _config.filter);
 
-  Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
+  Status st = _ensureConfigWriteReady();
   if (!st.ok()) {
+    return st;
+  }
+
+  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
+  if (!st.ok()) {
+    _markHardwareConfigDirty(st);
+    return st;
+  }
+
+  st = _ensureConfigWriteReady();
+  if (!st.ok()) {
+    _markHardwareConfigDirty(st);
+    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
+    if (!restore.ok()) {
+      _markHardwareConfigDirty(restore);
+    }
     return st;
   }
 
@@ -1352,6 +1447,7 @@ Status BME280::_compensate() {
 void BME280::_invalidateSampleCache() {
   _measurementRequested = false;
   _measurementReady = false;
+  _lastMeasurementStatus = Status::Ok();
   _hasSample = false;
   _measurementStartMs = 0;
   _sampleTimestampMs = 0;

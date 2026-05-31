@@ -116,7 +116,7 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 ### Lifecycle
 
 - `Status begin(const Config& config)` - Initialize driver
-- `void tick(uint32_t nowMs)` - Process pending operations
+- `void tick(uint32_t nowMs)` - Process pending measurement operations; `nowMs` must use the same monotonic timebase as `Config::nowMs`
 - `void end()` - Shutdown driver and best-effort return the sensor to sleep
 - `bool isInitialized()` - True after successful `begin()` until `end()`
 - `const Config& getConfig()` - Cached configuration snapshot owned by the driver
@@ -126,6 +126,7 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 - `Status probe()` - Check device presence (no health tracking)
 - `Status recover()` - Attempt recovery from DEGRADED/OFFLINE (re-applies config)
 - `Status getSettings(SettingsSnapshot& out)` - Populate a snapshot of cached config and runtime state (no I2C)
+- `Status lastMeasurementStatus()` - Last measurement request, polling, raw-read, or compensation status retained because `tick()` is void
 
 ### Measurement
 
@@ -142,12 +143,18 @@ sleep until `requestMeasurement()` writes the forced-mode trigger. Normal-mode r
 wait one estimated normal cycle before reading registers, so the returned sample is fresh
 relative to the request.
 
+`tick()` does not return a `Status`. Measurement scheduler and capture results are
+retained in `lastMeasurementStatus()` and `SettingsSnapshot::lastMeasurementStatus`.
+The value is `IN_PROGRESS` while a request is pending, `OK` after a sample is
+captured, and the original transport or compensation error when a polling,
+burst-read, or compensation step fails.
+
 ### Configuration
 
 - `Status setMode(Mode mode)` - Select `SLEEP`, `FORCED`, or `NORMAL`
 - `Status setOversamplingT/P/H(Oversampling osrs)` - Configure temperature, pressure, or humidity oversampling
-- `Status setFilter(Filter filter)` - Configure the IIR filter coefficient
-- `Status setStandby(Standby standby)` - Configure standby interval for normal mode
+- `Status setFilter(Filter filter)` - Configure the IIR filter coefficient through a safe sleep/config/restore sequence
+- `Status setStandby(Standby standby)` - Configure standby interval for normal mode through a safe sleep/config/restore sequence
 - `Status softReset()` - Write the Bosch reset command, reload calibration, and reapply cached config
 - `Status readChipId/readStatus/readCtrlHum/readCtrlMeas/readConfig(...)` - Read status/config registers
 - `Status isMeasuring(bool& measuring)` - Read the measuring bit
@@ -155,6 +162,35 @@ relative to the request.
 Temperature oversampling must be enabled whenever pressure or humidity is enabled because
 Bosch compensation requires `t_fine`. At least one measured channel must be enabled.
 Invalid combinations are rejected in `begin()` and typed setters before touching I2C.
+
+Humidity oversampling follows the Bosch latch rule: `setOversamplingH()` writes
+`ctrl_hum` first and then writes `ctrl_meas` so the new humidity setting becomes
+effective. `setFilter()` and `setStandby()` first verify that the status
+`measuring` bit is clear. If the device is already measuring, they return `BUSY`
+without writing config registers. Otherwise they switch `ctrl_meas` to sleep,
+verify `measuring` is still clear, write `config`, and restore the cached mode.
+If the second status check reports busy after the sleep write, the config write
+is skipped and `hardwareConfigDirty()` is set because hardware mode may no
+longer match the cache. Successful typed configuration changes invalidate cached
+samples so callers cannot read a sample captured under old settings.
+
+If a multi-register configuration sequence touches hardware and then fails, the
+driver sets `hardwareConfigDirty()` and preserves the original error in
+`hardwareConfigDirtyError()` and `SettingsSnapshot::hardwareConfigDirtyError`.
+The dirty flag is cleared only by a complete successful resync through
+`begin()`, `recover()`, or `softReset()`.
+
+### Public I2C Transaction Shape
+
+| API | Typical I2C transactions | Notes |
+|-----|--------------------------|-------|
+| `begin()` | chip ID read, bounded NVM status polling, calibration reads, status guard, config writes | Does not require `Config::nowMs`; can return `BUSY` without config writes if the device is measuring |
+| `requestMeasurement()` in forced mode | status read, `ctrl_meas` write | Returns `IN_PROGRESS` when accepted |
+| `tick()` after deadline | status read, one `0xF7..0xFE` burst read | Captures coherent pressure, temperature, and humidity ADC bytes |
+| `setOversamplingT/P()` | one `ctrl_meas` write | Invalid combinations are rejected before I2C |
+| `setOversamplingH()` | `ctrl_hum` write, `ctrl_meas` write | `ctrl_meas` latches humidity oversampling |
+| `setFilter()` / `setStandby()` | status read, sleep write, status read, `config` write, restore write | Returns `BUSY` without writes if already measuring; skips `config` and marks dirty if still measuring after sleep write |
+| `recover()` | chip ID read, status guard, config resync writes | Used after bus/device recovery or manual register edits |
 
 Sample numeric units are stable: `Measurement` returns degrees Celsius, Pascals,
 and percent RH; `CompensatedSample` returns `tempC_x100`, integer Pascals, and
@@ -179,6 +215,10 @@ guard; humidity is clamped to `0..100%RH`.
 - `Status readRegister(uint8_t reg, uint8_t& value)` - Read a single tracked register
 - `Status writeRegister(uint8_t reg, uint8_t value)` - Write a single tracked register
 
+Raw writes are diagnostic tools. Writes to BME280 configuration registers can
+desynchronize the driver's cached settings from hardware, so call `recover()` or
+`begin()` to resync after manual register edits.
+
 ### State
 
 - `DriverState state()` - Current driver state
@@ -200,6 +240,19 @@ guard; humidity is clamped to `0..100%RH`.
 - `uint32_t estimateMeasurementTimeMs()` - Max measurement time for current oversampling
 - `uint32_t getStandbyTimeMs()` - Configured standby interval in ms
 - `uint32_t estimateNormalCycleMs()` - Full normal-mode cycle (measurement + standby)
+
+Measurement timing uses the Bosch oversampling multipliers `SKIP=0`, `X1=1`,
+`X2=2`, `X4=4`, `X8=8`, and `X16=16`:
+
+```text
+t_meas_us = 1250
+          + (temperature enabled ? 2300 * osrs_t : 0)
+          + (pressure enabled ? 2300 * osrs_p + 575 : 0)
+          + (humidity enabled ? 2300 * osrs_h + 575 : 0)
+          + 1000 safety margin
+estimateMeasurementTimeMs = ceil(t_meas_us / 1000)
+estimateNormalCycleMs = estimateMeasurementTimeMs + getStandbyTimeMs()
+```
 
 ## Examples
 
@@ -229,7 +282,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 ## Behavioral Contracts
 
 1. Threading model: single-threaded by default; not thread-safe.
-2. Timing model: `tick()` is bounded; forced-mode wait and recovery timing stay callback-timebase-driven.
+2. Timing model: `tick()` is bounded; `tick(nowMs)` and `Config::nowMs` must use the same monotonic timebase.
 3. Resource ownership: bus, pins, and timeout policy remain application-owned via `Config`.
 4. Memory behavior: no heap allocation in steady-state library operation.
 5. Error handling: all fallible APIs return `Status`; no exceptions and no silent failures.
@@ -237,7 +290,8 @@ Not part of the library. These simulate project-level glue and keep examples sel
 7. Measurement scheduling requires `Config::nowMs`. `begin()` does not fail without it, but `requestMeasurement()` returns `INVALID_CONFIG` if no monotonic clock is injected.
 8. Multi-register configuration failures set `hardwareConfigDirty()` and expose the original dirty-state error in `hardwareConfigDirtyError()` and `SettingsSnapshot`.
 9. Driver instances are not thread-safe and public APIs are not ISR-safe. Shared-bus users must serialize access externally.
-10. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
+10. `setFilter()` and `setStandby()` return `BUSY` without config writes when the device initially reports `measuring`; if `measuring` appears after the sleep write, config is skipped and dirty state is set.
+11. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
 
 ## Running Tests
 

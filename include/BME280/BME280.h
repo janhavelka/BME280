@@ -97,6 +97,7 @@ struct SettingsSnapshot {
   Standby standby = Standby::MS_0_5;         ///< Standby time for normal mode
   bool measurementRequested = false;          ///< True after forced-mode trigger
   bool measurementReady = false;              ///< True when data registers are ready
+  Status lastMeasurementStatus = Status::Ok(); ///< Last request/tick status for measurement scheduling
   bool hasSample = false;                     ///< True when a compensated sample is cached
   bool hardwareConfigDirty = false;           ///< True when hardware config may differ from cache
   Status hardwareConfigDirtyError = Status::Ok(); ///< First error that made config state uncertain
@@ -108,7 +109,12 @@ struct SettingsSnapshot {
   Calibration calibration = {};               ///< Cached compensation coefficients
 };
 
-/// BME280 driver class
+/// BME280 driver class.
+///
+/// Instances are not internally thread-safe and public APIs are not ISR-safe.
+/// Applications sharing a driver or I2C bus across tasks must serialize access
+/// externally. Transport callbacks must not recursively call into the same
+/// driver instance.
 class BME280 {
 public:
   BME280() = default;
@@ -127,8 +133,11 @@ public:
   /// @return Status::Ok() on success, error otherwise
   Status begin(const Config& config);
   
-  /// Process pending operations (call regularly from loop)
-  /// @param nowMs Current timestamp in milliseconds
+  /// Process pending measurement operations (call regularly from task context).
+  /// @param nowMs Current monotonic timestamp in milliseconds from the same
+  ///              timebase as Config::nowMs
+  /// Measurement errors are retained in lastMeasurementStatus() and
+  /// SettingsSnapshot::lastMeasurementStatus because tick() itself is void.
   void tick(uint32_t nowMs);
   
   /// Shutdown the driver, put the sensor to sleep best-effort, and clear runtime state
@@ -164,6 +173,12 @@ public:
 
   /// First transport/status error that made hardware config state uncertain.
   Status hardwareConfigDirtyError() const { return _hardwareConfigDirtyError; }
+
+  /// Last measurement scheduler/capture status recorded by requestMeasurement()
+  /// or tick(). This is Status::Ok() after a sample is captured, IN_PROGRESS
+  /// while a request is pending, and the original error when polling, raw read,
+  /// or compensation fails.
+  Status lastMeasurementStatus() const { return _lastMeasurementStatus; }
   
   // =========================================================================
   // Driver State
@@ -207,11 +222,12 @@ public:
   // Measurement API
   // =========================================================================
   
-  /// Request a measurement (non-blocking)
+  /// Request a measurement (non-blocking).
   /// In FORCED mode: triggers measurement if idle.
   /// In NORMAL mode: waits one estimated normal cycle before reading, so the
   /// sample is fresh relative to the request.
-  /// Returns IN_PROGRESS if measurement started, BUSY if already measuring or OFFLINE
+  /// Returns IN_PROGRESS if accepted, BUSY if already measuring or OFFLINE,
+  /// INVALID_CONFIG if Config::nowMs is missing, or INVALID_PARAM in sleep mode.
   Status requestMeasurement();
 
   /// Check if measurement is ready to read
@@ -268,28 +284,41 @@ public:
 
   /// Set operating mode (SLEEP, FORCED, NORMAL).
   /// FORCED is an on-demand policy and does not trigger a conversion until
-  /// requestMeasurement() is called.
+  /// requestMeasurement() is called. A successful mode change invalidates the
+  /// cached sample.
   Status setMode(Mode mode);
 
   /// Get current mode
   Status getMode(Mode& out) const;
 
   /// Set oversampling for temperature.
-  /// Temperature must be enabled when pressure or humidity is enabled.
+  /// Temperature must be enabled when pressure or humidity is enabled. A
+  /// successful change invalidates the cached sample.
   Status setOversamplingT(Oversampling osrs);
 
   /// Set oversampling for pressure.
-  /// Temperature must be enabled when pressure is enabled.
+  /// Temperature must be enabled when pressure is enabled. A successful change
+  /// invalidates the cached sample.
   Status setOversamplingP(Oversampling osrs);
 
   /// Set oversampling for humidity.
-  /// Temperature must be enabled when humidity is enabled.
+  /// Temperature must be enabled when humidity is enabled. The hardware
+  /// sequence writes ctrl_hum first, then ctrl_meas to latch the humidity
+  /// setting. A successful change invalidates the cached sample.
   Status setOversamplingH(Oversampling osrs);
 
-  /// Set IIR filter coefficient
+  /// Set IIR filter coefficient. The driver verifies the device is not
+  /// currently measuring, switches to sleep, verifies again before writing
+  /// config, then restores the cached mode. A successful change invalidates the
+  /// cached sample. If measuring appears after the sleep write, config is
+  /// skipped and dirty state is set.
   Status setFilter(Filter filter);
 
-  /// Set standby time (normal mode only)
+  /// Set standby time (normal mode only). The driver verifies the device is not
+  /// currently measuring, switches to sleep, verifies again before writing
+  /// config, then restores the cached mode. A successful change invalidates the
+  /// cached sample. If measuring appears after the sleep write, config is
+  /// skipped and dirty state is set.
   Status setStandby(Standby standby);
 
   /// Get oversampling for temperature
@@ -335,13 +364,17 @@ public:
   /// Read a contiguous register block
   Status readRegisters(uint8_t startReg, uint8_t* buf, size_t len);
 
-  /// Write a contiguous register block
+  /// Write a contiguous register block. Diagnostic raw writes can desynchronize
+  /// cached configuration from hardware; call recover() or begin() to resync
+  /// after manual config-register edits.
   Status writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len);
 
   /// Read a single register
   Status readRegister(uint8_t reg, uint8_t& value);
 
-  /// Write a single register
+  /// Write a single register. Diagnostic raw writes can desynchronize cached
+  /// configuration from hardware; call recover() or begin() to resync after
+  /// manual config-register edits.
   Status writeRegister(uint8_t reg, uint8_t value);
 
   // =========================================================================
@@ -412,6 +445,7 @@ private:
   // =========================================================================
 
   Status _applyConfig();
+  Status _ensureConfigWriteReady();
   Status _waitForNvmReady();
   Status _readCalibration();
   Status _validateCalibration();
@@ -462,6 +496,7 @@ private:
   // Measurement state
   bool _measurementRequested = false;
   bool _measurementReady = false;
+  Status _lastMeasurementStatus = Status::Ok();
   bool _hasSample = false;
   uint32_t _measurementStartMs = 0;
   uint32_t _sampleTimestampMs = 0;
