@@ -26,7 +26,7 @@ This file is designed so an implementation agent can build a **robust BME280 dri
 | 0xF9 | press_xlsb | R | 0x00 |  |
 | 0xF8 | press_lsb | R | 0x00 |  |
 | 0xF7 | press_msb | R | 0x80 |  |
-| 0xF5 | config | R/W | 0x00 | tstandby + IIR filter; only writable in sleep |
+| 0xF5 | config | R/W | 0x00 | tstandby + IIR filter; write from sleep because normal-mode writes may be ignored |
 | 0xF4 | ctrl_meas | R/W | 0x00 | temp/press oversampling + mode |
 | 0xF3 | status | R | 0x00 | bit3 measuring, bit0 im_update |
 | 0xF2 | ctrl_hum | R/W | 0x00 | humidity oversampling; must write ctrl_meas after changing |

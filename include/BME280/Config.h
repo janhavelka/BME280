@@ -8,7 +8,10 @@
 
 namespace BME280 {
 
-/// I2C write callback signature
+/// I2C write callback signature.
+///
+/// The application owns bus handles, locking, pins, and timeout policy. This
+/// callback must not recursively call into the same BME280 driver instance.
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
@@ -18,7 +21,10 @@ namespace BME280 {
 using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
                               uint32_t timeoutMs, void* user);
 
-/// I2C write-then-read callback signature
+/// I2C write-then-read callback signature.
+///
+/// The application owns bus handles, locking, pins, and timeout policy. This
+/// callback must not recursively call into the same BME280 driver instance.
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
@@ -32,6 +38,8 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
                                   void* user);
 
 /// Millisecond timestamp callback.
+///
+/// requestMeasurement() and tick(nowMs) must use the same monotonic timebase.
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
 using NowMsFn = uint32_t (*)(void* user);
@@ -74,19 +82,22 @@ enum class Standby : uint8_t {
   MS_20 = 7    ///< 20 ms
 };
 
-/// Configuration for BME280 driver
+/// Configuration for BME280 driver.
+///
+/// Driver instances are non-owning: callbacks and user pointers must remain
+/// valid for the lifetime of the driver configuration.
 struct Config {
   // === I2C Transport (required) ===
   I2cWriteFn i2cWrite = nullptr;        ///< I2C write function pointer
   I2cWriteReadFn i2cWriteRead = nullptr; ///< I2C write-read function pointer
   void* i2cUser = nullptr;               ///< User context for callbacks
 
-  // === Timing Hooks (optional) ===
-  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source; IDF apps should inject this explicitly
+  // === Timing Hooks (optional for begin, required for measurement scheduling) ===
+  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source; required by requestMeasurement()
   void* timeUser = nullptr;              ///< User context for timing hook
   
   // === Device Settings ===
-  uint8_t i2cAddress = 0x76;             ///< 0x76 (SDO=GND) or 0x77 (SDO=VDD)
+  uint8_t i2cAddress = 0x76;             ///< 0x76 (SDO=GND) or 0x77 (SDO=VDDIO)
   uint32_t i2cTimeoutMs = 50;            ///< I2C transaction timeout in ms
 
   // === Measurement Settings ===

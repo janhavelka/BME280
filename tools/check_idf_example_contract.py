@@ -10,6 +10,7 @@ ARDUINO_MAIN = ROOT / "examples" / "01_basic_bringup_cli" / "main.cpp"
 IDF_MAIN = ROOT / "examples" / "idf" / "basic" / "main" / "main.cpp"
 IDF_TRANSPORT = ROOT / "examples" / "idf" / "basic" / "main" / "IdfI2cTransport.cpp"
 IDF_CMAKE = ROOT / "examples" / "idf" / "basic" / "main" / "CMakeLists.txt"
+IDF_ROOT = ROOT / "examples" / "idf" / "basic"
 
 FORBIDDEN_IDF_TOKENS = [
     "Arduino.h",
@@ -50,6 +51,7 @@ MANDATORY_COMMANDS = {
     "help",
     "version",
     "ver",
+    "addr",
     "scan",
     "begin",
     "read",
@@ -66,7 +68,10 @@ MANDATORY_COMMANDS = {
     "settings",
     "calib",
     "status",
+    "id",
     "chipid",
+    "force",
+    "normal",
     "reset",
     "reg",
     "wreg",
@@ -114,9 +119,15 @@ def dispatched_commands(text: str) -> set[str]:
 def main() -> int:
     arduino = read(ARDUINO_MAIN)
     idf = read(IDF_MAIN)
-    transport = read(IDF_TRANSPORT)
-    cmake = read(IDF_CMAKE)
-    combined_idf = idf + "\n" + transport + "\n" + cmake
+    read(IDF_TRANSPORT)
+    read(IDF_CMAKE)
+    idf_files = sorted(
+        path
+        for path in IDF_ROOT.rglob("*")
+        if path.is_file() and path.suffix in {".c", ".cc", ".cpp", ".h", ".hpp", ".txt"}
+        and not (set(path.relative_to(IDF_ROOT).parts) & {"build", "managed_components", ".pytest_cache"})
+    )
+    combined_idf = "\n".join(read(path) for path in idf_files)
 
     for token in FORBIDDEN_IDF_TOKENS:
         if token in combined_idf:

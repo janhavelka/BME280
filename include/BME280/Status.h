@@ -14,7 +14,7 @@ enum class Err : uint8_t {
   I2C_ERROR,                 ///< I2C communication failure
   TIMEOUT,                   ///< Operation timed out
   INVALID_PARAM,             ///< Invalid parameter value
-  DEVICE_NOT_FOUND,          ///< Device not responding on I2C bus
+  DEVICE_NOT_FOUND,          ///< Definite address NACK / device absent on I2C bus
   CHIP_ID_MISMATCH,          ///< Chip ID != 0x60 (not a BME280)
   CALIBRATION_INVALID,       ///< Compensation data failed validation
   MEASUREMENT_NOT_READY,     ///< Sample not yet available

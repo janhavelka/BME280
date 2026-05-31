@@ -8,11 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Dirty hardware-configuration diagnostics with `hardwareConfigDirty()`,
+  `hardwareConfigDirtyError()`, and matching `SettingsSnapshot` fields.
+- `lastMeasurementStatus()` for checking scheduler/capture failures after
+  `tick()`.
+- `tools/check_package_contents.py` for validating generated PlatformIO
+  archives.
+- `tools/run_i2c_hil.py`, `tools/check_hil_contract.py`, an HIL runbook, and a
+  target evidence template for future serial hardware validation.
+- Hardware validation matrix and maintained hardening summary documentation.
 - ESP-IDF component metadata for building the framework-neutral core with `idf_component_register`.
 - ESP-IDF basic example with an application-owned `i2c_master` bus/device and transport callbacks.
 - Native ESP-IDF CLI preserving Arduino command coverage without Arduino compatibility facades.
 - ESP-IDF example contract check covering native IDF glue, forbidden Arduino compatibility tokens, component metadata, and required command coverage.
-- `docs/IDF_PORT_IMPLEMENTATION.md` with the implemented port structure, validation notes, and remaining hardware checks.
+- Consolidated ESP-IDF port documentation in `docs/IDF_PORT.md`, including
+  component/example structure, adapter contract, validation commands, and
+  remaining hardware checks.
+- Per-channel validity flags on `Measurement`, `RawSample`, and `CompensatedSample`, plus named Bosch skipped-sentinel constants.
+- Native golden-vector coverage for calibration parsing, H4/H5 nibble packing, raw burst reconstruction, fixed-point compensation, humidity clamps, skipped sentinels, and pressure denominator guarding.
 
 ### Changed
 - Core timing guard now rejects Arduino and ESP-IDF framework headers in core/public headers and `src/`.
@@ -21,9 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native ESP-IDF example timing now uses an explicitly named `currentMs()`
   helper instead of an Arduino-style `millis()` shim; the IDF example contract
   rejects future `millis()` / `delay()` timing regressions.
+- Successful typed configuration changes now invalidate cached samples so old values are not reused under a new measurement configuration.
+- Diagnostic CLIs now include address selection, chip-ID/register checks,
+  reset/recover/selftest/stress commands, and clearer health output for HIL
+  evidence.
+- Public documentation was consolidated around maintained user-facing docs;
+  temporary phase and prompt reports were removed from the docs tree.
+- Old prompt and split ESP-IDF implementation notes were removed after their
+  useful content was folded into the maintained README, IDF port note, hardening
+  summary, and HIL docs.
+- Generated HIL logs and Doxygen HTML output are ignored by git.
 
 ### Removed
 - Removed the stale ESP-IDF Arduino compatibility shim and documentation that described compiling Arduino CLI source into IDF examples.
+- Removed superseded industry-readiness intermediate reports after their useful
+  content was folded into the hardening summary, README, changelog, HIL
+  runbook, and hardware matrix.
 
 ## [1.5.0] - 2026-05-14
 
@@ -120,7 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Unified bringup helper layer under `examples/common/*` (`BusDiag`, `CliShell`, `HealthView`, `TransportAdapter`).
-- `docs/IDF_PORT.md` and `docs/UNIFICATION_STANDARD.md` as baseline portability/unification references.
+- `docs/IDF_PORT.md` and `docs/UNIFICATION_STANDARD.md` as baseline portability/unification references. `docs/UNIFICATION_STANDARD.md` was later superseded by the maintained README, AGENTS, and IDF/HIL docs.
 - CLI/timing contract validation scripts in `tools/`.
 
 ### Changed

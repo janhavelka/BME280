@@ -37,5 +37,11 @@ wifi_credentials.h
 *.bak
 *.log
 
-# Auto-generated files
-include/BME280/Version.h
+# HIL output artifacts
+hil_logs/
+
+# Generated documentation
+docs/doxygen/
+
+# Generated PlatformIO package archives
+BME280-*.tar.gz
