@@ -31,7 +31,7 @@ REFERENCED_BY_RELATION = YES
 REFERENCES_RELATION    = YES
 STRIP_CODE_COMMENTS    = NO
 
-INPUT                  = README.md CHANGELOG.md CONTRIBUTING.md include docs/IDF_PORT.md docs/IDF_PORT_IMPLEMENTATION.md docs/BME280_Register_Reference.md docs/BME280_INDUSTRY_HARDENING_SUMMARY.md docs/BME280_HARDWARE_VALIDATION_MATRIX.md docs/I2C_HIL_RUNBOOK.md docs/I2C_HIL_TARGET_TEMPLATE.md
+INPUT                  = README.md CHANGELOG.md AGENTS.md CONTRIBUTING.md include docs/IDF_PORT.md docs/BME280_Register_Reference.md docs/BME280_INDUSTRY_HARDENING_SUMMARY.md docs/BME280_HARDWARE_VALIDATION_MATRIX.md docs/I2C_HIL_RUNBOOK.md docs/I2C_HIL_TARGET_TEMPLATE.md
 FILE_PATTERNS          = *.h *.md
 RECURSIVE              = YES
 EXCLUDE_PATTERNS       = */.pio/* */.git/* */test/* */docs/doxygen/* */docs/extracted-md/* */docs/pdf-extracted-md/* */docs/_pdf_extracts/*

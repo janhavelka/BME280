@@ -14,6 +14,22 @@ ESP32-S2 and ESP32-S3 with Arduino/PlatformIO and ESP-IDF consumers.
 No physical BME280 hardware validation is claimed here. Local ESP-IDF `idf.py`
 validation is claimed only when the exact commands are run and recorded.
 
+## Active Documentation Set
+
+- `README.md`: public usage, API, build, validation, and limitations.
+- `CHANGELOG.md`: release-facing change history.
+- `AGENTS.md`: repository engineering rules.
+- `CONTRIBUTING.md`: contribution workflow.
+- `docs/IDF_PORT.md`: ESP-IDF component/example boundary and validation notes.
+- `docs/BME280_Register_Reference.md`: register and bitfield reference.
+- `docs/BME280_HARDWARE_VALIDATION_MATRIX.md`: hardware result ledger.
+- `docs/I2C_HIL_RUNBOOK.md`: serial HIL procedure.
+- `docs/I2C_HIL_TARGET_TEMPLATE.md`: per-target HIL evidence template.
+- `docs/BME280_datasheet.pdf` and extracted markdown: source evidence.
+
+The old prompt files, intermediate hardening reports, split ESP-IDF
+implementation note, and self-test reports are no longer active documentation.
+
 ## What Changed
 
 Core and API contracts:
@@ -78,6 +94,10 @@ Before any hardware row is changed from `NOT RUN`, record board, sensor module,
 wiring, address, pull-ups, voltage rails, command transcript, environmental
 reference, result, and operator notes in the hardware validation matrix or an
 attached HIL artifact package.
+
+Generated Doxygen output is a local artifact. Do not publish API docs for this
+branch as a `1.5.0` release until the unreleased public API entries are either
+released with a SemVer bump or clearly marked as development documentation.
 
 ## Current HIL Baseline
 

@@ -115,6 +115,14 @@ struct SettingsSnapshot {
 /// Applications sharing a driver or I2C bus across tasks must serialize access
 /// externally. Transport callbacks must not recursively call into the same
 /// driver instance.
+///
+/// Device contract:
+/// - Supported I2C addresses are 0x76 and 0x77.
+/// - begin() and probe() verify BME280 identity by reading chip ID 0x60.
+/// - The application owns I2C bus setup, pins, pull-ups, locks, reset/power
+///   control, timeout policy, and the monotonic clock used by Config::nowMs.
+/// - Multi-register configuration failures are reported through
+///   hardwareConfigDirty() and hardwareConfigDirtyError().
 class BME280 {
 public:
   BME280() = default;
@@ -160,6 +168,8 @@ public:
   /// Check if device is present on the bus (raw I2C, no health tracking).
   /// Address NACK maps to DEVICE_NOT_FOUND; other transport errors and chip-ID
   /// mismatch are preserved. Does not clear OFFLINE.
+  /// Requires a successful begin() so the transport callbacks and address are
+  /// configured.
   /// @return Status::Ok() if device responds with chip ID 0x60, error otherwise
   Status probe();
   
@@ -376,20 +386,43 @@ public:
   // Raw Register Access
   // =========================================================================
 
-  /// Read a contiguous register block
+  /// Read a contiguous register block through tracked I2C.
+  /// @param startReg First register address to read
+  /// @param[out] buf Destination buffer; must not be null
+  /// @param len Number of bytes to read; must be nonzero
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
+  ///         INVALID_PARAM for null/zero buffers, BUSY while OFFLINE, or the
+  ///         original tracked transport status.
   Status readRegisters(uint8_t startReg, uint8_t* buf, size_t len);
 
-  /// Write a contiguous register block. Diagnostic raw writes can desynchronize
-  /// cached configuration from hardware; call recover() or begin() to resync
-  /// after manual config-register edits.
+  /// Write a contiguous register block through tracked I2C.
+  /// @param startReg First register address to write
+  /// @param buf Source buffer; must not be null
+  /// @param len Number of bytes to write; must be nonzero and fit the internal
+  ///            bounded stack payload
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
+  ///         INVALID_PARAM for null/zero/oversized writes, BUSY while OFFLINE,
+  ///         or the original tracked transport status.
+  /// @note Diagnostic raw writes can desynchronize cached configuration from
+  ///       hardware; call recover() or begin() to resync after manual
+  ///       config-register edits.
   Status writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len);
 
-  /// Read a single register
+  /// Read a single register through tracked I2C.
+  /// @param reg Register address to read
+  /// @param[out] value Register value
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), BUSY while
+  ///         OFFLINE, or the original tracked transport status.
   Status readRegister(uint8_t reg, uint8_t& value);
 
-  /// Write a single register. Diagnostic raw writes can desynchronize cached
-  /// configuration from hardware; call recover() or begin() to resync after
-  /// manual config-register edits.
+  /// Write a single register through tracked I2C.
+  /// @param reg Register address to write
+  /// @param value Value to write
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), BUSY while
+  ///         OFFLINE, or the original tracked transport status.
+  /// @note Diagnostic raw writes can desynchronize cached configuration from
+  ///       hardware; call recover() or begin() to resync after manual
+  ///       config-register edits.
   Status writeRegister(uint8_t reg, uint8_t value);
 
   // =========================================================================

@@ -16,6 +16,8 @@ RUNBOOK = ROOT / "docs" / "I2C_HIL_RUNBOOK.md"
 TEMPLATE = ROOT / "docs" / "I2C_HIL_TARGET_TEMPLATE.md"
 MATRIX = ROOT / "docs" / "BME280_HARDWARE_VALIDATION_MATRIX.md"
 SUMMARY = ROOT / "docs" / "BME280_INDUSTRY_HARDENING_SUMMARY.md"
+README = ROOT / "README.md"
+IDF_PORT = ROOT / "docs" / "IDF_PORT.md"
 GITIGNORE = ROOT / ".gitignore"
 
 
@@ -61,20 +63,24 @@ def assert_contains(text: str, needle: str, path: pathlib.Path) -> None:
 
 
 def main() -> int:
-    for path in (RUNNER, RUNBOOK, TEMPLATE, MATRIX, SUMMARY):
+    for path in (RUNNER, RUNBOOK, TEMPLATE, MATRIX, SUMMARY, README, IDF_PORT):
         if not path.exists():
             fail(f"missing required file: {path.relative_to(ROOT)}")
 
     py_compile.compile(str(RUNNER), doraise=True)
     runner_text = read(RUNNER)
     runbook_text = read(RUNBOOK)
+    template_text = read(TEMPLATE)
     matrix_text = read(MATRIX)
     summary_text = read(SUMMARY)
+    readme_text = read(README)
+    idf_port_text = read(IDF_PORT)
     gitignore_text = read(GITIGNORE)
 
     assert_contains(runner_text, "--dry-run", RUNNER)
     assert_contains(runner_text, "python -m pip install pyserial", RUNNER)
     assert_contains(runner_text, "hil_logs", RUNNER)
+    assert_contains(runner_text, "astimezone()", RUNNER)
     assert_contains(gitignore_text, "hil_logs/", GITIGNORE)
 
     runner = load_runner()
@@ -135,20 +141,63 @@ def main() -> int:
     if not any("Requested via --include-fault-tests" in item.notes for item in fault_manual):
         fail("--include-fault-tests must be visible in manual checklist notes")
 
-    for path, text in ((RUNBOOK, runbook_text), (SUMMARY, summary_text)):
+    for path, text in ((RUNBOOK, runbook_text), (SUMMARY, summary_text), (README, readme_text), (IDF_PORT, idf_port_text)):
         assert_contains(text, "scan", path)
+    for path, text in ((RUNBOOK, runbook_text), (SUMMARY, summary_text), (MATRIX, matrix_text)):
         assert_contains(text, "ACK", path)
         assert_contains(text, "0x60", path)
+    for path, text in ((RUNBOOK, runbook_text), (SUMMARY, summary_text), (README, readme_text)):
         assert_contains(text, "No physical", path)
+
+    for result_token in (
+        "PASS",
+        "OPERATOR_CHECK_REQUIRED",
+        "REVIEW_REQUIRED",
+        "SERIAL_OK_OR_REVIEW",
+        "FAIL",
+        "TIMEOUT",
+        "SKIPPED_DRY_RUN",
+        "SKIPPED_UNSAFE",
+    ):
+        assert_contains(runbook_text, result_token, RUNBOOK)
+
+    for field in (
+        "Temperature reference reading",
+        "BME280 temperature reading",
+        "Temperature tolerance / uncertainty",
+        "Humidity reference reading",
+        "BME280 humidity reading",
+        "Pressure reference reading",
+        "BME280 pressure reading",
+        "Reading timestamp",
+    ):
+        assert_contains(template_text, field, TEMPLATE)
+
+    for read_cmd in ("normal on", "normal off", "cfg"):
+        assert_contains(matrix_text, read_cmd, MATRIX)
 
     forbidden_report_claims = (
         "Hardware run: PASS",
         "Hardware validation: PASS",
         "Physical HIL validation: PASS",
     )
+    scanned_docs = (runbook_text, summary_text, matrix_text, readme_text, idf_port_text)
     for claim in forbidden_report_claims:
-        if claim in runbook_text or claim in summary_text or claim in matrix_text:
+        if any(claim in text for text in scanned_docs):
             fail(f"docs contain unsupported hardware claim: {claim}")
+
+    stale_terms = (
+        "phase reports",
+        "BME280_PHASE_",
+        "BME280_PRE_HIL_READINESS_REPORT",
+        "BME280_PROMPTS_",
+        "I2C_HIL_SELFTEST_REPORT",
+        "IDF_PORT_IMPLEMENTATION.md",
+        "CODEX_PROMPT_BME280_DRIVER.md",
+    )
+    for term in stale_terms:
+        if any(term in text for text in scanned_docs):
+            fail(f"docs contain stale industry-readiness term: {term}")
 
     assert_contains(matrix_text, "tools/run_i2c_hil.py", MATRIX)
     assert_contains(matrix_text, "stress 10 as an automated forced-measurement stress substitute", MATRIX)

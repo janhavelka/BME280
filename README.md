@@ -386,6 +386,9 @@ python -m platformio pkg pack
 python tools/check_package_contents.py
 ```
 
+Remove the generated package tarball after local validation unless you are
+preparing a release artifact.
+
 Optional local ESP-IDF checks, when `idf.py` is installed:
 
 ```bash
@@ -395,21 +398,31 @@ idf.py -C examples/idf/basic set-target esp32s2
 idf.py -C examples/idf/basic build
 ```
 
+Optional local Doxygen generation, when `doxygen` is installed:
+
+```bash
+doxygen Doxyfile
+```
+
+Generated docs under `docs/doxygen/` are local artifacts and are not committed.
+
 ## Documentation
 
 - `CHANGELOG.md` - full release history
+- `AGENTS.md` - repository engineering rules for future changes
+- `CONTRIBUTING.md` - contribution workflow
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
-- `docs/IDF_PORT_IMPLEMENTATION.md` - implemented IDF component/example notes
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
 - `docs/BME280_INDUSTRY_HARDENING_SUMMARY.md` - maintained summary of the industry-readiness branch
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` - explicit hardware validation status
 - `docs/I2C_HIL_RUNBOOK.md` - serial HIL runner procedure and evidence rules
 - `docs/I2C_HIL_TARGET_TEMPLATE.md` - per-target HIL evidence template
+- `docs/extracted-md/00_document_inventory.md` - index for extracted datasheet notes
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
 ## Known Limitations
 
-- Hardware validation is not claimed until the hardware matrix or HIL artifacts record board, wiring, address, commands, and results.
+- No physical BME280 hardware validation is claimed until the hardware matrix or HIL artifacts record board, wiring, address, commands, and results.
 - Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v6.0.1 on ESP32-S2 and ESP32-S3.
 - The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should add application-owned locking, scheduling, and timeout policy around the injected transport.
 

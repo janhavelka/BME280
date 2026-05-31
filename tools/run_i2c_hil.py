@@ -423,6 +423,10 @@ def make_log_dir(base: pathlib.Path) -> pathlib.Path:
     raise RuntimeError(f"could not create unique log directory under {base}")
 
 
+def timestamp() -> str:
+    return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
 def classify_output(spec: CommandSpec, output: str, completion: str) -> tuple[str, str]:
     clean = strip_ansi(output)
     if completion == RESULT_TIMEOUT:
@@ -483,7 +487,7 @@ def run_serial_command(ser, spec: CommandSpec, transcript, *, timeout_s: float) 
     matched_failure = False
     chunks: list[str] = []
 
-    boundary = f"\n--- COMMAND {spec.command!r} @ {dt.datetime.now().isoformat(timespec='seconds')} ---\n"
+    boundary = f"\n--- COMMAND {spec.command!r} @ {timestamp()} ---\n"
     transcript.write(boundary)
     transcript.flush()
 
@@ -637,7 +641,7 @@ def write_operator_checklist(path: pathlib.Path, manual_items: list[CommandSpec]
 
 def write_transcript_header(transcript, args: argparse.Namespace, log_dir: pathlib.Path) -> None:
     transcript.write("# I2C HIL serial transcript\n")
-    transcript.write(f"timestamp={dt.datetime.now().isoformat(timespec='seconds')}\n")
+    transcript.write(f"timestamp={timestamp()}\n")
     transcript.write(f"port={args.port or 'DRY_RUN'}\n")
     transcript.write(f"baud={args.baud}\n")
     transcript.write(f"address={args.address}\n")
@@ -704,7 +708,7 @@ def main(argv: list[str] | None = None) -> int:
                     results.append(run_serial_command(ser, spec, transcript, timeout_s=timeout_s))
 
     summary = {
-        "datetime": dt.datetime.now().isoformat(timespec="seconds"),
+        "datetime": timestamp(),
         "branch": git_value(["branch", "--show-current"]),
         "commit": git_value(["rev-parse", "HEAD"]),
         "worktree": worktree_state(),

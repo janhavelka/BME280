@@ -177,6 +177,9 @@ The default run excludes raw writes, long soak, and physical fault injection.
 - `PASS` means required serial tokens were captured for that command.
 - `OPERATOR_CHECK_REQUIRED` means serial output was captured but a human must
   review environmental plausibility or bench evidence.
+- `REVIEW_REQUIRED` means output was captured, but the runner could not classify
+  it as a deterministic pass or failure. The operator must inspect the
+  transcript before using it as evidence.
 - `SERIAL_OK_OR_REVIEW` means serial output exists but did not prove all expected
   tokens.
 - `FAIL` or `TIMEOUT` means the transcript contains a precise failure token or a
@@ -186,3 +189,24 @@ The default run excludes raw writes, long soak, and physical fault injection.
 
 Hardware validation is complete only after the transcript, summary, manual
 checklist, and setup record are reviewed together.
+
+## Manual Normal-Mode And Environmental Evidence
+
+The default runner sequence proves a bounded bring-up path. It does not by
+itself prove normal-mode soak behavior or environmental accuracy.
+
+For normal-mode evidence, run and record repeated samples with stable timing:
+
+```text
+normal on
+read
+read
+read
+normal off
+cfg
+```
+
+Record the timestamp, BME280 reading, reference instrument reading, tolerance or
+uncertainty, stability notes, and pass/fail decision for temperature, pressure,
+and humidity. Use `--include-soak` for an additional forced-measurement stress
+loop; it is not a replacement for normal-mode repeated-read evidence.

@@ -41,11 +41,25 @@ Copy this template into the HIL evidence package for each physical target.
 
 - Temperature reference model:
 - Temperature reference calibration status:
+- Temperature reference reading:
+- BME280 temperature reading:
+- Temperature tolerance / uncertainty:
+- Temperature pass/fail:
 - Humidity reference model:
 - Humidity reference calibration status:
+- Humidity reference reading:
+- BME280 humidity reading:
+- Humidity tolerance / uncertainty:
+- Humidity pass/fail:
 - Pressure reference model:
 - Pressure reference calibration status:
+- Pressure reference reading:
+- BME280 pressure reading:
+- Pressure tolerance / uncertainty:
+- Pressure pass/fail:
 - Site altitude or pressure adjustment notes:
+- Reading timestamp:
+- Stability notes:
 
 ## Artifacts
 

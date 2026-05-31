@@ -22,13 +22,43 @@ report or attached transcript:
   `serial_transcript.txt`, `summary.md`, `summary.json`, and
   `operator_checklist.md`.
 
+## Setup Record
+
+Use `unknown` rather than guessing. Leave untested rows as `NOT RUN`.
+
+| Field | Result |
+|------|--------|
+| Operator | NOT RUN |
+| Date/time and timezone | NOT RUN |
+| Branch | NOT RUN |
+| Commit hash | NOT RUN |
+| Worktree state | NOT RUN |
+| Framework | NOT RUN |
+| Build target | NOT RUN |
+| Serial port and baud | NOT RUN |
+| HIL log directory | NOT RUN |
+| MCU board model | NOT RUN |
+| BME280 module or board model | NOT RUN |
+| Chip marking, if visible | NOT RUN |
+| VDD / VDDIO | NOT RUN |
+| SDA/SCL pins and bus speed | NOT RUN |
+| Pull-up values and location | NOT RUN |
+| BME280 address | NOT RUN |
+| SDO state | NOT RUN |
+| CSB state | NOT RUN |
+| Environmental reference instruments | NOT RUN |
+| Logic analyzer capture path, if used | NOT RUN |
+| Photo/video evidence path, if used | NOT RUN |
+
+## Validation Rows
+
 | Area | Target / condition | Status | Evidence |
 |------|--------------------|--------|----------|
 | Address 0x76 | SDO tied to GND, CSB tied to VDDIO | NOT RUN | Pending physical board test |
 | Address 0x77 | SDO tied to VDDIO, CSB tied to VDDIO | NOT RUN | Pending physical board test |
 | Chip ID | Register `0xD0` reads `0x60` | NOT RUN | Pending `id`/`chipid` CLI capture |
 | Soft reset | Write `0xB6` to `0xE0`, wait for `im_update` clear | NOT RUN | Pending `reset` CLI capture |
-| Forced mode | One measurement returns then device sleeps | NOT RUN | Pending `force`/`read` CLI capture |
+| Forced mode | Forced measurement produces a sample; sleep-return evidence recorded separately with `mode`, `status`, or `reg 0xF4` | NOT RUN | Pending `force`/`read` and post-force mode/status capture |
 | Normal mode | `tick()` polling captures fresh samples across cycles | NOT RUN | Pending repeated `normal on` / `read` / `normal off` captures |
 | Burst read coherency | Single `0xF7..0xFE` transaction | NOT RUN | Pending logic-analyzer or adapter trace |
 | Calibration | `0x88..0xA1` and `0xE1..0xE7` parsed plausibly | NOT RUN | Pending `calib` CLI capture |
@@ -89,12 +119,24 @@ cfg
 stress 500
 ```
 
+Normal-mode soak is manual evidence, not completed by `--include-soak` alone.
+Record repeated `read` commands in normal mode with timestamps and references:
+
+```text
+normal on
+read
+read
+read
+normal off
+cfg
+```
+
 Fault-path HIL evidence should include wrong-address `addr 0x76`/`addr 0x77`
 probe attempts, safe sensor unplug/replug address-NACK capture, safe temporary
 SDA/SCL fault capture if the bench setup supports it, reset during measurement,
 manual `recover` after unplug/replug, longer normal-mode soak, and plausibility
 comparison against local temperature, humidity, and pressure references.
 
-Software-only checks are recorded in phase reports and CI logs. They do not
-prove electrical wiring, timing margins, environmental accuracy, or sensor
-assembly handling.
+Software-only checks are recorded in CI logs, validation logs, and maintained
+docs. They do not prove electrical wiring, timing margins, environmental
+accuracy, or sensor assembly handling.
