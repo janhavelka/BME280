@@ -66,7 +66,7 @@ intentionally inert and is not a platform clock.
 
 ## Transport Contract
 
-The native IDF adapter uses the ESP-IDF v6 I2C master driver:
+The native IDF adapter uses the modern ESP-IDF I2C master driver:
 
 ```cpp
 #include <driver/i2c_master.h>

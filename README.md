@@ -42,7 +42,7 @@ The core component does not configure pins, create I2C buses, log, or include
 Arduino or ESP-IDF framework headers. Applications should inject `Config::nowMs`
 so health timestamps and scheduler timing share the application clock.
 
-See `examples/idf/basic` for a native ESP-IDF v6-style `i2c_master` adapter and
+See `examples/idf/basic` for a native ESP-IDF `i2c_master` adapter and
 `app_main` CLI. The ESP-IDF example preserves the Arduino CLI command contract
 without including Arduino source or compatibility facades.
 
@@ -427,7 +427,7 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 ## Known Limitations
 
 - No physical BME280 hardware validation is claimed until the hardware matrix or HIL artifacts record board, wiring, address, commands, and results.
-- Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v6.0.1 on ESP32-S2 and ESP32-S3.
+- Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v5.3.2 on ESP32-S2 and ESP32-S3.
 - The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should add application-owned locking, scheduling, and timeout policy around the injected transport.
 - Generated Doxygen HTML, HIL logs, PlatformIO build output, and package
   tarballs are local artifacts unless a release process explicitly records

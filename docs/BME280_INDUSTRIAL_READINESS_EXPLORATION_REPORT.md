@@ -105,7 +105,7 @@ I recommend proceeding to controlled exploratory HIL, but not using the current 
 | 11. Are reset/NVM paths bounded and diagnostically precise? | Yes, bounded by deadline and poll cap. First transport error is preserved when no status read succeeds; stuck `im_update` becomes `TIMEOUT`. Caveat: deadline requires injected `nowMs` for real wall-time semantics. |
 | 12. Are public structs/API changes documented for release notes? | Partly. Changelog `[Unreleased]` mentions added features, but migration/SemVer impact is not resolved for copy/move deletion and public struct layout changes. |
 | 13. Are examples honest: diagnostic vs production/shared-bus integration? | Yes. README labels Arduino and IDF examples as diagnostic bring-up CLIs and states production shared-bus users must provide ownership, locking, scheduling, and timeout policy. A full production shared-bus example is still absent. |
-| 14. Is ESP-IDF support actually built in CI, or only documented? | CI is configured to build `examples/idf/basic` for ESP32-S3 and ESP32-S2 using ESP-IDF v6.0.1. Local `idf.py` was unavailable, so local pure IDF builds were not run. |
+| 14. Is ESP-IDF support actually built in CI, or only documented? | CI is configured to build `examples/idf/basic` for ESP32-S3 and ESP32-S2 using ESP-IDF v5.3.2. Local `idf.py` was unavailable, so local pure IDF builds were not run. |
 | 15. Is the package artifact clean and complete? | Current package creation and current checker passed, and the archive was removed. However, the checker misses required IDF transport files, so package completeness enforcement is insufficient. |
 | 16. Are stale reports or old claims likely to confuse users? | Reduced but not eliminated. Docs consolidate prior reports and warn about no hardware validation. Local generated Doxygen under `docs/doxygen/` may contain unreleased API labeled `1.5.0`; `docs/README.md` is untracked but referenced. |
 | 17. Is HIL ready, and what evidence is still missing? | Ready for exploratory HIL, not formal industry-grade evidence. Missing: real board details, wiring, pullups, voltages, address/CSB/SDO, chip ID, reset/NVM, forced sleep-return, normal repeated reads, logic-analyzer/trace for burst read, calibration output, environmental references, fault bench, shared-bus integration, and soak. |
@@ -149,7 +149,7 @@ Safe for README/release notes if kept evidence-bound:
 - "Transport-injected driver; the library does not own the I2C bus."
 - "Native fault-injection tests pass locally: 88/88."
 - "PlatformIO Arduino builds pass locally for `esp32s3dev` and `esp32s2dev`."
-- "CI is configured to build the native ESP-IDF example for ESP32-S3 and ESP32-S2 with ESP-IDF v6.0.1."
+- "CI is configured to build the native ESP-IDF example for ESP32-S3 and ESP32-S2 with ESP-IDF v5.3.2."
 - "ESP-IDF local `idf.py` validation is not claimed unless exact command results are recorded."
 - "Adds HIL runner/runbook/template and a conservative hardware validation matrix with unrun rows marked `NOT RUN`."
 - "Examples are diagnostic bring-up CLIs, not production shared-bus firmware templates."
