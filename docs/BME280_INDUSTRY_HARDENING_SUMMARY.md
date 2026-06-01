@@ -97,9 +97,9 @@ wiring, address, pull-ups, voltage rails, command transcript, environmental
 reference, result, and operator notes in the hardware validation matrix or an
 attached HIL artifact package.
 
-Generated Doxygen output is a local artifact. Do not publish API docs for these
-unreleased changes as a `1.5.0` release until the public API entries are either
-released with a SemVer bump or clearly marked as development documentation.
+Generated Doxygen output is a local artifact. Publish API docs only from a
+release commit where the documented public API matches `library.json` and
+`include/BME280/Version.h`.
 
 ## Current HIL Baseline
 
@@ -118,7 +118,8 @@ forced-measurement stress substitute.
 
 - Merge status: the hardening work is present on `main`.
 - Release status: not complete until version metadata, changelog release
-  entries, CI status, and any required ESP-IDF build evidence are recorded.
+  entries, generated version header, Doxygen project metadata, CI status, and
+  any required ESP-IDF build evidence are recorded for the release commit.
 - Hardware status: not complete until `BME280_HARDWARE_VALIDATION_MATRIX.md` or
   an attached HIL artifact package records real board, wiring, transcript,
   reference, fault, and soak evidence.

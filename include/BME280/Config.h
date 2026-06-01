@@ -63,11 +63,11 @@ enum class Mode : uint8_t {
 
 /// IIR filter coefficient
 enum class Filter : uint8_t {
-  OFF = 0,
-  X2 = 1,
-  X4 = 2,
-  X8 = 3,
-  X16 = 4
+  OFF = 0, ///< Filter disabled
+  X2 = 1,  ///< 2x filter coefficient
+  X4 = 2,  ///< 4x filter coefficient
+  X8 = 3,  ///< 8x filter coefficient
+  X16 = 4  ///< 16x filter coefficient
 };
 
 /// Standby time between measurements (normal mode)

@@ -7,130 +7,114 @@
 namespace BME280 {
 namespace cmd {
 
-// ============================================================================
-// Chip Identification
-// ============================================================================
+/// @name Chip identification
+/// @{
+static constexpr uint8_t REG_CHIP_ID = 0xD0;     ///< Chip-ID register address.
+static constexpr uint8_t CHIP_ID_BME280 = 0x60;  ///< Expected BME280 chip-ID value.
+/// @}
 
-static constexpr uint8_t REG_CHIP_ID = 0xD0;
-static constexpr uint8_t CHIP_ID_BME280 = 0x60;
+/// @name Reset
+/// @{
+static constexpr uint8_t REG_RESET = 0xE0;    ///< Soft-reset register address.
+static constexpr uint8_t RESET_VALUE = 0xB6;  ///< Soft-reset command value.
+/// @}
 
-// ============================================================================
-// Reset
-// ============================================================================
+/// @name Status and control registers
+/// @{
+static constexpr uint8_t REG_CTRL_HUM = 0xF2;   ///< Humidity oversampling register.
+static constexpr uint8_t REG_STATUS = 0xF3;     ///< Measuring and NVM-copy status flags.
+static constexpr uint8_t REG_CTRL_MEAS = 0xF4;  ///< Temperature/pressure oversampling and mode register.
+static constexpr uint8_t REG_CONFIG = 0xF5;     ///< Standby, IIR filter, and SPI3W register.
+/// @}
 
-static constexpr uint8_t REG_RESET = 0xE0;
-static constexpr uint8_t RESET_VALUE = 0xB6;
+/// @name Measurement data registers
+/// @{
+static constexpr uint8_t REG_PRESS_MSB = 0xF7;  ///< Pressure ADC MSB.
+static constexpr uint8_t REG_PRESS_LSB = 0xF8;  ///< Pressure ADC LSB.
+static constexpr uint8_t REG_PRESS_XLSB = 0xF9; ///< Pressure ADC XLSB.
+static constexpr uint8_t REG_TEMP_MSB = 0xFA;   ///< Temperature ADC MSB.
+static constexpr uint8_t REG_TEMP_LSB = 0xFB;   ///< Temperature ADC LSB.
+static constexpr uint8_t REG_TEMP_XLSB = 0xFC;  ///< Temperature ADC XLSB.
+static constexpr uint8_t REG_HUM_MSB = 0xFD;    ///< Humidity ADC MSB.
+static constexpr uint8_t REG_HUM_LSB = 0xFE;    ///< Humidity ADC LSB.
 
-// ============================================================================
-// Status and Control Registers
-// ============================================================================
+static constexpr uint8_t REG_DATA_START = REG_PRESS_MSB; ///< First register in the 0xF7..0xFE burst.
+static constexpr uint8_t DATA_LEN = 8;                   ///< Length of the coherent data-register burst.
+static constexpr int32_t RAW_PRESSURE_SKIPPED = 0x80000;    ///< Bosch pressure skipped sentinel.
+static constexpr int32_t RAW_TEMPERATURE_SKIPPED = 0x80000; ///< Bosch temperature skipped sentinel.
+static constexpr int32_t RAW_HUMIDITY_SKIPPED = 0x8000;     ///< Bosch humidity skipped sentinel.
+/// @}
 
-static constexpr uint8_t REG_CTRL_HUM = 0xF2;   // Humidity oversampling
-static constexpr uint8_t REG_STATUS = 0xF3;     // Measuring + NVM update flags
-static constexpr uint8_t REG_CTRL_MEAS = 0xF4;  // Temp/press oversampling + mode
-static constexpr uint8_t REG_CONFIG = 0xF5;     // Standby + IIR filter + SPI3W
+/// @name Calibration registers
+/// @{
+static constexpr uint8_t REG_CALIB_TP_START = 0x88; ///< Start of T/P coefficient block plus H1.
+static constexpr uint8_t REG_CALIB_TP_LEN = 26;     ///< Length of 0x88..0xA1 calibration block.
+static constexpr uint8_t REG_CALIB_H1 = 0xA1;       ///< H1 calibration byte address.
+static constexpr uint8_t REG_CALIB_H_START = 0xE1;  ///< Start of H2..H6 humidity calibration block.
+static constexpr uint8_t REG_CALIB_H_LEN = 7;       ///< Length of H2..H6 humidity calibration block.
 
-// ============================================================================
-// Measurement Data Registers (burst read 0xF7..0xFE)
-// ============================================================================
+static constexpr uint8_t REG_DIG_T1_LSB = 0x88; ///< dig_T1 low byte.
+static constexpr uint8_t REG_DIG_T1_MSB = 0x89; ///< dig_T1 high byte.
+static constexpr uint8_t REG_DIG_T2_LSB = 0x8A; ///< dig_T2 low byte.
+static constexpr uint8_t REG_DIG_T2_MSB = 0x8B; ///< dig_T2 high byte.
+static constexpr uint8_t REG_DIG_T3_LSB = 0x8C; ///< dig_T3 low byte.
+static constexpr uint8_t REG_DIG_T3_MSB = 0x8D; ///< dig_T3 high byte.
 
-static constexpr uint8_t REG_PRESS_MSB = 0xF7;
-static constexpr uint8_t REG_PRESS_LSB = 0xF8;
-static constexpr uint8_t REG_PRESS_XLSB = 0xF9;
-static constexpr uint8_t REG_TEMP_MSB = 0xFA;
-static constexpr uint8_t REG_TEMP_LSB = 0xFB;
-static constexpr uint8_t REG_TEMP_XLSB = 0xFC;
-static constexpr uint8_t REG_HUM_MSB = 0xFD;
-static constexpr uint8_t REG_HUM_LSB = 0xFE;
+static constexpr uint8_t REG_DIG_P1_LSB = 0x8E; ///< dig_P1 low byte.
+static constexpr uint8_t REG_DIG_P1_MSB = 0x8F; ///< dig_P1 high byte.
+static constexpr uint8_t REG_DIG_P2_LSB = 0x90; ///< dig_P2 low byte.
+static constexpr uint8_t REG_DIG_P2_MSB = 0x91; ///< dig_P2 high byte.
+static constexpr uint8_t REG_DIG_P3_LSB = 0x92; ///< dig_P3 low byte.
+static constexpr uint8_t REG_DIG_P3_MSB = 0x93; ///< dig_P3 high byte.
+static constexpr uint8_t REG_DIG_P4_LSB = 0x94; ///< dig_P4 low byte.
+static constexpr uint8_t REG_DIG_P4_MSB = 0x95; ///< dig_P4 high byte.
+static constexpr uint8_t REG_DIG_P5_LSB = 0x96; ///< dig_P5 low byte.
+static constexpr uint8_t REG_DIG_P5_MSB = 0x97; ///< dig_P5 high byte.
+static constexpr uint8_t REG_DIG_P6_LSB = 0x98; ///< dig_P6 low byte.
+static constexpr uint8_t REG_DIG_P6_MSB = 0x99; ///< dig_P6 high byte.
+static constexpr uint8_t REG_DIG_P7_LSB = 0x9A; ///< dig_P7 low byte.
+static constexpr uint8_t REG_DIG_P7_MSB = 0x9B; ///< dig_P7 high byte.
+static constexpr uint8_t REG_DIG_P8_LSB = 0x9C; ///< dig_P8 low byte.
+static constexpr uint8_t REG_DIG_P8_MSB = 0x9D; ///< dig_P8 high byte.
+static constexpr uint8_t REG_DIG_P9_LSB = 0x9E; ///< dig_P9 low byte.
+static constexpr uint8_t REG_DIG_P9_MSB = 0x9F; ///< dig_P9 high byte.
 
-static constexpr uint8_t REG_DATA_START = REG_PRESS_MSB;
-static constexpr uint8_t DATA_LEN = 8;
-static constexpr int32_t RAW_PRESSURE_SKIPPED = 0x80000;
-static constexpr int32_t RAW_TEMPERATURE_SKIPPED = 0x80000;
-static constexpr int32_t RAW_HUMIDITY_SKIPPED = 0x8000;
+static constexpr uint8_t REG_DIG_H1 = 0xA1;     ///< dig_H1 byte.
+static constexpr uint8_t REG_DIG_H2_LSB = 0xE1; ///< dig_H2 low byte.
+static constexpr uint8_t REG_DIG_H2_MSB = 0xE2; ///< dig_H2 high byte.
+static constexpr uint8_t REG_DIG_H3 = 0xE3;     ///< dig_H3 byte.
+static constexpr uint8_t REG_DIG_H4_MSB = 0xE4; ///< dig_H4 high bits.
+static constexpr uint8_t REG_DIG_H4_H5 = 0xE5;  ///< Packed dig_H4 low bits and dig_H5 low bits.
+static constexpr uint8_t REG_DIG_H5_MSB = 0xE6; ///< dig_H5 high bits.
+static constexpr uint8_t REG_DIG_H5_LSB = REG_DIG_H5_MSB; ///< Backward-compatible legacy name.
+static constexpr uint8_t REG_DIG_H6 = 0xE7;     ///< dig_H6 byte.
+/// @}
 
-// ============================================================================
-// Calibration Registers
-// ============================================================================
+/// @name Bit masks
+/// @{
+static constexpr uint8_t MASK_STATUS_MEASURING = 0x08; ///< Status measuring bit mask.
+static constexpr uint8_t MASK_STATUS_IM_UPDATE = 0x01; ///< Status NVM-copy bit mask.
+static constexpr uint8_t MASK_CTRL_HUM_OSRS_H = 0x07;  ///< Humidity oversampling bit mask.
+static constexpr uint8_t MASK_CTRL_MEAS_OSRS_T = 0xE0; ///< Temperature oversampling bit mask.
+static constexpr uint8_t MASK_CTRL_MEAS_OSRS_P = 0x1C; ///< Pressure oversampling bit mask.
+static constexpr uint8_t MASK_CTRL_MEAS_MODE = 0x03;   ///< Measurement mode bit mask.
+static constexpr uint8_t MASK_CONFIG_T_SB = 0xE0;      ///< Standby time bit mask.
+static constexpr uint8_t MASK_CONFIG_FILTER = 0x1C;    ///< IIR filter bit mask.
+static constexpr uint8_t MASK_CONFIG_SPI3W_EN = 0x01;  ///< 3-wire SPI enable bit mask.
+/// @}
 
-static constexpr uint8_t REG_CALIB_TP_START = 0x88;  // 0x88..0xA1: T/P coeffs plus H1
-static constexpr uint8_t REG_CALIB_TP_LEN = 26;
-static constexpr uint8_t REG_CALIB_H1 = 0xA1;        // H1 (1 byte)
-static constexpr uint8_t REG_CALIB_H_START = 0xE1;   // H2..H6 (7 bytes)
-static constexpr uint8_t REG_CALIB_H_LEN = 7;
-
-// Temperature calibration
-static constexpr uint8_t REG_DIG_T1_LSB = 0x88;
-static constexpr uint8_t REG_DIG_T1_MSB = 0x89;
-static constexpr uint8_t REG_DIG_T2_LSB = 0x8A;
-static constexpr uint8_t REG_DIG_T2_MSB = 0x8B;
-static constexpr uint8_t REG_DIG_T3_LSB = 0x8C;
-static constexpr uint8_t REG_DIG_T3_MSB = 0x8D;
-
-// Pressure calibration
-static constexpr uint8_t REG_DIG_P1_LSB = 0x8E;
-static constexpr uint8_t REG_DIG_P1_MSB = 0x8F;
-static constexpr uint8_t REG_DIG_P2_LSB = 0x90;
-static constexpr uint8_t REG_DIG_P2_MSB = 0x91;
-static constexpr uint8_t REG_DIG_P3_LSB = 0x92;
-static constexpr uint8_t REG_DIG_P3_MSB = 0x93;
-static constexpr uint8_t REG_DIG_P4_LSB = 0x94;
-static constexpr uint8_t REG_DIG_P4_MSB = 0x95;
-static constexpr uint8_t REG_DIG_P5_LSB = 0x96;
-static constexpr uint8_t REG_DIG_P5_MSB = 0x97;
-static constexpr uint8_t REG_DIG_P6_LSB = 0x98;
-static constexpr uint8_t REG_DIG_P6_MSB = 0x99;
-static constexpr uint8_t REG_DIG_P7_LSB = 0x9A;
-static constexpr uint8_t REG_DIG_P7_MSB = 0x9B;
-static constexpr uint8_t REG_DIG_P8_LSB = 0x9C;
-static constexpr uint8_t REG_DIG_P8_MSB = 0x9D;
-static constexpr uint8_t REG_DIG_P9_LSB = 0x9E;
-static constexpr uint8_t REG_DIG_P9_MSB = 0x9F;
-
-// Humidity calibration
-static constexpr uint8_t REG_DIG_H1 = 0xA1;
-static constexpr uint8_t REG_DIG_H2_LSB = 0xE1;
-static constexpr uint8_t REG_DIG_H2_MSB = 0xE2;
-static constexpr uint8_t REG_DIG_H3 = 0xE3;
-static constexpr uint8_t REG_DIG_H4_MSB = 0xE4;
-static constexpr uint8_t REG_DIG_H4_H5 = 0xE5;  // H4 bits [3:0], H5 bits [3:0]
-static constexpr uint8_t REG_DIG_H5_MSB = 0xE6; // H5 bits [11:4]
-static constexpr uint8_t REG_DIG_H5_LSB = REG_DIG_H5_MSB; // Backward-compatible legacy name
-static constexpr uint8_t REG_DIG_H6 = 0xE7;
-
-// ============================================================================
-// Bit Masks
-// ============================================================================
-
-static constexpr uint8_t MASK_STATUS_MEASURING = 0x08;
-static constexpr uint8_t MASK_STATUS_IM_UPDATE = 0x01;
-
-static constexpr uint8_t MASK_CTRL_HUM_OSRS_H = 0x07;
-
-static constexpr uint8_t MASK_CTRL_MEAS_OSRS_T = 0xE0;
-static constexpr uint8_t MASK_CTRL_MEAS_OSRS_P = 0x1C;
-static constexpr uint8_t MASK_CTRL_MEAS_MODE = 0x03;
-
-static constexpr uint8_t MASK_CONFIG_T_SB = 0xE0;
-static constexpr uint8_t MASK_CONFIG_FILTER = 0x1C;
-static constexpr uint8_t MASK_CONFIG_SPI3W_EN = 0x01;
-
-// ============================================================================
-// Bit Positions
-// ============================================================================
-
-static constexpr uint8_t BIT_STATUS_MEASURING = 3;
-static constexpr uint8_t BIT_STATUS_IM_UPDATE = 0;
-
-static constexpr uint8_t BIT_CTRL_HUM_OSRS_H = 0;
-
-static constexpr uint8_t BIT_CTRL_MEAS_OSRS_T = 5;
-static constexpr uint8_t BIT_CTRL_MEAS_OSRS_P = 2;
-static constexpr uint8_t BIT_CTRL_MEAS_MODE = 0;
-
-static constexpr uint8_t BIT_CONFIG_T_SB = 5;
-static constexpr uint8_t BIT_CONFIG_FILTER = 2;
-static constexpr uint8_t BIT_CONFIG_SPI3W_EN = 0;
+/// @name Bit positions
+/// @{
+static constexpr uint8_t BIT_STATUS_MEASURING = 3; ///< Status measuring bit position.
+static constexpr uint8_t BIT_STATUS_IM_UPDATE = 0; ///< Status NVM-copy bit position.
+static constexpr uint8_t BIT_CTRL_HUM_OSRS_H = 0;  ///< Humidity oversampling bit position.
+static constexpr uint8_t BIT_CTRL_MEAS_OSRS_T = 5; ///< Temperature oversampling bit position.
+static constexpr uint8_t BIT_CTRL_MEAS_OSRS_P = 2; ///< Pressure oversampling bit position.
+static constexpr uint8_t BIT_CTRL_MEAS_MODE = 0;   ///< Measurement mode bit position.
+static constexpr uint8_t BIT_CONFIG_T_SB = 5;      ///< Standby time bit position.
+static constexpr uint8_t BIT_CONFIG_FILTER = 2;    ///< IIR filter bit position.
+static constexpr uint8_t BIT_CONFIG_SPI3W_EN = 0;  ///< 3-wire SPI enable bit position.
+/// @}
 
 } // namespace cmd
 } // namespace BME280

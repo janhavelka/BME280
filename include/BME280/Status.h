@@ -32,16 +32,23 @@ enum class Err : uint8_t {
 
 /// Status structure returned by all fallible operations
 struct Status {
-  Err code = Err::OK;
+  Err code = Err::OK;          ///< Repository-standard error code.
   int32_t detail = 0;        ///< Implementation-specific detail (e.g., I2C error code)
   const char* msg = "";      ///< Static string describing the error
 
+  /// Create an OK status.
   constexpr Status() = default;
+
+  /// Create a status with explicit fields.
+  /// @param c Error code.
+  /// @param d Implementation-specific detail value.
+  /// @param m Static status message.
   constexpr Status(Err c, int32_t d, const char* m) : code(c), detail(d), msg(m) {}
   
   /// @return true if operation succeeded
   constexpr bool ok() const { return code == Err::OK; }
 
+  /// @param err Error code to compare against.
   /// @return true if the status matches the provided error code
   constexpr bool is(Err err) const { return code == err; }
 
@@ -55,6 +62,10 @@ struct Status {
   static constexpr Status Ok() { return Status{Err::OK, 0, "OK"}; }
   
   /// Create an error status
+  /// @param err Error code.
+  /// @param message Static error string.
+  /// @param detailCode Optional implementation-specific detail code.
+  /// @return Status carrying the supplied error fields.
   static constexpr Status Error(Err err, const char* message, int32_t detailCode = 0) {
     return Status{err, detailCode, message};
   }
