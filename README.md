@@ -404,7 +404,7 @@ idf.py -C examples/idf/basic build
 ```
 
 Local Doxygen generation requires `doxygen` on `PATH`. CI installs Doxygen and
-treats documentation warnings as errors:
+generates the HTML docs as a smoke check:
 
 ```bash
 doxygen Doxyfile

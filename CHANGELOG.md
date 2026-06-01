@@ -15,8 +15,8 @@ No unreleased changes.
 - Tightened Doxygen and release documentation so the managed synchronous
   lifecycle, release steps, validation commands, and hardware-validation
   boundary use the same language across README, AGENTS, and maintained docs.
-- CI now runs the HIL contract guard, release-metadata guard, and Doxygen with
-  warnings treated as errors, matching the release validation flow.
+- CI now runs the HIL contract guard, release-metadata guard, and Doxygen
+  generation, matching the release validation flow.
 - Package validation now checks the archive matching `library.json` and verifies
   packaged `library.json`, `idf_component.yml`, and `Version.h` agree on the
   release version.
