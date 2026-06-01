@@ -303,7 +303,7 @@ BME280::Status beginAtActiveAddress() {
 
 void printActiveAddress() {
   std::printf("Active I2C address: 0x%02X (%s)\n",
-              gActiveAddress,
+              static_cast<unsigned>(gActiveAddress),
               gActiveAddress == 0x76 ? "SDO=GND" : "SDO=VDDIO");
 }
 
@@ -437,7 +437,7 @@ void printDriverHealth() {
               device.isOnline() ? LOG_COLOR_GREEN : LOG_COLOR_RED,
               boolStr(device.isOnline()),
               LOG_COLOR_RESET);
-  std::printf("  Active I2C address: 0x%02X\n", gActiveAddress);
+  std::printf("  Active I2C address: 0x%02X\n", static_cast<unsigned>(gActiveAddress));
   printDirtyState();
   std::printf("  Consecutive failures: %s%u%s\n",
               zeroGoodColor(device.consecutiveFailures()),
@@ -528,7 +528,7 @@ void printDataRegisters() {
 
   std::printf("=== Live Data Registers ===\n  0xF7..0xFE: ");
   for (size_t i = 0; i < sizeof(data); ++i) {
-    std::printf("%02X%s", data[i], (i + 1U < sizeof(data)) ? " " : "");
+    std::printf("%02X%s", static_cast<unsigned>(data[i]), (i + 1U < sizeof(data)) ? " " : "");
   }
   std::printf("\n  Decoded raw ADC: P=%ld T=%ld H=%ld\n",
               static_cast<long>(adcP),
@@ -564,9 +564,12 @@ void printCalibration() {
     return;
   }
   std::printf("=== Calibration (Cached) ===\n");
-  std::printf("  T1=%u T2=%d T3=%d\n", calib.digT1, calib.digT2, calib.digT3);
+  std::printf("  T1=%u T2=%d T3=%d\n",
+              static_cast<unsigned>(calib.digT1),
+              calib.digT2,
+              calib.digT3);
   std::printf("  P1=%u P2=%d P3=%d P4=%d P5=%d P6=%d P7=%d P8=%d P9=%d\n",
-              calib.digP1,
+              static_cast<unsigned>(calib.digP1),
               calib.digP2,
               calib.digP3,
               calib.digP4,
@@ -576,9 +579,9 @@ void printCalibration() {
               calib.digP8,
               calib.digP9);
   std::printf("  H1=%u H2=%d H3=%u H4=%d H5=%d H6=%d\n",
-              calib.digH1,
+              static_cast<unsigned>(calib.digH1),
               calib.digH2,
-              calib.digH3,
+              static_cast<unsigned>(calib.digH3),
               calib.digH4,
               calib.digH5,
               calib.digH6);
@@ -601,11 +604,11 @@ void printCalibrationRaw() {
   }
   std::printf("=== Calibration (Raw Registers) ===\n  TP: ");
   for (size_t i = 0; i < sizeof(raw.tp); ++i) {
-    std::printf("%02X%s", raw.tp[i], (i + 1U < sizeof(raw.tp)) ? " " : "");
+    std::printf("%02X%s", static_cast<unsigned>(raw.tp[i]), (i + 1U < sizeof(raw.tp)) ? " " : "");
   }
-  std::printf("\n  H1: %02X\n  H: ", raw.h1);
+  std::printf("\n  H1: %02X\n  H: ", static_cast<unsigned>(raw.h1));
   for (size_t i = 0; i < sizeof(raw.h); ++i) {
-    std::printf("%02X%s", raw.h[i], (i + 1U < sizeof(raw.h)) ? " " : "");
+    std::printf("%02X%s", static_cast<unsigned>(raw.h[i]), (i + 1U < sizeof(raw.h)) ? " " : "");
   }
   std::printf("\n");
 }
@@ -645,20 +648,23 @@ void printAllSettings() {
                           BME280::cmd::BIT_CONFIG_T_SB;
 
   std::printf("=== Chip Settings ===\n");
-  std::printf("  ctrl_hum: 0x%02X (osrs_h=%u %s)\n", ctrlHum, osrsH, osrsToStr(osrsH));
+  std::printf("  ctrl_hum: 0x%02X (osrs_h=%u %s)\n",
+              static_cast<unsigned>(ctrlHum),
+              static_cast<unsigned>(osrsH),
+              osrsToStr(osrsH));
   std::printf("  ctrl_meas: 0x%02X (osrs_t=%u %s, osrs_p=%u %s, mode=%u %s)\n",
-              ctrlMeas,
-              osrsT,
+              static_cast<unsigned>(ctrlMeas),
+              static_cast<unsigned>(osrsT),
               osrsToStr(osrsT),
-              osrsP,
+              static_cast<unsigned>(osrsP),
               osrsToStr(osrsP),
-              modeBits,
+              static_cast<unsigned>(modeBits),
               modeToStr(static_cast<BME280::Mode>(modeBits)));
   std::printf("  config: 0x%02X (standby=%u %s, filter=%u %s, spi3w_en=%u)\n",
-              config,
-              standby,
+              static_cast<unsigned>(config),
+              static_cast<unsigned>(standby),
               standbyToStr(standby),
-              filter,
+              static_cast<unsigned>(filter),
               filterToStr(filter),
               (config & BME280::cmd::MASK_CONFIG_SPI3W_EN) != 0 ? 1U : 0U);
   std::printf("=== Internal Settings ===\n");
@@ -1027,7 +1033,7 @@ void processCommand(char* line) {
       LOGW("Usage: addr 0x76|0x77");
       return;
     }
-    LOGI("Selecting BME280 address 0x%02X", address);
+    LOGI("Selecting BME280 address 0x%02X", static_cast<unsigned>(address));
     cancelPending();
     device.end();
     gActiveAddress = address;
@@ -1189,7 +1195,7 @@ void processCommand(char* line) {
       return;
     }
     std::printf("Status: 0x%02X (measuring=%d, im_update=%d)\n",
-                status,
+                static_cast<unsigned>(status),
                 (status & BME280::cmd::MASK_STATUS_MEASURING) != 0 ? 1 : 0,
                 (status & BME280::cmd::MASK_STATUS_IM_UPDATE) != 0 ? 1 : 0);
     std::printf("Driver: state=%s online=%s dirty=%s\n",
@@ -1199,7 +1205,7 @@ void processCommand(char* line) {
   } else if (std::strcmp(head, "chipid") == 0 || std::strcmp(head, "id") == 0) {
     uint8_t id = 0;
     const BME280::Status st = device.readChipId(id);
-    if (st.ok()) std::printf("Chip ID: 0x%02X\n", id);
+    if (st.ok()) std::printf("Chip ID: 0x%02X\n", static_cast<unsigned>(id));
     else printStatus(st);
   } else if (std::strcmp(head, "reset") == 0) {
     cancelPending();
@@ -1212,7 +1218,12 @@ void processCommand(char* line) {
     }
     uint8_t value = 0;
     const BME280::Status st = device.readRegister(static_cast<uint8_t>(addr), value);
-    if (st.ok()) std::printf("Reg 0x%02lX = 0x%02X (%u)\n", static_cast<unsigned long>(addr), value, value);
+    if (st.ok()) {
+      std::printf("Reg 0x%02lX = 0x%02X (%u)\n",
+                  static_cast<unsigned long>(addr),
+                  static_cast<unsigned>(value),
+                  static_cast<unsigned>(value));
+    }
     else printStatus(st);
   } else if (std::strcmp(head, "wreg") == 0) {
     uint32_t addr = 0;
@@ -1345,7 +1356,7 @@ extern "C" void app_main(void) {
     LOGI("I2C initialized (SDA=%d, SCL=%d, addr=0x%02X)",
          BME280_IDF_I2C_SDA,
          BME280_IDF_I2C_SCL,
-         gActiveAddress);
+         static_cast<unsigned>(gActiveAddress));
     scanBus();
     st = device.begin(makeDefaultConfig());
     if (!st.ok()) {

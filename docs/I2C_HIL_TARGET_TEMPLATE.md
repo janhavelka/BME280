@@ -15,6 +15,8 @@ Copy this template into the HIL evidence package for each physical target.
 - Baud rate:
 - Runner command:
 - Firmware `version` output:
+- Library version:
+- HIL log directory:
 
 ## Hardware
 
@@ -67,6 +69,7 @@ Copy this template into the HIL evidence package for each physical target.
 - `summary.md`:
 - `summary.json`:
 - `operator_checklist.md`:
+- Completed hardware matrix fragment or notes:
 - Logic analyzer capture, if used:
 - Photo/video evidence, if used:
 
@@ -87,5 +90,6 @@ Copy this template into the HIL evidence package for each physical target.
 
 - Hardware run status: NOT RUN / PASS / FAIL / OPERATOR REVIEW REQUIRED
 - Blocking issues:
+- Remaining untested rows:
 - Operator notes:
 - Operator sign-off:

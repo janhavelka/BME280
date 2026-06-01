@@ -18,6 +18,8 @@ REQUIRED_SUFFIXES = {
     "idf_component.yml",
     "examples/idf/basic/CMakeLists.txt",
     "examples/idf/basic/main/CMakeLists.txt",
+    "examples/idf/basic/main/IdfI2cTransport.cpp",
+    "examples/idf/basic/main/IdfI2cTransport.h",
     "examples/idf/basic/main/main.cpp",
     "src/BME280.cpp",
 }

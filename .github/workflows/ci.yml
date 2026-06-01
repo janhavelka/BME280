@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Cache PlatformIO
         uses: actions/cache@v4
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Cache PlatformIO
         uses: actions/cache@v4
@@ -75,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -111,7 +111,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build ESP-IDF example for ${{ matrix.target }}
         uses: espressif/esp-idf-ci-action@v1
@@ -119,3 +119,4 @@ jobs:
           esp_idf_version: v6.0.1
           target: ${{ matrix.target }}
           path: examples/idf/basic
+          command: 'idf.py set-target "$IDF_TARGET" && idf.py build'

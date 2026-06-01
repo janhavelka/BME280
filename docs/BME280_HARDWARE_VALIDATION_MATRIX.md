@@ -4,6 +4,8 @@ Last updated: 2026-05-31
 
 This matrix is intentionally conservative. `NOT RUN` means no physical BME280
 hardware command was executed and recorded for that item in this repository.
+Serial output alone is not enough for environmental accuracy or fault-readiness
+claims.
 
 Before changing any row to `PASS` or `FAIL`, record these fields in the HIL
 report or attached transcript:
@@ -49,6 +51,8 @@ Use `unknown` rather than guessing. Leave untested rows as `NOT RUN`.
 | Environmental reference instruments | NOT RUN |
 | Logic analyzer capture path, if used | NOT RUN |
 | Photo/video evidence path, if used | NOT RUN |
+| HIL runner summary path, if used | NOT RUN |
+| Operator notes / sign-off | NOT RUN |
 
 ## Validation Rows
 
@@ -64,8 +68,9 @@ Use `unknown` rather than guessing. Leave untested rows as `NOT RUN`.
 | Calibration | `0x88..0xA1` and `0xE1..0xE7` parsed plausibly | NOT RUN | Pending `calib` CLI capture |
 | Compensation | Temperature/pressure/humidity plausible for environment | NOT RUN | Pending controlled environment reading |
 | Humidity handling | Non-condensing operation after assembly handling | NOT RUN | Pending production hardware procedure |
-| Fault mapping | Address NACK, timeout, bus/data errors, recovery | NOT RUN | Pending hardware/fault-injection bench |
+| Fault mapping | Address NACK, timeout, bus/data errors, recovery | NOT RUN | Pending protected fault-injection bench |
 | Shared bus | External lock, timeout policy, scheduled `tick()` | NOT RUN | Pending application integration test |
+| Long soak | Repeated normal-mode reads and/or bounded forced stress without hangs | NOT RUN | Pending soak transcript and reference notes |
 
 Minimum bring-up command evidence:
 
@@ -140,3 +145,13 @@ comparison against local temperature, humidity, and pressure references.
 Software-only checks are recorded in CI logs, validation logs, and maintained
 docs. They do not prove electrical wiring, timing margins, environmental
 accuracy, or sensor assembly handling.
+
+## Evidence Policy
+
+- Use `NOT RUN` for anything not executed.
+- Use `unknown` for setup facts the operator could not verify.
+- Do not copy CI or host-test results into hardware rows.
+- Do not mark environmental rows `PASS` without reference instruments and
+  tolerances.
+- Do not mark fault rows `PASS` unless the protected bench action was actually
+  performed and the recovery result was recorded.

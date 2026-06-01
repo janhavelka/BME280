@@ -1,11 +1,13 @@
 # BME280 Driver Library
 
-Production-oriented BME280 I2C driver for ESP32 (Arduino/PlatformIO and ESP-IDF component use).
+Production-oriented BME280 I2C driver for ESP32 systems using
+Arduino/PlatformIO or ESP-IDF.
 
-Validation status: host/native tests, guard scripts, and Arduino PlatformIO
-builds are run in this repository. Physical BME280 hardware validation and
-local pure ESP-IDF `idf.py` builds are not claimed unless a hardware matrix,
-HIL artifact package, or validation log records the exact commands and setup.
+Validation status: host/native tests, guard scripts, package checks, and
+Arduino PlatformIO builds are supported in this repository. Physical BME280
+hardware validation and local pure ESP-IDF `idf.py` builds are not claimed
+unless a hardware matrix, HIL artifact package, or validation log records the
+exact commands and setup.
 
 ## Features
 
@@ -370,16 +372,17 @@ Not part of the library. These simulate project-level glue and keep examples sel
 11. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
 12. Reset and NVM polling are bounded. If status reads never succeed, the first transport error is returned; if successful status reads keep reporting `im_update`, the result is `TIMEOUT`.
 
-## Running Tests
+## Validation
 
 ```bash
-python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py
-python -m platformio test -e native
-python tools/check_cli_contract.py
 python tools/check_core_timing_guard.py
+python tools/check_cli_contract.py
 python tools/check_hil_contract.py
 python tools/check_idf_example_contract.py
 python scripts/generate_version.py check
+python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py
+python tools/run_i2c_hil.py --dry-run
+python -m platformio test -e native
 python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
 python -m platformio pkg pack
@@ -411,9 +414,10 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - `CHANGELOG.md` - full release history
 - `AGENTS.md` - repository engineering rules for future changes
 - `CONTRIBUTING.md` - contribution workflow
+- `docs/README.md` - maintained documentation map
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
-- `docs/BME280_INDUSTRY_HARDENING_SUMMARY.md` - maintained summary of the industry-readiness branch
+- `docs/BME280_INDUSTRY_HARDENING_SUMMARY.md` - maintained summary of the merged hardening work
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` - explicit hardware validation status
 - `docs/I2C_HIL_RUNBOOK.md` - serial HIL runner procedure and evidence rules
 - `docs/I2C_HIL_TARGET_TEMPLATE.md` - per-target HIL evidence template
@@ -425,6 +429,9 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - No physical BME280 hardware validation is claimed until the hardware matrix or HIL artifacts record board, wiring, address, commands, and results.
 - Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v6.0.1 on ESP32-S2 and ESP32-S3.
 - The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should add application-owned locking, scheduling, and timeout policy around the injected transport.
+- Generated Doxygen HTML, HIL logs, PlatformIO build output, and package
+  tarballs are local artifacts unless a release process explicitly records
+  them.
 
 ## License
 

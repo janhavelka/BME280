@@ -1,5 +1,10 @@
 /// @file BME280.h
-/// @brief Main driver class for BME280
+/// @brief Framework-neutral BME280 I2C driver API.
+///
+/// The core driver owns no I2C bus, pins, locks, reset GPIOs, or platform
+/// timers. Applications inject transport and time callbacks through
+/// BME280::Config. Public APIs are task-context APIs; driver instances are not
+/// internally thread-safe and are not ISR-safe.
 #pragma once
 
 #include <cstddef>

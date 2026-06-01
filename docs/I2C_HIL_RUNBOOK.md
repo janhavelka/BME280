@@ -4,7 +4,7 @@ Date: 2026-05-31
 
 This runbook describes the serial hardware-in-the-loop procedure for the BME280
 bring-up CLIs. It is a procedure and evidence format, not a completed hardware
-result. No physical HIL validation was performed while adding this runbook.
+result. No physical HIL validation is claimed by this document.
 
 ## Scope
 
@@ -17,6 +17,20 @@ operator.
 `scan` proves only an I2C ACK from an address. BME280 identity is established
 only when `chipid` or `reg 0xD0` records `0x60`. Environmental accuracy requires
 reference instruments and recorded limits.
+
+## Operator Flow
+
+1. Confirm the repository is on the intended commit and the worktree is clean.
+2. Fill `docs/I2C_HIL_TARGET_TEMPLATE.md` for the board and sensor module.
+3. Build both supported Arduino targets and, when available, both ESP-IDF
+   targets.
+4. Flash only the firmware target that matches the connected board.
+5. Dry-run the HIL runner.
+6. Run the serial HIL plan and save the generated artifacts.
+7. Add environmental reference readings, photos, logic-analyzer captures, and
+   fault-test notes if they were actually collected.
+8. Update `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` only with observed
+   results.
 
 ## Required Setup Record
 
@@ -111,6 +125,9 @@ new directory under `hil_logs/`:
 - `summary.md` - auditor-readable result summary.
 - `summary.json` - machine-readable equivalent.
 - `operator_checklist.md` - manual checks and skipped unsafe/fault work.
+
+These files are evidence inputs. A serial `PASS` is not a sensor-accuracy pass
+unless the setup record and reference readings also support that claim.
 
 Install `pyserial` only for non-dry-run serial execution:
 
@@ -210,3 +227,19 @@ Record the timestamp, BME280 reading, reference instrument reading, tolerance or
 uncertainty, stability notes, and pass/fail decision for temperature, pressure,
 and humidity. Use `--include-soak` for an additional forced-measurement stress
 loop; it is not a replacement for normal-mode repeated-read evidence.
+
+## Fault Evidence
+
+Fault tests are manual because unsafe wiring actions can damage boards or
+sensors. Run them only on a protected bench fixture.
+
+Record at least:
+
+- wrong-address probe result;
+- safe unplug/replug result, if the fixture supports it;
+- SDA/SCL fault or timeout result, if safely injectable;
+- recovery command and final state after the fault;
+- whether `hardwareConfigDirty()` or health counters changed.
+
+Skipped fault tests are acceptable, but they must stay visible in the checklist
+and hardware matrix.

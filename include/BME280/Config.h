@@ -86,6 +86,9 @@ enum class Standby : uint8_t {
 ///
 /// Driver instances are non-owning: callbacks and user pointers must remain
 /// valid for the lifetime of the driver configuration.
+///
+/// `nowMs` is optional for `begin()` but required for measurement scheduling.
+/// `tick(nowMs)` and `nowMs(user)` should use the same monotonic clock.
 struct Config {
   // === I2C Transport (required) ===
   I2cWriteFn i2cWrite = nullptr;        ///< I2C write function pointer

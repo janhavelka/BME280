@@ -2,14 +2,14 @@
 
 Last updated: 2026-05-31
 
-This document is the maintained summary for the industry-readiness branch. It
-replaces the temporary prompt, phase, and self-test reports that were created
-while the branch was being built.
+This document is the maintained summary for the merged industry-readiness work.
+It replaces the temporary prompt, phase, and self-test reports that were created
+while that work was being built.
 
 ## Scope
 
-The branch hardens the BME280 library for production-style embedded use on
-ESP32-S2 and ESP32-S3 with Arduino/PlatformIO and ESP-IDF consumers.
+The hardening work prepares the BME280 library for production-style embedded
+use on ESP32-S2 and ESP32-S3 with Arduino/PlatformIO and ESP-IDF consumers.
 
 No physical BME280 hardware validation is claimed here. Local ESP-IDF `idf.py`
 validation is claimed only when the exact commands are run and recorded.
@@ -20,6 +20,8 @@ validation is claimed only when the exact commands are run and recorded.
 - `CHANGELOG.md`: release-facing change history.
 - `AGENTS.md`: repository engineering rules.
 - `CONTRIBUTING.md`: contribution workflow.
+- `docs/README.md`: map of maintained docs, source evidence, and local
+  artifacts.
 - `docs/IDF_PORT.md`: ESP-IDF component/example boundary and validation notes.
 - `docs/BME280_Register_Reference.md`: register and bitfield reference.
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md`: hardware result ledger.
@@ -95,15 +97,15 @@ wiring, address, pull-ups, voltage rails, command transcript, environmental
 reference, result, and operator notes in the hardware validation matrix or an
 attached HIL artifact package.
 
-Generated Doxygen output is a local artifact. Do not publish API docs for this
-branch as a `1.5.0` release until the unreleased public API entries are either
+Generated Doxygen output is a local artifact. Do not publish API docs for these
+unreleased changes as a `1.5.0` release until the public API entries are either
 released with a SemVer bump or clearly marked as development documentation.
 
 ## Current HIL Baseline
 
-The intended first HIL software baseline is the current branch head at the time
-the HIL run is built. Record the exact `git rev-parse HEAD` value in the HIL
-target template before flashing.
+The intended first HIL software baseline is the commit used to build the test
+firmware. Record the exact `git rev-parse HEAD` value in the HIL target
+template before flashing.
 
 `scan` is only I2C ACK evidence. Use `chipid` or `reg 0xD0` reading `0x60` as
 the BME280 identity check.
@@ -111,3 +113,12 @@ the BME280 identity check.
 The CLI does not support counted commands such as `read 10` or `read 20`.
 Use repeated `read` commands for normal-mode evidence and `stress N` only as a
 forced-measurement stress substitute.
+
+## Release Gate
+
+- Merge status: the hardening work is present on `main`.
+- Release status: not complete until version metadata, changelog release
+  entries, CI status, and any required ESP-IDF build evidence are recorded.
+- Hardware status: not complete until `BME280_HARDWARE_VALIDATION_MATRIX.md` or
+  an attached HIL artifact package records real board, wiring, transcript,
+  reference, fault, and soak evidence.

@@ -17,6 +17,7 @@ TEMPLATE = ROOT / "docs" / "I2C_HIL_TARGET_TEMPLATE.md"
 MATRIX = ROOT / "docs" / "BME280_HARDWARE_VALIDATION_MATRIX.md"
 SUMMARY = ROOT / "docs" / "BME280_INDUSTRY_HARDENING_SUMMARY.md"
 README = ROOT / "README.md"
+DOCS_INDEX = ROOT / "docs" / "README.md"
 IDF_PORT = ROOT / "docs" / "IDF_PORT.md"
 GITIGNORE = ROOT / ".gitignore"
 
@@ -63,7 +64,7 @@ def assert_contains(text: str, needle: str, path: pathlib.Path) -> None:
 
 
 def main() -> int:
-    for path in (RUNNER, RUNBOOK, TEMPLATE, MATRIX, SUMMARY, README, IDF_PORT):
+    for path in (RUNNER, RUNBOOK, TEMPLATE, MATRIX, SUMMARY, README, DOCS_INDEX, IDF_PORT):
         if not path.exists():
             fail(f"missing required file: {path.relative_to(ROOT)}")
 
@@ -74,6 +75,7 @@ def main() -> int:
     matrix_text = read(MATRIX)
     summary_text = read(SUMMARY)
     readme_text = read(README)
+    docs_index_text = read(DOCS_INDEX)
     idf_port_text = read(IDF_PORT)
     gitignore_text = read(GITIGNORE)
 
@@ -176,6 +178,10 @@ def main() -> int:
     for read_cmd in ("normal on", "normal off", "cfg"):
         assert_contains(matrix_text, read_cmd, MATRIX)
 
+    for text, path in ((docs_index_text, DOCS_INDEX), (readme_text, README), (summary_text, SUMMARY)):
+        assert_contains(text, "BME280_HARDWARE_VALIDATION_MATRIX.md", path)
+        assert_contains(text, "I2C_HIL_RUNBOOK.md", path)
+
     forbidden_report_claims = (
         "Hardware run: PASS",
         "Hardware validation: PASS",
@@ -201,7 +207,7 @@ def main() -> int:
 
     assert_contains(matrix_text, "tools/run_i2c_hil.py", MATRIX)
     assert_contains(matrix_text, "stress 10 as an automated forced-measurement stress substitute", MATRIX)
-    assert_contains(summary_text, "industry-readiness branch", SUMMARY)
+    assert_contains(summary_text, "merged industry-readiness work", SUMMARY)
     assert_contains(summary_text, "The CLI does not support counted commands", SUMMARY)
 
     print("HIL contract PASSED")

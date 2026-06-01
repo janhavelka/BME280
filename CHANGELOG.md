@@ -44,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   useful content was folded into the maintained README, IDF port note, hardening
   summary, and HIL docs.
 - Generated HIL logs and Doxygen HTML output are ignored by git.
+- Supporting documentation now has a maintained `docs/README.md` map, clearer
+  hardware-evidence policy, and updated wording for the merged hardening work.
 
 ### Removed
 - Removed the stale ESP-IDF Arduino compatibility shim and documentation that described compiling Arduino CLI source into IDF examples.
