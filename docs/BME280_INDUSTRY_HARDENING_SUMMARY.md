@@ -117,9 +117,10 @@ forced-measurement stress substitute.
 ## Release Gate
 
 - Merge status: the hardening work is present on `main`.
-- Release status: not complete until version metadata, changelog release
-  entries, generated version header, Doxygen project metadata, CI status, and
-  any required ESP-IDF build evidence are recorded for the release commit.
+- Release status: v1.6.0 metadata, changelog entries, generated version header,
+  and Doxygen project metadata are aligned for tagging from the release commit.
+  Publishing still requires the pushed tag and successful CI for that commit.
 - Hardware status: not complete until `BME280_HARDWARE_VALIDATION_MATRIX.md` or
   an attached HIL artifact package records real board, wiring, transcript,
-  reference, fault, and soak evidence.
+  reference, fault, and soak evidence. The software release does not claim
+  completed hardware validation.
