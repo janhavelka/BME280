@@ -12,7 +12,7 @@
 #include <stdint.h>
 
 #ifndef BME280_VERSION_STRING
-#define BME280_VERSION_STRING "1.6.0"
+#define BME280_VERSION_STRING "1.6.1"
 #endif
 
 #ifndef BME280_BUILD_DATE
@@ -48,16 +48,16 @@ static constexpr uint16_t VERSION_MAJOR = 1;
 static constexpr uint16_t VERSION_MINOR = 6;
 
 /// @brief Patch version (backward-compatible fixes).
-static constexpr uint16_t VERSION_PATCH = 0;
+static constexpr uint16_t VERSION_PATCH = 1;
 
 /// @brief Full semantic version string.
 static constexpr const char* VERSION = BME280_VERSION_STRING;
 
 /// @brief Encoded version for numeric comparison: MAJOR*10000 + MINOR*100 + PATCH.
-static constexpr uint32_t VERSION_CODE = 10600;
+static constexpr uint32_t VERSION_CODE = 10601;
 
 /// @brief Backward-compatible alias used by older repositories.
-static constexpr int VERSION_INT = 10600;
+static constexpr int VERSION_INT = 10601;
 
 /// @brief Build date string.
 static constexpr const char* BUILD_DATE = BME280_BUILD_DATE;

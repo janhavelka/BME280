@@ -100,8 +100,8 @@ struct SettingsSnapshot {
   Oversampling osrsH = Oversampling::SKIP;    ///< Humidity oversampling
   Filter filter = Filter::OFF;                ///< IIR filter coefficient
   Standby standby = Standby::MS_0_5;         ///< Standby time for normal mode
-  bool measurementRequested = false;          ///< True after forced-mode trigger
-  bool measurementReady = false;              ///< True when data registers are ready
+  bool measurementRequested = false;          ///< True while the scheduler has a pending capture
+  bool measurementReady = false;              ///< True when an unread cached measurement is ready
   Status lastMeasurementStatus = Status::Ok(); ///< Last request/tick status for measurement scheduling
   bool hasSample = false;                     ///< True when a compensated sample is cached
   bool hardwareConfigDirty = false;           ///< True when hardware config may differ from cache
@@ -137,16 +137,22 @@ public:
   ~BME280() = default;
 
   /// Driver instances are not copyable because they hold runtime state.
-  BME280(const BME280&) = delete;
+  /// @param other Other driver instance.
+  BME280(const BME280& other) = delete;
 
   /// Driver instances are not copy-assignable because they hold runtime state.
-  BME280& operator=(const BME280&) = delete;
+  /// @param other Other driver instance.
+  /// @return Reference to this driver.
+  BME280& operator=(const BME280& other) = delete;
 
   /// Driver instances are not movable because transport callbacks are non-owning.
-  BME280(BME280&&) = delete;
+  /// @param other Other driver instance.
+  BME280(BME280&& other) = delete;
 
   /// Driver instances are not move-assignable because transport callbacks are non-owning.
-  BME280& operator=(BME280&&) = delete;
+  /// @param other Other driver instance.
+  /// @return Reference to this driver.
+  BME280& operator=(BME280&& other) = delete;
 
   // =========================================================================
   // Lifecycle
@@ -276,8 +282,10 @@ public:
   /// In FORCED mode: triggers measurement if idle.
   /// In NORMAL mode: waits one estimated normal cycle before reading, so the
   /// sample is fresh relative to the request.
-  /// Returns IN_PROGRESS if accepted, BUSY if already measuring or OFFLINE,
-  /// INVALID_CONFIG if Config::nowMs is missing, or INVALID_PARAM in sleep mode.
+  /// Returns IN_PROGRESS if a request is accepted or an already-running forced
+  /// conversion can be tracked, BUSY if a driver request is already pending or
+  /// the driver is OFFLINE, INVALID_CONFIG if Config::nowMs is missing, or
+  /// INVALID_PARAM in sleep mode.
   /// @return Scheduling status
   Status requestMeasurement();
 
@@ -301,7 +309,7 @@ public:
   }
 
   /// Get measurement result (float).
-  /// Returns MEASUREMENT_NOT_READY if not available
+  /// Returns MEASUREMENT_NOT_READY until an unread cached measurement is ready
   /// Clears ready flag after successful read
   /// Does not invalidate cached raw/fixed-point samples.
   /// Numeric fields remain zero for skipped/invalid channels; check the

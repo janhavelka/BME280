@@ -59,6 +59,7 @@ struct Status {
   explicit constexpr operator bool() const { return ok(); }
 
   /// Create a success status
+  /// @return Success status with Err::OK.
   static constexpr Status Ok() { return Status{Err::OK, 0, "OK"}; }
   
   /// Create an error status

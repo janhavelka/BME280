@@ -42,8 +42,8 @@ Rules:
 ## Core Engineering Rules (Mandatory)
 
 - Deterministic: no unbounded loops/waits; all timeouts via deadlines, never `delay()` in library code.
-- Non-blocking lifecycle: `Status begin(const Config&)`, `void tick(uint32_t nowMs)`, `void end()`.
-- Any I/O that can exceed ~1-2 ms must be split into state machine steps driven by `tick()`.
+- Managed synchronous lifecycle: `Status begin(const Config&)`, `void tick(uint32_t nowMs)`, `void end()`.
+- Public I2C calls may block for a bounded transport timeout and documented poll limit. Long-running measurement waits must be scheduled through `requestMeasurement()` and `tick()`, not hidden inside unbounded loops.
 - No heap allocation in steady state (no `String`, `std::vector`, `new` in normal ops).
 - No logging in library code; examples may log.
 - No macros for constants; use `static constexpr`. Macros only for conditional compile or logging helpers.
@@ -166,13 +166,13 @@ All I2C goes through layered wrappers:
 
 ```
 Public API (readMeasurement, setMode, etc.)
-    ↓
+    |
 Register helpers (readRegs, writeRegs)
-    ↓
+    |
 TRACKED wrappers (_i2cWriteReadTracked, _i2cWriteTracked)
-    ↓  <- _updateHealth() called here ONLY
+    |  <- _updateHealth() called here ONLY
 RAW wrappers (_i2cWriteReadRaw, _i2cWriteRaw)
-    ↓
+    |
 Transport callbacks (Config::i2cWrite, i2cWriteRead)
 ```
 
@@ -210,10 +210,12 @@ SemVer:
 - PATCH: bug fixes, refactors, docs.
 
 Release steps:
-1. Update `library.json`.
-2. Update `CHANGELOG.md` (Added/Changed/Fixed/Removed).
-3. Update `README.md` if API or examples changed.
-4. Commit and tag: `Release vX.Y.Z`.
+1. Update `library.json` with `scripts/generate_version.py set X.Y.Z` or `bump`.
+2. Regenerate and check `include/BME280/Version.h`.
+3. Update `idf_component.yml` and `Doxyfile` to the same version.
+4. Update `CHANGELOG.md` (Added/Changed/Fixed/Removed).
+5. Update `README.md` and Doxygen-facing comments if API, examples, validation, or release checks changed.
+6. Run local validation, commit as `Release vX.Y.Z`, push, wait for CI, then tag the exact release commit.
 
 ---
 

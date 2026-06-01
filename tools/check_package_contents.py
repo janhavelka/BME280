@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import pathlib
+import json
+import re
 import sys
 import tarfile
 
@@ -37,23 +39,58 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def latest_package() -> pathlib.Path:
-    candidates = sorted(
-        ROOT.glob("BME280-*.tar.gz"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    if not candidates:
-        fail("no BME280-*.tar.gz archive found; run 'python -m platformio pkg pack' first")
-    return candidates[0]
+def library_version() -> str:
+    with open(ROOT / "library.json", "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    version = str(data.get("version", ""))
+    if not re.match(r"^\d+\.\d+\.\d+$", version):
+        fail(f"invalid library.json version: {version!r}")
+    return version
+
+
+def expected_package(version: str) -> pathlib.Path:
+    archive = ROOT / f"BME280-{version}.tar.gz"
+    if not archive.exists():
+        fail(
+            f"missing BME280-{version}.tar.gz archive; run "
+            "'python -m platformio pkg pack' after updating library.json"
+        )
+    return archive
 
 
 def normalize(name: str) -> str:
     return name.replace("\\", "/").lstrip("./")
 
 
+def read_member(tar: tarfile.TarFile, members: set[str], suffix: str) -> str:
+    matches = sorted(name for name in members if name.endswith(suffix))
+    if len(matches) != 1:
+        fail(f"expected exactly one packaged {suffix}, found {len(matches)}")
+    handle = tar.extractfile(matches[0])
+    if handle is None:
+        fail(f"could not read packaged {suffix}")
+    return handle.read().decode("utf-8", errors="replace")
+
+
+def validate_packaged_versions(tar: tarfile.TarFile, members: set[str], version: str) -> None:
+    packaged_library = json.loads(read_member(tar, members, "library.json"))
+    packaged_component = read_member(tar, members, "idf_component.yml")
+    packaged_version_h = read_member(tar, members, "include/BME280/Version.h")
+
+    if packaged_library.get("version") != version:
+        fail(
+            "packaged library.json version mismatch: "
+            f"{packaged_library.get('version')!r} != {version!r}"
+        )
+    if f'version: "{version}"' not in packaged_component:
+        fail("packaged idf_component.yml version does not match library.json")
+    if f'#define BME280_VERSION_STRING "{version}"' not in packaged_version_h:
+        fail("packaged Version.h version does not match library.json")
+
+
 def main() -> int:
-    archive = latest_package()
+    version = library_version()
+    archive = expected_package(version)
     with tarfile.open(archive, "r:gz") as tar:
         members = {normalize(member.name) for member in tar.getmembers()}
 
@@ -71,6 +108,9 @@ def main() -> int:
             forbidden_hits.append(name)
     if forbidden_hits:
         fail("forbidden build/internal paths in archive: " + ", ".join(sorted(forbidden_hits)[:8]))
+
+    with tarfile.open(archive, "r:gz") as tar:
+        validate_packaged_versions(tar, members, version)
 
     print(f"Package contents PASSED ({archive.name})")
     return 0

@@ -1,6 +1,6 @@
 # BME280 Industry Hardening Summary
 
-Last updated: 2026-05-31
+Last updated: 2026-06-01
 
 This document is the maintained summary for the merged industry-readiness work.
 It replaces the temporary prompt, phase, and self-test reports that were created
@@ -117,9 +117,10 @@ forced-measurement stress substitute.
 ## Release Gate
 
 - Merge status: the hardening work is present on `main`.
-- Release status: v1.6.0 metadata, changelog entries, generated version header,
-  and Doxygen project metadata are aligned for tagging from the release commit.
-  Publishing still requires the pushed tag and successful CI for that commit.
+- Release status: version metadata, changelog entries, generated version
+  header, and Doxygen project metadata must be aligned on the exact release
+  commit before tagging. Publishing still requires the pushed tag and
+  successful CI for that commit.
 - Hardware status: not complete until `BME280_HARDWARE_VALIDATION_MATRIX.md` or
   an attached HIL artifact package records real board, wiring, transcript,
   reference, fault, and soak evidence. The software release does not claim

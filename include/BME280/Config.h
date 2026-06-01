@@ -57,7 +57,7 @@ enum class Oversampling : uint8_t {
 /// Measurement mode
 enum class Mode : uint8_t {
   SLEEP = 0,  ///< No measurements, lowest power
-  FORCED = 1, ///< Single measurement, returns to sleep
+  FORCED = 1, ///< On-demand single measurement; requestMeasurement() triggers conversion
   NORMAL = 3  ///< Continuous measurements
 };
 

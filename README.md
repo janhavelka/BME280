@@ -380,8 +380,10 @@ python tools/check_cli_contract.py
 python tools/check_hil_contract.py
 python tools/check_idf_example_contract.py
 python scripts/generate_version.py check
-python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py
+python tools/check_release_metadata.py
+python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py tools/check_release_metadata.py
 python tools/run_i2c_hil.py --dry-run
+doxygen Doxyfile
 python -m platformio test -e native
 python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
@@ -401,7 +403,8 @@ idf.py -C examples/idf/basic set-target esp32s2
 idf.py -C examples/idf/basic build
 ```
 
-Optional local Doxygen generation, when `doxygen` is installed:
+Local Doxygen generation requires `doxygen` on `PATH`. CI installs Doxygen and
+treats documentation warnings as errors:
 
 ```bash
 doxygen Doxyfile

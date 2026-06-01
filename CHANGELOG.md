@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
+## [1.6.1] - 2026-06-01
+
+### Changed
+- Tightened Doxygen and release documentation so the managed synchronous
+  lifecycle, release steps, validation commands, and hardware-validation
+  boundary use the same language across README, AGENTS, and maintained docs.
+- CI now runs the HIL contract guard, release-metadata guard, and Doxygen with
+  warnings treated as errors, matching the release validation flow.
+- Package validation now checks the archive matching `library.json` and verifies
+  packaged `library.json`, `idf_component.yml`, and `Version.h` agree on the
+  release version.
+
 ## [1.6.0] - 2026-06-01
 
 ### Added
@@ -162,21 +174,21 @@ No unreleased changes.
 ## [1.1.0] - 2026-02-22
 
 ### Added
-- `getStandbyTimeMs()` — returns configured standby interval in milliseconds (rounded up)
-- `estimateNormalCycleMs()` — returns full normal-mode cycle time (measurement + standby)
+- `getStandbyTimeMs()` - returns configured standby interval in milliseconds (rounded up)
+- `estimateNormalCycleMs()` - returns full normal-mode cycle time (measurement + standby)
 
 ### Fixed
-- **`tick()` used `millis()` directly** — broke determinism; now uses only the caller-supplied `nowMs` parameter
-- **`softReset()` polling used tracked reads** — during POR (~2 ms) the BME280 may NACK, which inflated health-failure counters and could abort reset prematurely; now uses raw reads and tolerates transient I2C errors
-- **`setFilter()`/`setStandby()` masked original error** — if config-register write failed and restore-to-original-mode also failed, the restore error was returned instead of the root cause; restore is now best-effort
-- **`end()` didn't put device to sleep** — device continued measuring in normal mode after shutdown; now sends best-effort sleep command via raw I2C before clearing state
-- **`_compensate()` didn't handle skipped channels** — running compensation on sentinel ADC values when `osrsT/P/H == SKIP` produced garbage; now guards each channel and returns `COMPENSATION_ERROR` if temperature is skipped while P/H are enabled
-- **`recover()` didn't re-apply configuration** — after a power glitch, device registers revert to defaults; `recover()` now calls `_applyConfig()` after successful probe
+- **`tick()` used `millis()` directly** - broke determinism; now uses only the caller-supplied `nowMs` parameter
+- **`softReset()` polling used tracked reads** - during POR (~2 ms) the BME280 may NACK, which inflated health-failure counters and could abort reset prematurely; now uses raw reads and tolerates transient I2C errors
+- **`setFilter()`/`setStandby()` masked original error** - if config-register write failed and restore-to-original-mode also failed, the restore error was returned instead of the root cause; restore is now best-effort
+- **`end()` didn't put device to sleep** - device continued measuring in normal mode after shutdown; now sends best-effort sleep command via raw I2C before clearing state
+- **`_compensate()` didn't handle skipped channels** - running compensation on sentinel ADC values when `osrsT/P/H == SKIP` produced garbage; now guards each channel and returns `COMPENSATION_ERROR` if temperature is skipped while P/H are enabled
+- **`recover()` didn't re-apply configuration** - after a power glitch, device registers revert to defaults; `recover()` now calls `_applyConfig()` after successful probe
 
 ## [1.0.0] - 2026-01-20
 
 ### Added
-- **First stable release** 🎉
+- **First stable release**
 - Complete BME280 driver with Bosch compensation formulas (32-bit/64-bit)
 - Injected I2C transport architecture (no Wire dependency in library)
 - Health monitoring with automatic state tracking (READY/DEGRADED/OFFLINE)
@@ -203,7 +215,8 @@ No unreleased changes.
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/janhavelka/BME280/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/janhavelka/BME280/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/janhavelka/BME280/compare/v1.3.0...v1.4.0
