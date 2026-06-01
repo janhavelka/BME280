@@ -383,6 +383,26 @@ Not part of the library. These simulate project-level glue and keep examples sel
 11. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
 12. Reset and NVM polling are bounded by a poll cap and, when `Config::nowMs` advances, a real millisecond deadline. If status reads never succeed, the first transport error is returned; if successful status reads keep reporting `im_update`, the result is `TIMEOUT`.
 
+## Migration From v1.5.x
+
+- Check `temperatureValid`, `pressureValid`, and `humidityValid` before using
+  measurement fields. Skipped or invalid channels leave numeric fields at zero.
+- Rebuild dependent firmware when upgrading: `Measurement`, `RawSample`,
+  `CompensatedSample`, and `SettingsSnapshot` have changed public layout since
+  `v1.5.0`.
+- Do not copy or move `BME280::BME280` instances. Own one instance and pass it
+  by reference or pointer.
+- Use typed setters for normal configuration. `writeRegister()` and
+  `writeRegisters()` are diagnostic raw access; reset/control/config writes mark
+  dirty state and require `recover()` or `begin()` to resync.
+- After successful `recover()` or any `softReset()` attempt, request a fresh
+  measurement before using cached sample data.
+- PlatformIO Arduino builds do not imply local pure ESP-IDF `idf.py` validation.
+  Record exact `idf.py` command results before claiming local pure ESP-IDF
+  builds.
+- No physical hardware validation is claimed unless the hardware matrix or HIL
+  artifacts record real board evidence.
+
 ## Validation
 
 ```bash

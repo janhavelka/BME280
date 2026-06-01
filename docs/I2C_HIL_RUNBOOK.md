@@ -10,11 +10,11 @@ result. No physical HIL validation is claimed by this document.
 
 The runner drives the existing Arduino/PlatformIO and native ESP-IDF diagnostic
 CLIs over a serial port. It does not flash firmware, change library APIs, or
-prove sensor accuracy by itself. It captures command output, classifies serial
+verify sensor accuracy by itself. It captures command output, classifies serial
 evidence, and leaves environmental plausibility and unsafe fault work to an
 operator.
 
-`scan` proves only an I2C ACK from an address. BME280 identity is established
+`scan` shows only an I2C ACK from an address. BME280 identity is established
 only when `chipid` or `reg 0xD0` records `0x60`. Environmental accuracy requires
 reference instruments and recorded limits.
 
@@ -210,8 +210,8 @@ The default run excludes raw writes, long soak, and physical fault injection.
 - `REVIEW_REQUIRED` means output was captured, but the runner could not classify
   it as a deterministic pass or failure. The operator must inspect the
   transcript before using it as evidence.
-- `SERIAL_OK_OR_REVIEW` means serial output exists but did not prove all expected
-  tokens.
+- `SERIAL_OK_OR_REVIEW` means serial output exists but did not contain all
+  expected tokens.
 - `FAIL` or `TIMEOUT` means the transcript contains a precise failure token or a
   command exceeded its deadline.
 - `SKIPPED_DRY_RUN` means no serial command was sent.
@@ -222,8 +222,8 @@ checklist, and setup record are reviewed together.
 
 ## Manual Normal-Mode And Environmental Evidence
 
-The default runner sequence proves a bounded bring-up path. It does not by
-itself prove normal-mode soak behavior or environmental accuracy.
+The default runner sequence exercises and records a bounded bring-up path. It
+does not by itself verify normal-mode soak behavior or environmental accuracy.
 
 For normal-mode evidence, run and record repeated samples with stable timing:
 

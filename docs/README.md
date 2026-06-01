@@ -40,7 +40,7 @@ The following outputs are local artifacts and should not be committed:
 
 ## Validation Claims
 
-Software checks prove build, test, package, and documentation contracts. They do
+Software checks verify build, test, package, and documentation contracts. They do
 not prove physical wiring, pull-up values, sensor accuracy, humidity handling,
 fault recovery, or long-duration stability.
 
