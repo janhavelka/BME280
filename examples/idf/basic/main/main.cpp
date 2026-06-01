@@ -51,7 +51,7 @@ constexpr uint32_t MAX_STRESS_COUNT = 100000U;
 #define LOG_COLOR_RESULT(ok) ((ok) ? LOG_COLOR_GREEN : LOG_COLOR_RED)
 #define LOG_PRINT(tagColor, tag, fmt, ...) \
   do { \
-    std::printf(tagColor "[" tag "]" LOG_COLOR_RESET " " fmt "\n", ##__VA_ARGS__); \
+    std::printf("%s[%s]%s " fmt "\n", tagColor, tag, LOG_COLOR_RESET, ##__VA_ARGS__); \
     std::fflush(stdout); \
   } while (0)
 #define LOGE(fmt, ...) LOG_PRINT(LOG_COLOR_RED, "E", fmt, ##__VA_ARGS__)
