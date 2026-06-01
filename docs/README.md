@@ -14,6 +14,8 @@ source evidence.
   notes used by the implementation.
 - `BME280_INDUSTRY_HARDENING_SUMMARY.md`: current summary of the hardening work
   and remaining release gates.
+- `PRODUCTION_SHARED_BUS_GUIDE.md`: production shared-bus integration guidance
+  for application-owned bus, locking, scheduling, timeout, and recovery policy.
 - `I2C_HIL_RUNBOOK.md`: serial HIL procedure and evidence rules.
 - `I2C_HIL_TARGET_TEMPLATE.md`: per-target evidence form for a physical run.
 - `BME280_HARDWARE_VALIDATION_MATRIX.md`: committed hardware validation ledger.
@@ -27,6 +29,13 @@ source evidence.
 The extracted markdown is not a second user manual. Treat it as reference
 material when changing register behavior, compensation math, timing, or hardware
 contracts.
+
+## Historical Prompt Reports
+
+Files named `BME280_PHASE_*.md` are prompt-scoped engineering records. They are
+not the current user manual, are not included in published Doxygen inputs, and
+must not be used as hardware validation evidence unless a real HIL artifact
+package is referenced by the maintained hardware matrix.
 
 ## Local Artifacts
 

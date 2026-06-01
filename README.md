@@ -103,7 +103,18 @@ your application.
 
 ### Shared Bus Guidance
 
-The library does not own I2C. A production shared-bus application should own the bus handle, pins, clock, pullups, timeout policy, and lock/mutex outside the driver. Serialize every driver call that can touch I2C, do not call driver APIs from ISRs, and call `tick()` from a task or scheduler that is not blocked by console input. Transport callbacks must complete synchronously and must not recursively call into the same `BME280::BME280` instance.
+The library does not own I2C. A production shared-bus application should own
+the bus handle, pins, clock, pullups, timeout policy, reset/recovery procedure,
+and lock/mutex outside the driver. Serialize every driver call that can touch
+I2C, do not call driver APIs from ISRs, and call `tick()` from a task or
+scheduler that is not blocked by console input. Transport callbacks must
+complete synchronously and must not recursively call into the same
+`BME280::BME280` instance.
+
+See `docs/PRODUCTION_SHARED_BUS_GUIDE.md` for a production integration pattern
+covering an application-owned bus manager, driver-instance serialization,
+finite transfer timeouts, scheduled measurement polling, shared-bus recovery,
+and HIL evidence expectations.
 
 ### Humidity Handling
 
@@ -127,6 +138,11 @@ if (device.state() == BME280::DriverState::OFFLINE) {
 Serial.printf("Failures: %u consecutive, %lu session total\n",
               device.consecutiveFailures(), device.totalFailures());
 ```
+
+`begin()` starts a new health session and resets the total success/failure
+counters. `totalSuccess()` and `totalFailures()` saturate at `UINT32_MAX`;
+`consecutiveFailures()` saturates at `UINT8_MAX` and resets to zero on the next
+tracked I2C success. The counters do not wrap.
 
 ### Driver States
 
@@ -301,8 +317,8 @@ Raw writes are diagnostic tools. Writes that overlap `ctrl_hum` (`0xF2`),
 `ctrl_meas` (`0xF4`), `config` (`0xF5`), or `reset` (`0xE0`) are health-tracked
 and mark `hardwareConfigDirty()` on success because they bypass the typed config
 cache. Transport failures that may have partially reached those registers
-preserve the original status in `hardwareConfigDirtyError()`. Call `recover()`
-or `begin()` to resync after manual register edits.
+preserve the original status in `hardwareConfigDirtyError()`. Call `recover()`,
+`begin()`, or a successful `softReset()` to resync after manual register edits.
 
 ### State
 
@@ -319,9 +335,11 @@ or `begin()` to resync after manual register edits.
 - `uint32_t totalSuccess()` - Tracked success count in the current health session
 
 `begin()` starts a new health session and resets the tracked success/failure
-counters. `IN_PROGRESS` is treated as non-failure activity for health tracking.
-Pre-`begin()` validation and transport setup errors do not transition the driver
-into `DEGRADED` or `OFFLINE`.
+counters. Total success/failure counters saturate at `UINT32_MAX`, and
+consecutive failures saturate at `UINT8_MAX`; they do not wrap. `IN_PROGRESS`
+is treated as non-failure activity for health tracking. Pre-`begin()`
+validation and transport setup errors do not transition the driver into
+`DEGRADED` or `OFFLINE`.
 
 ### Timing
 
@@ -394,7 +412,8 @@ Not part of the library. These simulate project-level glue and keep examples sel
   by reference or pointer.
 - Use typed setters for normal configuration. `writeRegister()` and
   `writeRegisters()` are diagnostic raw access; reset/control/config writes mark
-  dirty state and require `recover()` or `begin()` to resync.
+  dirty state and require `recover()`, `begin()`, or a successful `softReset()`
+  to resync.
 - After successful `recover()` or any `softReset()` attempt, request a fresh
   measurement before using cached sample data.
 - PlatformIO Arduino builds do not imply local pure ESP-IDF `idf.py` validation.
@@ -452,6 +471,7 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
 - `docs/BME280_INDUSTRY_HARDENING_SUMMARY.md` - maintained summary of the merged hardening work
+- `docs/PRODUCTION_SHARED_BUS_GUIDE.md` - production shared-bus integration guidance
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` - explicit hardware validation status
 - `docs/I2C_HIL_RUNBOOK.md` - serial HIL runner procedure and evidence rules
 - `docs/I2C_HIL_TARGET_TEMPLATE.md` - per-target HIL evidence template
@@ -462,7 +482,7 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 
 - No physical BME280 hardware validation is claimed until the hardware matrix or HIL artifacts record board, wiring, address, commands, and results.
 - Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v5.3.2 on ESP32-S2 and ESP32-S3.
-- The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should add application-owned locking, scheduling, and timeout policy around the injected transport.
+- The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should follow `docs/PRODUCTION_SHARED_BUS_GUIDE.md` and add application-owned locking, scheduling, timeout, and recovery policy around the injected transport.
 - Generated Doxygen HTML, HIL logs, PlatformIO build output, and package
   tarballs are local artifacts unless a release process explicitly records
   them.

@@ -142,6 +142,10 @@ Use `docs/I2C_HIL_RUNBOOK.md`,
 `docs/I2C_HIL_TARGET_TEMPLATE.md`, and
 `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` for that evidence.
 
+For production shared-bus application structure, use
+`docs/PRODUCTION_SHARED_BUS_GUIDE.md`. The shipped Arduino and ESP-IDF examples
+are diagnostic CLIs, not complete production firmware templates.
+
 `docs/README.md` is the maintained documentation map. Generated Doxygen output,
 HIL logs, and build artifacts are local outputs unless a release or validation
 package explicitly records them.

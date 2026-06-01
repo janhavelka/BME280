@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+- Production shared-bus integration guide covering application-owned I2C,
+  locking, timeout, scheduling, recovery, and HIL evidence expectations.
+
+### Changed
+- Doxygen inputs now include the production shared-bus guide while excluding
+  local/generated artifacts and historical prompt reports.
+- Documentation now classifies prompt-scoped reports as historical records and
+  clarifies raw diagnostic write resync paths and health counter saturation.
 
 ## [1.7.0] - 2026-06-01
 
@@ -28,7 +36,8 @@ No unreleased changes.
 - Package validation now requires the ESP-IDF example transport files used by
   the packaged native IDF example.
 - Diagnostic raw writes to BME280 control/config/reset registers now mark
-  `hardwareConfigDirty()` and document `recover()`/`begin()` as the resync path.
+  `hardwareConfigDirty()` and document `recover()`, `begin()`, or a successful
+  `softReset()` as the resync path.
 - Health counter documentation now describes counters as current health-session
   totals since the most recent `begin()`, matching existing reset behavior.
 - NVM polling documentation now clarifies that the millisecond deadline requires
@@ -48,7 +57,8 @@ No unreleased changes.
   Keep a single owned instance and pass references or pointers.
 - Use typed setters for normal configuration. `writeRegister()` and
   `writeRegisters()` are diagnostic raw access; writes to reset/control/config
-  registers mark dirty state and require `recover()` or `begin()` to resync.
+  registers mark dirty state and require `recover()`, `begin()`, or a
+  successful `softReset()` to resync.
 - After successful `recover()` or any `softReset()` attempt, request a fresh
   measurement before using cached sample data.
 - Named Bosch skipped-sentinel constants describe skipped raw channels; callers
@@ -110,7 +120,8 @@ No unreleased changes.
   reset/recover/selftest/stress commands, and clearer health output for HIL
   evidence.
 - Public documentation was consolidated around maintained user-facing docs;
-  temporary phase and prompt reports were removed from the docs tree.
+  temporary phase and prompt reports were removed from published Doxygen inputs
+  or superseded by maintained docs.
 - Old prompt and split ESP-IDF implementation notes were removed after their
   useful content was folded into the maintained README, IDF port note, hardening
   summary, and HIL docs.

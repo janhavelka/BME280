@@ -266,15 +266,18 @@ public:
   /// @return Last tracked error status
   Status lastError() const { return _lastError; }
   
-  /// Consecutive failures since last success
+  /// Consecutive failures since last success.
+  /// Saturates at UINT8_MAX and resets to zero on tracked I2C success.
   /// @return Consecutive tracked failures
   uint8_t consecutiveFailures() const { return _consecutiveFailures; }
   
   /// Total tracked I2C failures in the current health session.
+  /// Saturates at UINT32_MAX and is reset by begin(); it does not wrap.
   /// @return Tracked failure count since the most recent begin()
   uint32_t totalFailures() const { return _totalFailures; }
   
   /// Total tracked I2C successes in the current health session.
+  /// Saturates at UINT32_MAX and is reset by begin(); it does not wrap.
   /// @return Tracked success count since the most recent begin()
   uint32_t totalSuccess() const { return _totalSuccess; }
   
@@ -337,7 +340,7 @@ public:
   Status getCompensatedSample(CompensatedSample& out) const;
 
   /// Get cached calibration coefficients.
-  /// @param[out] out Cached coefficients read during begin() or softReset()
+  /// @param[out] out Cached coefficients read during begin(), recover(), or softReset()
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getCalibration(Calibration& out) const;
 
@@ -495,8 +498,8 @@ public:
   ///       config (0xF5), or reset (0xE0) mark hardwareConfigDirty() on
   ///       success. Transport failures that may have partially reached those
   ///       registers preserve the original status as hardwareConfigDirtyError().
-  ///       Call recover() or begin() to resync after manual config-register
-  ///       edits.
+  ///       Call recover(), begin(), or a successful softReset() to resync after
+  ///       manual config-register edits.
   Status writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len);
 
   /// Read a single register through tracked I2C.
@@ -515,7 +518,8 @@ public:
   ///       (0xF5), or reset (0xE0) mark hardwareConfigDirty() on success.
   ///       Transport failures that may have partially reached those registers
   ///       preserve the original status as hardwareConfigDirtyError(). Call
-  ///       recover() or begin() to resync after manual config-register edits.
+  ///       recover(), begin(), or a successful softReset() to resync after
+  ///       manual config-register edits.
   Status writeRegister(uint8_t reg, uint8_t value);
 
   // =========================================================================

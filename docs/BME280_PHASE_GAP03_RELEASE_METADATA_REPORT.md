@@ -1,5 +1,10 @@
 # BME280 Phase GAP03 Release Metadata Report
 
+Historical prompt report. This file records a completed gap-closure pass and is
+not current user documentation or hardware validation evidence. Use
+`README.md`, `docs/README.md`, `docs/I2C_HIL_RUNBOOK.md`, and
+`docs/BME280_HARDWARE_VALIDATION_MATRIX.md` for maintained guidance.
+
 Date: 2026-06-01
 
 Branch: `hardening/bme280-industry-gap-closure`

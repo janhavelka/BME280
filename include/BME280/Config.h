@@ -11,7 +11,9 @@ namespace BME280 {
 /// I2C write callback signature.
 ///
 /// The application owns bus handles, locking, pins, and timeout policy. This
-/// callback must not recursively call into the same BME280 driver instance.
+/// callback is invoked synchronously from task-context driver APIs and must
+/// return within the supplied timeout. It must not recursively call into the
+/// same BME280 driver instance.
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
@@ -24,7 +26,9 @@ using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
 /// I2C write-then-read callback signature.
 ///
 /// The application owns bus handles, locking, pins, and timeout policy. This
-/// callback must not recursively call into the same BME280 driver instance.
+/// callback is invoked synchronously from task-context driver APIs and must
+/// return within the supplied timeout. It must not recursively call into the
+/// same BME280 driver instance.
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
@@ -86,6 +90,8 @@ enum class Standby : uint8_t {
 ///
 /// Driver instances are non-owning: callbacks and user pointers must remain
 /// valid for the lifetime of the driver configuration.
+/// The application owns shared-bus serialization, timeout policy, recovery, and
+/// all platform resources; the core driver never resets or reconfigures the bus.
 ///
 /// `nowMs` is optional for `begin()` but required for measurement scheduling.
 /// `tick(nowMs)` and `nowMs(user)` should use the same monotonic clock.

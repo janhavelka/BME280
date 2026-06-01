@@ -1,5 +1,10 @@
 # BME280 Gap 04 HIL Runner Deepening Report
 
+Historical prompt report. This file records a completed gap-closure pass and is
+not current user documentation or hardware validation evidence. Use
+`README.md`, `docs/README.md`, `docs/I2C_HIL_RUNBOOK.md`, and
+`docs/BME280_HARDWARE_VALIDATION_MATRIX.md` for maintained guidance.
+
 Date: 2026-06-01
 
 Scope: Prompt 04 only. No physical HIL was run, no sibling repository was
