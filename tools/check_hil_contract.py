@@ -63,6 +63,23 @@ def assert_contains(text: str, needle: str, path: pathlib.Path) -> None:
         fail(f"{path.relative_to(ROOT)} is missing required text: {needle}")
 
 
+def runner_args(**overrides):
+    data = {
+        "address": "0x76",
+        "commands": None,
+        "include_soak": False,
+        "soak_count": 500,
+        "include_normal_soak": False,
+        "normal_soak_count": 5,
+        "normal_soak_interval_s": 1.0,
+        "include_destructive": False,
+        "include_fault_tests": False,
+        "timeout": 8.0,
+    }
+    data.update(overrides)
+    return types.SimpleNamespace(**data)
+
+
 def main() -> int:
     for path in (RUNNER, RUNBOOK, TEMPLATE, MATRIX, SUMMARY, README, DOCS_INDEX, IDF_PORT):
         if not path.exists():
@@ -86,14 +103,7 @@ def main() -> int:
     assert_contains(gitignore_text, "hil_logs/", GITIGNORE)
 
     runner = load_runner()
-    args = types.SimpleNamespace(
-        address="0x76",
-        commands=None,
-        include_soak=False,
-        include_destructive=False,
-        include_fault_tests=False,
-        timeout=8.0,
-    )
+    args = runner_args()
     executable, manual = runner.build_command_sequence(args)
     runner_sequence = [spec.command for spec in executable]
 
@@ -115,24 +125,35 @@ def main() -> int:
         fail("manual checklist does not include destructive raw-write opt-in item")
     if not any(item.command == "stress 500" for item in manual):
         fail("manual checklist does not include skipped soak item")
+    if not any(item.command == "normal on" and item.group == "soak-normal" for item in manual):
+        fail("manual checklist does not include skipped normal-mode soak item")
     if "chipid" not in default_commands:
         fail("default sequence must include chipid identity check")
     if "scan" not in default_commands:
         fail("default sequence must include scan reachability check")
+    if runner_sequence.count("read") < 4:
+        fail("default sequence must include repeated read evidence")
+    if runner_sequence[runner_sequence.index("reset") + 1] != "status":
+        fail("default sequence must capture post-reset status/im_update evidence")
+    if runner_sequence[runner_sequence.index("recover") + 1] != "cfg":
+        fail("default sequence must capture config evidence after recover")
     assert_contains(runner_text, "CTRL_MEAS_RE", RUNNER)
     assert_contains(runner_text, "ctrl_meas mode bits", RUNNER)
+    assert_contains(runner_text, "group", RUNNER)
+    assert_contains(runner_text, "expected_any", RUNNER)
+    assert_contains(runner_text, "validators", RUNNER)
+    assert_contains(runner_text, "command_plan.json", RUNNER)
+    assert_contains(runner_text, "results.csv", RUNNER)
+    assert_contains(runner_text, "environment.txt", RUNNER)
+    assert_contains(runner_text, "hardware_matrix_fragment.md", RUNNER)
+    assert_contains(runner_text, "failure_analysis.md", RUNNER)
+    assert_contains(runner_text, "manifest.json", RUNNER)
+    assert_contains(runner_text, "BME280_RAW_WRITE", RUNNER)
     assert_contains(runner_text, "runner_command", RUNNER)
     assert_contains(runner_text, "runner_args", RUNNER)
     assert_contains(runner_text, "summary_md", RUNNER)
 
-    destructive_args = types.SimpleNamespace(
-        address="0x76",
-        commands=None,
-        include_soak=False,
-        include_destructive=True,
-        include_fault_tests=False,
-        timeout=8.0,
-    )
+    destructive_args = runner_args(include_destructive=True)
     destructive_sequence = [spec.command for spec in runner.build_command_sequence(destructive_args)[0]]
     if "wreg 0xF4 0x00" not in destructive_sequence:
         fail("--include-destructive sequence does not include expected raw write")
@@ -141,15 +162,15 @@ def main() -> int:
         fail("--include-destructive sequence must include recovery after raw write")
     if "cfg" not in destructive_sequence[wreg_index + 1:]:
         fail("--include-destructive sequence must include config evidence after raw write")
+    if "status" not in destructive_sequence[wreg_index + 1:]:
+        fail("--include-destructive sequence must include dirty-state evidence after raw write")
 
-    fault_args = types.SimpleNamespace(
-        address="0x76",
-        commands=None,
-        include_soak=False,
-        include_destructive=False,
-        include_fault_tests=True,
-        timeout=8.0,
-    )
+    soak_args = runner_args(include_normal_soak=True, normal_soak_count=3)
+    soak_sequence = [spec.command for spec in runner.build_command_sequence(soak_args)[0]]
+    if soak_sequence[-7:] != ["normal on", "read", "read", "read", "normal off", "cfg", "status"]:
+        fail("--include-normal-soak sequence must include normal on, repeated reads, normal off, cfg, and status")
+
+    fault_args = runner_args(include_fault_tests=True)
     _, fault_manual = runner.build_command_sequence(fault_args)
     if not any("Requested via --include-fault-tests" in item.notes for item in fault_manual):
         fail("--include-fault-tests must be visible in manual checklist notes")
@@ -196,6 +217,12 @@ def main() -> int:
         "SDO state",
         "CSB state",
         "serial_transcript.txt",
+        "command_plan.json",
+        "results.csv",
+        "environment.txt",
+        "hardware_matrix_fragment.md",
+        "failure_analysis.md",
+        "manifest.json",
         "Exact command transcript path",
         "Runner final verdict",
         "Operator notes",
@@ -229,6 +256,8 @@ def main() -> int:
         "CSB state",
         "SDA/SCL pins and bus speed",
         "Serial port and baud",
+        "Command groups",
+        "Artifact manifest path",
         "Environmental reference instruments",
         "Exact command transcript path",
         "Runner final verdict",
@@ -242,12 +271,20 @@ def main() -> int:
         "Reference readings, BME280 readings, tolerance or uncertainty",
         "Exact serial command transcript path",
         "Runner final verdict",
+        "Manifest path",
     ):
         assert_contains(runbook_text, field, RUNBOOK)
     assert_contains(runbook_text, "reg 0xF4", RUNBOOK)
     assert_contains(runbook_text, "post-`force`", RUNBOOK)
+    assert_contains(runbook_text, "--confirm-raw-write BME280_RAW_WRITE", RUNBOOK)
+    assert_contains(runbook_text, "--include-normal-soak", RUNBOOK)
+    assert_contains(runbook_text, "command file", RUNBOOK)
+    assert_contains(runbook_text, "stress Errors=0", RUNBOOK)
     assert_contains(matrix_text, "reg 0xF4", MATRIX)
     assert_contains(matrix_text, "post-force", MATRIX)
+    assert_contains(matrix_text, "manifest.json", MATRIX)
+    assert_contains(matrix_text, "command_plan.json", MATRIX)
+    assert_contains(matrix_text, "normal-mode soak", MATRIX)
 
     for text, path in ((docs_index_text, DOCS_INDEX), (readme_text, README), (summary_text, SUMMARY)):
         assert_contains(text, "BME280_HARDWARE_VALIDATION_MATRIX.md", path)

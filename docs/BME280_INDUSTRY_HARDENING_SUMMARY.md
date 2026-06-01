@@ -89,7 +89,8 @@ HIL preparation:
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` is the hardware result ledger.
 - `docs/I2C_HIL_RUNBOOK.md` describes the serial HIL procedure.
 - `docs/I2C_HIL_TARGET_TEMPLATE.md` captures per-target setup and evidence.
-- `tools/run_i2c_hil.py` captures serial transcripts and summaries.
+- `tools/run_i2c_hil.py` captures grouped serial transcripts, summaries,
+  command plans, environment records, CSV/JSON results, and artifact manifests.
 
 ## Validation Boundary
 
@@ -123,6 +124,10 @@ forced-measurement stress substitute.
 Default HIL evidence captures `force`, then `reg 0xF4`, `status`, and `read`.
 For forced-mode sleep-return evidence, `ctrl_meas` mode bits `[1:0]` must read
 `00` after the forced conversion completes.
+
+Normal-mode soak evidence is separate from forced `stress N`; use repeated
+`read` commands in normal mode and record reference/timestamp notes before
+claiming soak coverage.
 
 ## Release Gate
 

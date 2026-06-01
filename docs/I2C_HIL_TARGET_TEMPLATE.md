@@ -15,6 +15,9 @@ Copy this template into the HIL evidence package for each physical target.
 - Baud rate:
 - Runner command:
 - Runner arguments:
+- Command groups executed:
+- Opt-in flags used:
+- Command file path / SHA256, if used:
 - Firmware `version` output:
 - Library version:
 - HIL log directory:
@@ -68,12 +71,39 @@ Copy this template into the HIL evidence package for each physical target.
 
 - `serial_transcript.txt`:
 - `summary.md`:
+- Timestamped summary:
 - `summary.json`:
+- `results.csv`:
+- `command_plan.json`:
+- `environment.txt`:
 - `operator_checklist.md`:
+- `hardware_matrix_fragment.md`:
+- `failure_analysis.md`:
+- `manifest.json`:
+- Artifact manifest path:
+- Manifest SHA256 or signed bundle path:
 - Exact command transcript path:
 - Completed hardware matrix fragment or notes:
 - Logic analyzer capture, if used:
 - Photo/video evidence, if used:
+
+## Parsed BME280 Evidence
+
+- `chipid` / `reg 0xD0` value:
+- Post-force `reg 0xF4` value:
+- Post-force `ctrl_meas[1:0]`:
+- Post-force `status` measuring / im_update:
+- Post-reset `status` measuring / im_update:
+- Pre-recover dirty state:
+- Post-recover dirty state:
+- `cfg` evidence after recover:
+- Raw sample validity flags:
+- Compensated sample validity flags:
+- Burst data capture `0xF7..0xFE`:
+- `selftest` pass/fail/skip:
+- `stress` Errors count:
+- Final consecutive failures:
+- Final total failures:
 
 ## Manual Checks
 

@@ -45,6 +45,7 @@ Record these fields before marking a hardware run PASS or FAIL:
 - Firmware version as printed by `version`.
 - Library version as printed by `version`.
 - HIL runner command and exact arguments.
+- Command groups executed and any opt-in groups requested.
 - MCU board model.
 - MCU target.
 - BME280 module or sensor board model.
@@ -61,6 +62,7 @@ Record these fields before marking a hardware run PASS or FAIL:
 - Reference readings, BME280 readings, tolerance or uncertainty, reading
   timestamp, and stability notes, if plausibility is evaluated.
 - Exact serial command transcript path.
+- Manifest path and artifact hashes.
 - Runner final verdict: `INCOMPLETE`, `FAIL`, `OPERATOR_REVIEW_REQUIRED`, or
   `PASS`.
 - Logic analyzer capture path, if used.
@@ -121,7 +123,13 @@ python tools/run_i2c_hil.py --port <PORT> --baud 115200 --address 0x76 --out hil
 Run with the longer soak command included:
 
 ```bash
-python tools/run_i2c_hil.py --port <PORT> --baud 115200 --address 0x76 --out hil_logs --include-soak
+python tools/run_i2c_hil.py --port <PORT> --baud 115200 --address 0x76 --out hil_logs --include-soak --soak-count 500
+```
+
+Run an opt-in normal-mode repeated-read soak using only existing CLI commands:
+
+```bash
+python tools/run_i2c_hil.py --port <PORT> --baud 115200 --address 0x76 --out hil_logs --include-normal-soak --normal-soak-count 10 --normal-soak-interval-s 1.0
 ```
 
 Use `--address 0x77` when SDO is tied to VDDIO. The runner writes artifacts to a
@@ -129,11 +137,24 @@ new directory under `hil_logs/`:
 
 - `serial_transcript.txt` - raw serial transcript with command boundaries.
 - `summary.md` - auditor-readable result summary.
+- `i2c_<timestamp>_summary.md` - timestamped copy of the summary.
 - `summary.json` - machine-readable equivalent.
+- `results.csv` - flat command result table.
+- `command_plan.json` - executable and skipped/manual command plan.
+- `environment.txt` - setup metadata copied from runner arguments.
 - `operator_checklist.md` - manual checks and skipped unsafe/fault work.
+- `hardware_matrix_fragment.md` - generated fragment for operator review.
+- `failure_analysis.md` - failure/review rows extracted from results.
+- `manifest.json` - artifact paths and SHA256 hashes.
 
 These files are evidence inputs. A serial `PASS` is not a sensor-accuracy pass
 unless the setup record and reference readings also support that claim.
+
+The runner accepts metadata flags such as `--operator`, `--board`,
+`--mcu-target`, `--module`, `--vdd`, `--vddio`, `--pullups`,
+`--pullup-location`, `--sda-pin`, `--scl-pin`, `--bus-speed`, `--sdo-state`,
+`--csb-state`, and `--environment-ref`. Unknown fields should be left blank or
+recorded as `unknown`, not guessed.
 
 Install `pyserial` only for non-dry-run serial execution:
 
@@ -171,9 +192,13 @@ status
 read
 normal on
 read
+read
 normal off
 reset
+status
 recover
+cfg
+status
 selftest
 stress 10
 drv
@@ -184,23 +209,59 @@ state
 `read` entries are intentional repeated commands. There is no `read 10` or
 `read 20` CLI contract.
 
+Default command groups:
+
+| Group | Evidence purpose |
+|------|------------------|
+| `provenance` | Firmware/library version, git commit, dirty flag, and CLI surface |
+| `bus-reachability` | Address ACK, selected address, initialization, and raw probe |
+| `identity-calibration` | BME280 chip ID `0x60`, config, calibration, timing, and initial dirty-state evidence |
+| `forced-mode` | Baseline sample, raw/comp validity flags, burst data, forced conversion, post-force sleep return |
+| `normal-mode` | Bounded normal-mode entry, repeated reads, and return to sleep |
+| `reset-recover` | Soft reset, post-reset `im_update`/status evidence, recover/resync, and dirty-state evidence |
+| `stress-health` | Safe selftest, short forced stress, and final driver health |
+
 The post-`force` `reg 0xF4` capture records `ctrl_meas`; for formal forced-mode
 sleep-return evidence, verify mode bits `[1:0]` are `00`. The following
 post-`force` `status` capture records `measuring=0` after the forced sample is
 available.
 
+Formal BME280 serial acceptance checks:
+
+- `chipid` or `reg 0xD0` must show chip ID `0x60`.
+- Post-`force` `reg 0xF4` must parse `ctrl_meas[1:0] == 00`.
+- Post-`force` `status` should parse `measuring=0`.
+- Post-reset `status` should parse `im_update=0`; otherwise reset/NVM evidence
+  remains incomplete or failed.
+- `selftest` must parse `fail=0`; skipped rows still require operator review.
+- `stress` rows must parse `stress Errors=0`; sample plausibility still
+  requires operator review.
+- `drv` should parse `Consecutive failures: 0` at the end of the run.
+
 ## Gated Work
 
 The default run excludes raw writes, long soak, and physical fault injection.
 
-- `--include-soak` adds `stress 500`.
-- `--include-destructive` adds a diagnostic `wreg 0xF4 0x00` raw write and must
-  be followed by recovery evidence. Raw writes can desynchronize cached driver
-  settings and are unsafe for default automation.
+- `--include-soak --soak-count N` adds `stress N` as forced-measurement stress
+  evidence. It is not normal-mode soak evidence.
+- `--include-normal-soak --normal-soak-count N --normal-soak-interval-s S`
+  adds `normal on`, repeated `read` commands, `normal off`, `cfg`, and
+  `status`. This remains operator-reviewed because serial output alone does not
+  prove environmental accuracy.
+- `--include-destructive --confirm-raw-write BME280_RAW_WRITE` adds a
+  diagnostic `wreg 0xF4 0x00` raw write and follow-up `recover`, `cfg`, and
+  `status` evidence. Raw writes can desynchronize cached driver settings and
+  are unsafe for default automation.
 - `--include-fault-tests` marks manual checklist items for wrong-address,
   unplug/replug, and safe SDA/SCL fault evidence as intentionally requested.
   The runner does not perform those actions, and the checklist always lists
   them so skipped fault work remains visible.
+
+An operator-supplied command file is loaded with `--commands <path>`. Command
+files are safety-scanned: raw `wreg` commands require the destructive opt-in and
+confirmation, and `stress` counts above 100 require `--include-soak`. The
+operator remains responsible for ending command files in a known safe state,
+for example with `normal off`, `cfg`, and `status`.
 
 ## Result Rules
 
@@ -234,12 +295,14 @@ read
 read
 normal off
 cfg
+status
 ```
 
 Record the timestamp, BME280 reading, reference instrument reading, tolerance or
 uncertainty, stability notes, and pass/fail decision for temperature, pressure,
-and humidity. Use `--include-soak` for an additional forced-measurement stress
-loop; it is not a replacement for normal-mode repeated-read evidence.
+and humidity. The runner can generate that command shape with
+`--include-normal-soak`; use `--include-soak` only for an additional
+forced-measurement stress loop.
 
 ## Fault Evidence
 
