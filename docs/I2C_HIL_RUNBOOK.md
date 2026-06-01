@@ -1,6 +1,6 @@
 # BME280 I2C HIL Runbook
 
-Date: 2026-05-31
+Date: 2026-06-01
 
 This runbook describes the serial hardware-in-the-loop procedure for the BME280
 bring-up CLIs. It is a procedure and evidence format, not a completed hardware
@@ -38,13 +38,15 @@ Record these fields before marking a hardware run PASS or FAIL:
 
 - Operator name.
 - Date/time and timezone.
-- Branch and commit hash.
-- Dirty/clean worktree state.
+- Branch, git commit hash, and dirty/clean worktree state.
 - Framework: Arduino/PlatformIO or ESP-IDF.
 - Build target: `esp32s3dev`, `esp32s2dev`, `esp32s3`, or `esp32s2`.
 - Serial port and baud rate.
 - Firmware version as printed by `version`.
+- Library version as printed by `version`.
+- HIL runner command and exact arguments.
 - MCU board model.
+- MCU target.
 - BME280 module or sensor board model.
 - Chip marking, if visible.
 - Fixture description.
@@ -56,7 +58,11 @@ Record these fields before marking a hardware run PASS or FAIL:
 - Interrupt wiring as `N/A` unless the bench fixture adds one.
 - Temperature, humidity, and pressure reference instruments and calibration
   status, if plausibility is evaluated.
-- Serial transcript path.
+- Reference readings, BME280 readings, tolerance or uncertainty, reading
+  timestamp, and stability notes, if plausibility is evaluated.
+- Exact serial command transcript path.
+- Runner final verdict: `INCOMPLETE`, `FAIL`, `OPERATOR_REVIEW_REQUIRED`, or
+  `PASS`.
 - Logic analyzer capture path, if used.
 - Photo or video evidence path, if used.
 - Operator notes and sign-off.
@@ -160,6 +166,8 @@ raw
 comp
 data
 force
+reg 0xF4
+status
 read
 normal on
 read
@@ -175,6 +183,11 @@ state
 
 `read` entries are intentional repeated commands. There is no `read 10` or
 `read 20` CLI contract.
+
+The post-`force` `reg 0xF4` capture records `ctrl_meas`; for formal forced-mode
+sleep-return evidence, verify mode bits `[1:0]` are `00`. The following
+post-`force` `status` capture records `measuring=0` after the forced sample is
+available.
 
 ## Gated Work
 

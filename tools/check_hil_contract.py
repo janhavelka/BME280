@@ -102,6 +102,12 @@ def main() -> int:
         fail("runbook command sequence differs from tools/run_i2c_hil.py")
 
     default_commands = set(runner_sequence)
+    if "force" not in runner_sequence:
+        fail("default sequence must include forced-mode command")
+    force_index = runner_sequence.index("force")
+    expected_post_force = ["reg 0xF4", "status", "read"]
+    if runner_sequence[force_index + 1:force_index + 4] != expected_post_force:
+        fail("default sequence must capture post-force reg 0xF4, status, and read evidence")
     for unsafe in ("wreg", "stress 500"):
         if any(command.startswith(unsafe) for command in runner_sequence):
             fail(f"unsafe or soak command is in default sequence: {unsafe}")
@@ -113,6 +119,11 @@ def main() -> int:
         fail("default sequence must include chipid identity check")
     if "scan" not in default_commands:
         fail("default sequence must include scan reachability check")
+    assert_contains(runner_text, "CTRL_MEAS_RE", RUNNER)
+    assert_contains(runner_text, "ctrl_meas mode bits", RUNNER)
+    assert_contains(runner_text, "runner_command", RUNNER)
+    assert_contains(runner_text, "runner_args", RUNNER)
+    assert_contains(runner_text, "summary_md", RUNNER)
 
     destructive_args = types.SimpleNamespace(
         address="0x76",
@@ -164,6 +175,31 @@ def main() -> int:
         assert_contains(runbook_text, result_token, RUNBOOK)
 
     for field in (
+        "Operator",
+        "Date/time and timezone",
+        "Git commit",
+        "Worktree state / dirty flag",
+        "Runner command",
+        "Runner arguments",
+        "Firmware `version` output",
+        "Library version",
+        "MCU board model",
+        "MCU target",
+        "BME280 module or sensor board model",
+        "VDD",
+        "VDDIO",
+        "SDA pin",
+        "SCL pin",
+        "I2C speed",
+        "I2C pull-ups",
+        "Pull-up location",
+        "SDO state",
+        "CSB state",
+        "serial_transcript.txt",
+        "Exact command transcript path",
+        "Runner final verdict",
+        "Operator notes",
+        "Operator sign-off",
         "Temperature reference reading",
         "BME280 temperature reading",
         "Temperature tolerance / uncertainty",
@@ -177,6 +213,41 @@ def main() -> int:
 
     for read_cmd in ("normal on", "normal off", "cfg"):
         assert_contains(matrix_text, read_cmd, MATRIX)
+    for field in (
+        "Firmware `version` output",
+        "Library version",
+        "Git commit hash",
+        "Worktree state / dirty flag",
+        "HIL runner command",
+        "HIL runner arguments",
+        "MCU board model",
+        "MCU target",
+        "BME280 module or board model",
+        "VDD / VDDIO",
+        "Pull-up values and location",
+        "SDO state",
+        "CSB state",
+        "SDA/SCL pins and bus speed",
+        "Serial port and baud",
+        "Environmental reference instruments",
+        "Exact command transcript path",
+        "Runner final verdict",
+        "Operator notes / sign-off",
+    ):
+        assert_contains(matrix_text, field, MATRIX)
+    for field in (
+        "Library version as printed by `version`",
+        "HIL runner command and exact arguments",
+        "MCU target",
+        "Reference readings, BME280 readings, tolerance or uncertainty",
+        "Exact serial command transcript path",
+        "Runner final verdict",
+    ):
+        assert_contains(runbook_text, field, RUNBOOK)
+    assert_contains(runbook_text, "reg 0xF4", RUNBOOK)
+    assert_contains(runbook_text, "post-`force`", RUNBOOK)
+    assert_contains(matrix_text, "reg 0xF4", MATRIX)
+    assert_contains(matrix_text, "post-force", MATRIX)
 
     for text, path in ((docs_index_text, DOCS_INDEX), (readme_text, README), (summary_text, SUMMARY)):
         assert_contains(text, "BME280_HARDWARE_VALIDATION_MATRIX.md", path)

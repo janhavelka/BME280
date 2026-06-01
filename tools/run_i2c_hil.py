@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -45,6 +46,7 @@ FAILURE_PATTERNS = (
     re.compile(r"\b(?:FAILED|FAIL)\b"),
     re.compile(r"\[E\]"),
 )
+CTRL_MEAS_RE = re.compile(r"Reg\s+0xF4\s*=\s*0x([0-9A-Fa-f]{1,2})")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -187,6 +189,20 @@ BASE_COMMANDS: tuple[CommandSpec, ...] = (
         timeout_s=10.0,
         operator_check=True,
         notes="Operator must judge plausibility; serial confirms only transaction flow.",
+    ),
+    CommandSpec(
+        command="reg 0xF4",
+        purpose="Capture ctrl_meas after forced measurement to verify return-to-sleep mode bits.",
+        expected=("Reg 0xF4 = 0x",),
+        timeout_s=5.0,
+        notes="For formal forced-mode evidence, ctrl_meas mode bits [1:0] must be 00.",
+    ),
+    CommandSpec(
+        command="status",
+        purpose="Capture post-forced-measurement status flags.",
+        expected=("Status: 0x", "measuring=0", "Driver:"),
+        timeout_s=5.0,
+        notes="Post-force status should show measuring=0 after the forced sample is available.",
     ),
     CommandSpec(
         command="read",
@@ -437,6 +453,15 @@ def classify_output(spec: CommandSpec, output: str, completion: str) -> tuple[st
     for pattern in FAILURE_PATTERNS:
         if pattern.search(clean):
             return RESULT_FAIL, f"Matched failure pattern: {pattern.pattern}"
+    if spec.command == "reg 0xF4":
+        match = CTRL_MEAS_RE.search(clean)
+        if not match:
+            return RESULT_REVIEW, "ctrl_meas register value was not found in serial output."
+        ctrl_meas = int(match.group(1), 16)
+        mode_bits = ctrl_meas & 0x03
+        if mode_bits != 0:
+            return RESULT_FAIL, f"ctrl_meas mode bits are {mode_bits:#04b}, expected sleep mode 0b00."
+        return RESULT_PASS, "ctrl_meas mode bits are 0b00, matching forced-mode return to sleep."
     if spec.operator_check:
         if spec.expected and all(token in clean for token in spec.expected):
             return RESULT_OPERATOR, "Serial output matched expected tokens; operator plausibility review required."
@@ -576,6 +601,8 @@ def write_summary_md(path: pathlib.Path, summary: dict) -> None:
         "# I2C HIL Summary",
         "",
         f"Date/time: `{summary['datetime']}`",
+        f"Runner command: `{summary['runner_command']}`",
+        f"Runner arguments: `{json.dumps(summary['runner_args'])}`",
         f"Branch: `{summary['branch']}`",
         f"Commit: `{summary['commit']}`",
         f"Worktree: `{summary['worktree']}`",
@@ -605,6 +632,7 @@ def write_summary_md(path: pathlib.Path, summary: dict) -> None:
             "## Artifacts",
             "",
             f"- Serial transcript: `{summary['artifacts']['serial_transcript']}`",
+            f"- Markdown summary: `{summary['artifacts']['summary_md']}`",
             f"- JSON summary: `{summary['artifacts']['summary_json']}`",
             f"- Operator checklist: `{summary['artifacts']['operator_checklist']}`",
             "",
@@ -639,9 +667,21 @@ def write_operator_checklist(path: pathlib.Path, manual_items: list[CommandSpec]
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def write_transcript_header(transcript, args: argparse.Namespace, log_dir: pathlib.Path) -> None:
+def format_runner_command(argv: list[str]) -> str:
+    return "python tools/run_i2c_hil.py" + (f" {shlex.join(argv)}" if argv else "")
+
+
+def write_transcript_header(
+    transcript,
+    args: argparse.Namespace,
+    log_dir: pathlib.Path,
+    *,
+    runner_argv: list[str],
+) -> None:
     transcript.write("# I2C HIL serial transcript\n")
     transcript.write(f"timestamp={timestamp()}\n")
+    transcript.write(f"runner_command={format_runner_command(runner_argv)}\n")
+    transcript.write(f"runner_args={json.dumps(runner_argv)}\n")
     transcript.write(f"port={args.port or 'DRY_RUN'}\n")
     transcript.write(f"baud={args.baud}\n")
     transcript.write(f"address={args.address}\n")
@@ -669,7 +709,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
+    runner_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(runner_argv)
     if not args.dry_run and not args.port:
         print("--port is required unless --dry-run is used.", file=sys.stderr)
         return 2
@@ -688,7 +729,7 @@ def main(argv: list[str] | None = None) -> int:
 
     results: list[dict] = []
     with transcript_path.open("w", encoding="utf-8", newline="") as transcript:
-        write_transcript_header(transcript, args, log_dir)
+        write_transcript_header(transcript, args, log_dir, runner_argv=runner_argv)
         if args.dry_run:
             transcript.write("DRY RUN: no serial port opened and no commands sent.\n")
             for spec in executable:
@@ -709,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = {
         "datetime": timestamp(),
+        "runner_command": format_runner_command(runner_argv),
+        "runner_args": runner_argv,
         "branch": git_value(["branch", "--show-current"]),
         "commit": git_value(["rev-parse", "HEAD"]),
         "worktree": worktree_state(),

@@ -7,13 +7,14 @@ Copy this template into the HIL evidence package for each physical target.
 - Operator:
 - Date/time and timezone:
 - Branch:
-- Commit:
-- Worktree state:
+- Git commit:
+- Worktree state / dirty flag:
 - Framework:
 - Build target:
 - Serial port:
 - Baud rate:
 - Runner command:
+- Runner arguments:
 - Firmware `version` output:
 - Library version:
 - HIL log directory:
@@ -69,6 +70,7 @@ Copy this template into the HIL evidence package for each physical target.
 - `summary.md`:
 - `summary.json`:
 - `operator_checklist.md`:
+- Exact command transcript path:
 - Completed hardware matrix fragment or notes:
 - Logic analyzer capture, if used:
 - Photo/video evidence, if used:
@@ -88,7 +90,8 @@ Copy this template into the HIL evidence package for each physical target.
 
 ## Result
 
-- Hardware run status: NOT RUN / PASS / FAIL / OPERATOR REVIEW REQUIRED
+- Runner final verdict: NOT RUN / INCOMPLETE / PASS / FAIL / OPERATOR_REVIEW_REQUIRED
+- Hardware run status: NOT RUN / PASS / FAIL / OPERATOR_REVIEW_REQUIRED
 - Blocking issues:
 - Remaining untested rows:
 - Operator notes:

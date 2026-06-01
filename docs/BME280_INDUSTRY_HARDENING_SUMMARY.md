@@ -116,7 +116,9 @@ forced-measurement stress substitute.
 
 ## Release Gate
 
-- Merge status: the hardening work is present on `main`.
+- Merge status: the hardening work is present in the maintained release
+  history. Check the current branch and release tag before publishing new
+  evidence.
 - Release status: version metadata, changelog entries, generated version
   header, and Doxygen project metadata must be aligned on the exact release
   commit before tagging. Publishing still requires the pushed tag and
