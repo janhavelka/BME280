@@ -988,7 +988,7 @@ void printHelp() {
   printHelpItem("reset", "Soft reset device");
   std::printf("\n%s[Registers]%s\n", LOG_COLOR_GREEN, LOG_COLOR_RESET);
   printHelpItem("reg <addr>", "Read 8-bit register (hex address)");
-  printHelpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic only; may desync cached config)");
+  printHelpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic; config/reset writes mark dirty)");
   std::printf("\n%s[Diagnostics]%s\n", LOG_COLOR_GREEN, LOG_COLOR_RESET);
   printHelpItem("drv", "Show driver state and health");
   printHelpItem("state", "Show compact one-line health summary");
@@ -1263,7 +1263,7 @@ void processCommand(char* line) {
     std::printf("  Health changes:\n");
     printHealthDiff(before, after);
     printDriverHealth();
-    std::printf("  Note: cached raw/comp samples may predate recovery; run read before using them.\n");
+    std::printf("  Note: successful recover invalidates cached samples; run read before using them.\n");
   } else if (std::strcmp(head, "verbose") == 0) {
     char* arg = nextToken(cursor);
     if (arg != nullptr) {

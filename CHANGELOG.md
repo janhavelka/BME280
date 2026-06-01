@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+- Formal pre-HIL evidence reporting for the default runner sequence, captured
+  command arguments, firmware/library/git/worktree metadata, and operator
+  sign-off fields.
+- Native tests pinning diagnostic raw-write dirty-state behavior, health-session
+  counter reset semantics, no-clock NVM polling fallback, and sample-cache
+  invalidation after recovery/reset.
+
+### Changed
+- Default HIL guidance now records forced-mode sleep-return evidence with
+  post-`force` `reg 0xF4`, `status`, and `read` commands before any
+  normal-mode sequence.
+- CI now runs the HIL contract checker alongside the CLI and ESP-IDF example
+  contract checks without requiring physical hardware.
+- Package validation now requires the ESP-IDF example transport files used by
+  the packaged native IDF example.
+- Diagnostic raw writes to BME280 control/config/reset registers now mark
+  `hardwareConfigDirty()` and document `recover()`/`begin()` as the resync path.
+- Health counter documentation now describes counters as current health-session
+  totals since the most recent `begin()`, matching existing reset behavior.
+- NVM polling documentation now clarifies that the millisecond deadline requires
+  an advancing `Config::nowMs`; the framework-neutral fallback is bounded by
+  poll count.
+- Successful `recover()` now invalidates cached samples after a complete resync
+  so pre-recovery data cannot be reused accidentally.
 
 ## [1.6.1] - 2026-06-01
 

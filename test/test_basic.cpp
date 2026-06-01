@@ -193,6 +193,13 @@ Config makeConfig(FakeBus& bus) {
   return cfg;
 }
 
+Config makeConfigNoNowMs(FakeBus& bus) {
+  Config cfg = makeConfig(bus);
+  cfg.nowMs = nullptr;
+  cfg.timeUser = nullptr;
+  return cfg;
+}
+
 void putLe16(FakeBus& bus, uint8_t reg, uint16_t value) {
   bus.reg[reg] = static_cast<uint8_t>(value & 0xFF);
   bus.reg[static_cast<uint8_t>(reg + 1)] = static_cast<uint8_t>(value >> 8);
@@ -503,6 +510,37 @@ void test_begin_success_sets_ready_without_health_counts() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
 }
 
+void test_begin_starts_new_health_session_and_resets_counters() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.nowMs = 1234;
+  bus.readErrorRemaining = 1;
+  bus.readError = Status::Error(Err::I2C_TIMEOUT, "tracked status timeout", -70);
+  uint8_t status = 0;
+  Status st = dev.readStatus(status);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(1u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT32(1234u, dev.lastErrorMs());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
+
+  bus.nowMs = 1300;
+  st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastErrorMs());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+  TEST_ASSERT_TRUE(dev.lastError().ok());
+}
+
 void test_begin_waits_for_nvm_update_before_reading_calibration() {
   FakeBus bus;
   bus.imUpdateStatusReadsRemaining = 2;
@@ -556,6 +594,35 @@ void test_begin_times_out_when_nvm_update_stuck() {
                           static_cast<uint8_t>(dev.state()));
   TEST_ASSERT_FALSE(bus.calibrationReadWhileImUpdate);
   TEST_ASSERT_GREATER_THAN_UINT32(0u, bus.statusReadCalls);
+}
+
+void test_begin_nvm_stuck_with_advancing_clock_uses_deadline() {
+  FakeBus bus;
+  bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
+  bus.statusReadNowAdvanceMs = 2;
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(0, st.detail);
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_FALSE(bus.calibrationReadWhileImUpdate);
+  TEST_ASSERT_LESS_THAN_UINT32(255u, bus.statusReadCalls);
+}
+
+void test_begin_nvm_stuck_without_now_ms_uses_poll_limit() {
+  FakeBus bus;
+  bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
+  BME280::BME280 dev;
+
+  Status st = dev.begin(makeConfigNoNowMs(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(255, st.detail);
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_FALSE(bus.calibrationReadWhileImUpdate);
+  TEST_ASSERT_EQUAL_UINT32(255u, bus.statusReadCalls);
 }
 
 void test_begin_forced_mode_keeps_hardware_sleep_until_requested() {
@@ -1090,7 +1157,80 @@ void test_dirty_state_clears_after_successful_recover_resync() {
   TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
 }
 
-void test_recover_preserves_cached_sample_and_dirty_until_successful_resync() {
+void test_diagnostic_config_write_marks_dirty_after_success_and_recover_clears() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.writeRegister(cmd::REG_CTRL_MEAS, 0);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(0u, bus.reg[cmd::REG_CTRL_MEAS]);
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_INT32(cmd::REG_CTRL_MEAS, dev.hardwareConfigDirtyError().detail);
+
+  st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
+}
+
+void test_diagnostic_config_block_write_marks_dirty_when_range_overlaps_config() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint8_t payload[] = {0x01, 0x02, 0x03, 0x04};
+  Status st = dev.writeRegisters(cmd::REG_CTRL_HUM, payload, sizeof(payload));
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(cmd::REG_CTRL_HUM, dev.hardwareConfigDirtyError().detail);
+}
+
+void test_diagnostic_non_config_write_does_not_mark_dirty() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.writeRegister(cmd::REG_PRESS_MSB, 0xAB);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(0xAB, bus.reg[cmd::REG_PRESS_MSB]);
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
+}
+
+void test_diagnostic_config_write_failure_preserves_error_and_marks_dirty() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.failWriteOnCall = bus.writeCalls + 1u;
+  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "diagnostic write timeout", -52);
+  Status st = dev.writeRegister(cmd::REG_CONFIG, 0xA0);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-52, st.detail);
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_INT32(-52, dev.hardwareConfigDirtyError().detail);
+}
+
+void test_diagnostic_config_write_address_nack_does_not_mark_dirty() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.deviceAddress = 0x77;
+  Status st = dev.writeRegister(cmd::REG_CONFIG, 0xA0);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
+}
+
+void test_recover_preserves_cached_sample_until_successful_resync_then_invalidates() {
   FakeBus bus;
   setBoschSyntheticCalibration(bus);
   setRawSample(bus, 415148, 519888, 30000);
@@ -1141,8 +1281,14 @@ void test_recover_preserves_cached_sample_and_dirty_until_successful_resync() {
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
   TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
-  TEST_ASSERT_TRUE(dev.hasSample());
-  TEST_ASSERT_EQUAL_UINT32(sampleTimestamp, dev.sampleTimestampMs());
+  TEST_ASSERT_FALSE(dev.hasSample());
+  TEST_ASSERT_FALSE(dev.measurementReady());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.sampleTimestampMs());
+
+  RawSample rawAfter{};
+  st = dev.getRawSample(rawAfter);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
 }
 
 void test_invalid_begin_does_not_clear_existing_dirty_state() {
@@ -1400,6 +1546,28 @@ void test_soft_reset_success_reloads_calibration_and_clears_dirty() {
   TEST_ASSERT_EQUAL_UINT16(27504, calib.digT1);
   TEST_ASSERT_EQUAL_INT16(26435, calib.digT2);
   TEST_ASSERT_EQUAL_UINT16(36477, calib.digP1);
+}
+
+void test_soft_reset_success_invalidates_cached_samples() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.hasSample());
+
+  Status st = dev.softReset();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(dev.hasSample());
+  TEST_ASSERT_FALSE(dev.measurementReady());
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.sampleTimestampMs());
+
+  RawSample raw{};
+  st = dev.getRawSample(raw);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
 }
 
 void test_recover_waits_for_nvm_and_reloads_calibration_before_apply() {
@@ -2150,10 +2318,13 @@ int main() {
   RUN_TEST(test_invalid_begin_after_success_resets_default_runtime);
   RUN_TEST(test_begin_normalizes_offline_threshold_on_stored_copy);
   RUN_TEST(test_begin_success_sets_ready_without_health_counts);
+  RUN_TEST(test_begin_starts_new_health_session_and_resets_counters);
   RUN_TEST(test_begin_waits_for_nvm_update_before_reading_calibration);
   RUN_TEST(test_begin_nvm_wait_handles_monotonic_wraparound);
   RUN_TEST(test_begin_defers_apply_config_when_device_measuring_without_write);
   RUN_TEST(test_begin_times_out_when_nvm_update_stuck);
+  RUN_TEST(test_begin_nvm_stuck_with_advancing_clock_uses_deadline);
+  RUN_TEST(test_begin_nvm_stuck_without_now_ms_uses_poll_limit);
   RUN_TEST(test_begin_forced_mode_keeps_hardware_sleep_until_requested);
   RUN_TEST(test_missing_now_ms_fallback_is_framework_neutral);
   RUN_TEST(test_begin_without_now_ms_uses_framework_neutral_fallback);
@@ -2183,7 +2354,12 @@ int main() {
   RUN_TEST(test_measurement_time_estimate_uses_oversampling_formula);
   RUN_TEST(test_partial_config_restore_failure_marks_hardware_dirty);
   RUN_TEST(test_dirty_state_clears_after_successful_recover_resync);
-  RUN_TEST(test_recover_preserves_cached_sample_and_dirty_until_successful_resync);
+  RUN_TEST(test_diagnostic_config_write_marks_dirty_after_success_and_recover_clears);
+  RUN_TEST(test_diagnostic_config_block_write_marks_dirty_when_range_overlaps_config);
+  RUN_TEST(test_diagnostic_non_config_write_does_not_mark_dirty);
+  RUN_TEST(test_diagnostic_config_write_failure_preserves_error_and_marks_dirty);
+  RUN_TEST(test_diagnostic_config_write_address_nack_does_not_mark_dirty);
+  RUN_TEST(test_recover_preserves_cached_sample_until_successful_resync_then_invalidates);
   RUN_TEST(test_invalid_begin_does_not_clear_existing_dirty_state);
   RUN_TEST(test_apply_config_partial_failure_marks_dirty_and_preserves_error);
   RUN_TEST(test_soft_reset_write_timeout_marks_dirty_and_preserves_error);
@@ -2198,6 +2374,7 @@ int main() {
   RUN_TEST(test_soft_reset_invalid_calibration_marks_dirty_and_records_health_failure);
   RUN_TEST(test_soft_reset_apply_config_failure_marks_dirty_and_preserves_error);
   RUN_TEST(test_soft_reset_success_reloads_calibration_and_clears_dirty);
+  RUN_TEST(test_soft_reset_success_invalidates_cached_samples);
   RUN_TEST(test_recover_waits_for_nvm_and_reloads_calibration_before_apply);
   RUN_TEST(test_recover_nvm_transport_error_updates_health_and_preserves_error);
   RUN_TEST(test_recover_invalid_calibration_records_health_failure);

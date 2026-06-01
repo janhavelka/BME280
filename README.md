@@ -117,11 +117,14 @@ The driver tracks I2C communication health:
 // Check state
 if (device.state() == BME280::DriverState::OFFLINE) {
   Serial.println("Device offline!");
-  device.recover();  // Try to reconnect
+  BME280::Status st = device.recover();  // Application-owned retry policy
+  if (!st.ok()) {
+    Serial.println(st.msg);
+  }
 }
 
-// Get statistics
-Serial.printf("Failures: %u consecutive, %lu total\n",
+// Get current health-session statistics
+Serial.printf("Failures: %u consecutive, %lu session total\n",
               device.consecutiveFailures(), device.totalFailures());
 ```
 
@@ -138,7 +141,7 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 
 ### Lifecycle
 
-- `Status begin(const Config& config)` - Initialize driver, verify chip ID `0x60`, wait for NVM copy, read calibration, and apply config
+- `Status begin(const Config& config)` - Initialize driver, verify chip ID `0x60`, wait for NVM copy, read calibration, apply config, and start a new health session
 - `void tick(uint32_t nowMs)` - Process pending measurement operations; `nowMs` must use the same monotonic timebase as `Config::nowMs`
 - `void end()` - Shutdown driver and best-effort return the sensor to sleep
 - `bool isInitialized()` - True after successful `begin()` until `end()`
@@ -147,7 +150,7 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 ### Diagnostics
 
 - `Status probe()` - Check device presence and chip ID through raw I2C without health tracking
-- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE; waits for NVM, reloads calibration, and reapplies cached config
+- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE; waits for NVM, reloads calibration, reapplies cached config, and invalidates cached samples on success
 - `Status getSettings(SettingsSnapshot& out)` - Populate a snapshot of cached config and runtime state (no I2C)
 - `Status lastMeasurementStatus()` - Last measurement request, polling, raw-read, or compensation status retained because `tick()` is void
 
@@ -178,7 +181,7 @@ burst-read, or compensation step fails.
 - `Status setOversamplingT/P/H(Oversampling osrs)` - Configure temperature, pressure, or humidity oversampling
 - `Status setFilter(Filter filter)` - Configure the IIR filter coefficient through a safe sleep/config/restore sequence
 - `Status setStandby(Standby standby)` - Configure standby interval for normal mode through a safe sleep/config/restore sequence
-- `Status softReset()` - Write `0xB6` to reset register `0xE0`, wait for NVM copy, reload calibration, and reapply cached config
+- `Status softReset()` - Write `0xB6` to reset register `0xE0`, wait for NVM copy, reload calibration, reapply cached config, and invalidate cached samples
 - `Status readChipId/readStatus/readCtrlHum/readCtrlMeas/readConfig(...)` - Read status/config registers
 - `Status isMeasuring(bool& measuring)` - Read the measuring bit
 
@@ -218,31 +221,33 @@ counters or clear an `OFFLINE` latch. It maps only definite address NACK to
 unchanged.
 
 `softReset()` writes the Bosch reset command, then polls status bit `im_update`
-until NVM copy completes. Polling is bounded by both a 10 ms deadline when a real
-`Config::nowMs` hook is injected and a fixed poll limit when no real clock is
-available. Transient status-read errors are tolerated during reset/POR if a
-later poll succeeds. If NVM never becomes ready, the first useful transport
-error is returned; if status reads succeed but `im_update` remains set, the
-result is `TIMEOUT`.
+until NVM copy completes. Polling is bounded by both a 10 ms deadline when
+`Config::nowMs` supplies an advancing monotonic clock and an unconditional
+255-poll cap. Without an injected clock, the real wall-time bound is the poll
+cap multiplied by the transport timeout. Transient status-read errors are
+tolerated during reset/POR if a later poll succeeds. If NVM never becomes ready,
+the first useful transport error is returned; if status reads succeed but
+`im_update` remains set, the result is `TIMEOUT`.
 
 After a successful reset write, hardware config may be back at defaults. If NVM
 polling, calibration reload, validation, or config reapply fails,
 `hardwareConfigDirty()` remains set with the root-cause status. A successful
-`softReset()` or `recover()` reloads calibration and clears dirty state only
-after the full cached configuration is reapplied. Runtime reset/recover NVM
+`softReset()` or `recover()` reloads calibration, invalidates cached samples,
+and clears dirty state only after the full cached configuration is reapplied.
+Runtime reset/recover NVM
 polling uses health-tracked I2C, so repeated status-read transport failures can
 move the driver to `DEGRADED` or `OFFLINE` while preserving the root-cause
 `Status`.
 
-Cached raw and compensated samples may predate `recover()`. After recovery,
-request a fresh measurement before using `getRawSample()` or
-`getCompensatedSample()` for control decisions.
+A failed `recover()` leaves any pre-existing cached sample unchanged. A
+successful `recover()` and any `softReset()` attempt invalidate cached raw and
+compensated samples so callers cannot accidentally reuse pre-recovery data.
 
 ### Public I2C Transaction Shape
 
 | API | Typical I2C transactions | Notes |
 |-----|--------------------------|-------|
-| `begin()` | chip ID read, bounded NVM status polling, calibration reads, status guard, config writes | Does not require `Config::nowMs`; call after device POR/I2C readiness |
+| `begin()` | chip ID read, bounded NVM status polling, calibration reads, status guard, config writes | Does not require `Config::nowMs`; without it NVM wait is bounded by poll count, not a real 10 ms deadline |
 | `requestMeasurement()` in forced mode | status read, `ctrl_meas` write | Returns `IN_PROGRESS` when accepted |
 | `tick()` after deadline | status read, one `0xF7..0xFE` burst read | Captures coherent pressure, temperature, and humidity ADC bytes |
 | `setOversamplingT/P()` | one `ctrl_meas` write | Invalid combinations are rejected before I2C |
@@ -263,7 +268,7 @@ All library I2C calls are synchronous and bounded by the injected transport time
 | `tick()` | Before deadline: no I2C. After deadline: one status read and one `0xF7..0xFE` burst read |
 | Typed setters | One or a small fixed sequence of register reads/writes; `setFilter()` and `setStandby()` use a sleep/config/restore sequence |
 | `recover()` | Chip-ID read, bounded NVM polling, calibration reload, and full config resync |
-| `softReset()` | Reset write, bounded NVM polling with a 10 ms real-clock deadline when `Config::nowMs` is supplied, calibration reload, and config resync |
+| `softReset()` | Reset write, bounded NVM polling with a 10 ms real-clock deadline when an advancing `Config::nowMs` is supplied, calibration reload, and config resync |
 
 Sample numeric units are stable: `Measurement` returns degrees Celsius, Pascals,
 and percent RH; `CompensatedSample` returns `tempC_x100`, integer Pascals, and
@@ -292,9 +297,12 @@ memory, so the next sample seeds the filter again.
 - `Status readRegister(uint8_t reg, uint8_t& value)` - Read a single tracked register
 - `Status writeRegister(uint8_t reg, uint8_t value)` - Write a single tracked register
 
-Raw writes are diagnostic tools. Writes to BME280 configuration registers can
-desynchronize the driver's cached settings from hardware, so call `recover()` or
-`begin()` to resync after manual register edits.
+Raw writes are diagnostic tools. Writes that overlap `ctrl_hum` (`0xF2`),
+`ctrl_meas` (`0xF4`), `config` (`0xF5`), or `reset` (`0xE0`) are health-tracked
+and mark `hardwareConfigDirty()` on success because they bypass the typed config
+cache. Transport failures that may have partially reached those registers
+preserve the original status in `hardwareConfigDirtyError()`. Call `recover()`
+or `begin()` to resync after manual register edits.
 
 ### State
 
@@ -307,10 +315,13 @@ desynchronize the driver's cached settings from hardware, so call `recover()` or
 - `uint32_t lastErrorMs()` - Timestamp of last failure
 - `Status lastError()` - Most recent error
 - `uint8_t consecutiveFailures()` - Failures since last success
-- `uint32_t totalFailures()` - Lifetime failure count
-- `uint32_t totalSuccess()` - Lifetime success count
+- `uint32_t totalFailures()` - Tracked failure count in the current health session
+- `uint32_t totalSuccess()` - Tracked success count in the current health session
 
-`IN_PROGRESS` is treated as non-failure activity for health tracking. Pre-`begin()` validation and transport setup errors do not transition the driver into `DEGRADED` or `OFFLINE`.
+`begin()` starts a new health session and resets the tracked success/failure
+counters. `IN_PROGRESS` is treated as non-failure activity for health tracking.
+Pre-`begin()` validation and transport setup errors do not transition the driver
+into `DEGRADED` or `OFFLINE`.
 
 ### Timing
 
@@ -335,7 +346,7 @@ estimateNormalCycleMs = estimateMeasurementTimeMs + getStandbyTimeMs()
 
 - `01_basic_bringup_cli/` - Arduino/PlatformIO bring-up and diagnostic CLI; not a production firmware template
 - `idf/basic/` - Native ESP-IDF bring-up and diagnostic CLI using `app_main`, `driver/i2c_master.h`, FreeRTOS timing, fixed command buffers, and the same user-facing CLI workflow as Arduino
-- CLI register diagnostics: `reg <addr>` and `wreg <addr> <val>` provide tracked raw register access for bring-up and service work. Raw writes bypass the typed config helpers; use `recover()` or `begin()` to restore cached settings after manual register edits.
+- CLI register diagnostics: `reg <addr>` and `wreg <addr> <val>` provide tracked raw register access for bring-up and service work. Raw config/reset writes bypass the typed config helpers, mark dirty state, and require `recover()` or `begin()` to restore cached settings after manual register edits. Destructive raw writes are not part of the default HIL automation.
 - CLI diagnostics include `addr [0x76|0x77]`, `id`/`chipid`, `status`, `calib`, `force`, `normal on/off`, `reset`, `probe`, `recover`, `selftest`, `stress N`, and `stress_mix N`. `selftest` is a safe command smoke check with loose environment-dependent plausibility ranges; it is not factory calibration or hardware qualification.
 
 ### Example Helpers (`examples/common/`)
@@ -366,11 +377,11 @@ Not part of the library. These simulate project-level glue and keep examples sel
 5. Error handling: all fallible APIs return `Status`; no exceptions and no silent failures.
 6. Health behavior: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds. `probe()` remains raw diagnostic I2C and does not clear the latch.
 7. Measurement scheduling requires `Config::nowMs`. `begin()` does not fail without it, but `requestMeasurement()` returns `INVALID_CONFIG` if no monotonic clock is injected.
-8. Multi-register configuration failures set `hardwareConfigDirty()` and expose the original dirty-state error in `hardwareConfigDirtyError()` and `SettingsSnapshot`.
+8. Multi-register configuration failures and successful diagnostic raw writes to config/control/reset registers set `hardwareConfigDirty()` and expose the dirty-state cause in `hardwareConfigDirtyError()` and `SettingsSnapshot`.
 9. Driver instances are not thread-safe and public APIs are not ISR-safe. Shared-bus users must serialize access externally.
 10. `setFilter()` and `setStandby()` return `BUSY` without config writes when the device initially reports `measuring`; if `measuring` appears after the sleep write, config is skipped and dirty state is set.
 11. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
-12. Reset and NVM polling are bounded. If status reads never succeed, the first transport error is returned; if successful status reads keep reporting `im_update`, the result is `TIMEOUT`.
+12. Reset and NVM polling are bounded by a poll cap and, when `Config::nowMs` advances, a real millisecond deadline. If status reads never succeed, the first transport error is returned; if successful status reads keep reporting `im_update`, the result is `TIMEOUT`.
 
 ## Validation
 

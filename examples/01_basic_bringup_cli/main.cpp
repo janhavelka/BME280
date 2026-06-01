@@ -1417,7 +1417,7 @@ void printHelp() {
 
   cli::printHelpSection("Registers");
   cli::printHelpItem("reg <addr>", "Read 8-bit register (hex address)");
-  cli::printHelpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic only; may desync cached config)");
+  cli::printHelpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic; config/reset writes mark dirty)");
 
   cli::printHelpSection("Diagnostics");
   cli::printHelpItem("drv", "Show driver state and health");
@@ -1811,7 +1811,7 @@ void processCommand(const String& cmdLine) {
     Serial.println("  Health changes:");
     printHealthDiff(before, after);
     printDriverHealth();
-    Serial.println("  Note: cached raw/comp samples may predate recovery; run read before using them.");
+    Serial.println("  Note: successful recover invalidates cached samples; run read before using them.");
     return;
   }
 
