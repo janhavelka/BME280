@@ -104,6 +104,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y doxygen
+          doxygen --version
 
       - name: Generate Doxygen documentation
         run: doxygen Doxyfile
