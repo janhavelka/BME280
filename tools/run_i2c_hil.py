@@ -158,15 +158,17 @@ BASE_COMMANDS: tuple[CommandSpec, ...] = (
         command="cfg",
         purpose="Capture chip and cached driver settings.",
         group="identity-calibration",
-        expected=("ctrl_hum", "ctrl_meas", "config"),
-        timeout_s=5.0,
+        expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
+        completion=("Hardware config dirty:",),
+        timeout_s=10.0,
     ),
     CommandSpec(
         command="calib",
         purpose="Capture cached calibration coefficients for plausibility review.",
         group="identity-calibration",
-        expected=("Calibration", "T1", "P1"),
-        timeout_s=5.0,
+        expected=("Calibration (Cached)", "T1=", "P1=", "H1=", "Plausibility:"),
+        completion=("Plausibility:",),
+        timeout_s=10.0,
         notes="Calibration plausibility still requires auditor/operator review.",
     ),
     CommandSpec(
@@ -323,8 +325,9 @@ BASE_COMMANDS: tuple[CommandSpec, ...] = (
         command="cfg",
         purpose="Capture settings after recover/resync.",
         group="reset-recover",
-        expected=("ctrl_hum", "ctrl_meas", "config"),
-        timeout_s=5.0,
+        expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
+        completion=("Hardware config dirty:",),
+        timeout_s=10.0,
         notes="Shows readable cached/hardware settings after recovery.",
     ),
     CommandSpec(
@@ -434,8 +437,9 @@ def normal_soak_commands(count: int, interval_s: float) -> tuple[CommandSpec, ..
             command="cfg",
             purpose="Capture config after opt-in normal-mode soak.",
             group="soak-normal",
-            expected=("ctrl_hum", "ctrl_meas", "config"),
-            timeout_s=5.0,
+            expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
+            completion=("Hardware config dirty:",),
+            timeout_s=10.0,
             requires_opt_in="--include-normal-soak",
         ),
         CommandSpec(
@@ -828,8 +832,13 @@ def import_serial():
 def read_available(ser) -> str:
     waiting = getattr(ser, "in_waiting", 0)
     if waiting:
-        return ser.read(waiting).decode("utf-8", errors="replace")
-    return ""
+        data = ser.read(waiting)
+    else:
+        data = ser.read(1)
+        waiting = getattr(ser, "in_waiting", 0)
+        if waiting:
+            data += ser.read(waiting)
+    return data.decode("utf-8", errors="replace")
 
 
 def run_serial_command(ser, spec: CommandSpec, transcript, *, timeout_s: float) -> dict:

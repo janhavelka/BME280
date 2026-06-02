@@ -112,6 +112,28 @@ def main() -> int:
         fail("runbook command sequence differs from tools/run_i2c_hil.py")
 
     default_commands = set(runner_sequence)
+    cfg_specs = [spec for spec in executable if spec.command == "cfg"]
+    if len(cfg_specs) != 2:
+        fail("default sequence must include initial and post-recover cfg commands")
+    for cfg_spec in cfg_specs:
+        for token in ("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"):
+            if token not in cfg_spec.expected:
+                fail(f"cfg evidence must require full output token: {token}")
+        if "Hardware config dirty:" not in cfg_spec.completion:
+            fail("cfg command must wait for the final dirty-state line")
+        if cfg_spec.timeout_s < 10.0:
+            fail("cfg command needs an extended bounded timeout window")
+    calib_specs = [spec for spec in executable if spec.command == "calib"]
+    if len(calib_specs) != 1:
+        fail("default sequence must include exactly one cached calib command")
+    calib_spec = calib_specs[0]
+    for token in ("Calibration (Cached)", "T1=", "P1=", "H1=", "Plausibility:"):
+        if token not in calib_spec.expected:
+            fail(f"cached calib evidence must require full output token: {token}")
+    if "Plausibility:" not in calib_spec.completion:
+        fail("cached calib command must wait for the final plausibility line")
+    if calib_spec.timeout_s < 10.0:
+        fail("cached calib command needs an extended bounded timeout window")
     if "force" not in runner_sequence:
         fail("default sequence must include forced-mode command")
     force_index = runner_sequence.index("force")
@@ -166,9 +188,17 @@ def main() -> int:
         fail("--include-destructive sequence must include dirty-state evidence after raw write")
 
     soak_args = runner_args(include_normal_soak=True, normal_soak_count=3)
-    soak_sequence = [spec.command for spec in runner.build_command_sequence(soak_args)[0]]
+    soak_executable = runner.build_command_sequence(soak_args)[0]
+    soak_sequence = [spec.command for spec in soak_executable]
     if soak_sequence[-7:] != ["normal on", "read", "read", "read", "normal off", "cfg", "status"]:
         fail("--include-normal-soak sequence must include normal on, repeated reads, normal off, cfg, and status")
+    soak_cfg_specs = [spec for spec in soak_executable if spec.command == "cfg" and spec.group == "soak-normal"]
+    if len(soak_cfg_specs) != 1:
+        fail("--include-normal-soak sequence must include one soak-normal cfg command")
+    if "Hardware config dirty:" not in soak_cfg_specs[0].expected:
+        fail("--include-normal-soak cfg evidence must require dirty-state output")
+    if "Hardware config dirty:" not in soak_cfg_specs[0].completion:
+        fail("--include-normal-soak cfg command must wait for dirty-state output")
 
     fault_args = runner_args(include_fault_tests=True)
     _, fault_manual = runner.build_command_sequence(fault_args)
