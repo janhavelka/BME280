@@ -20,6 +20,10 @@ source evidence.
 - `I2C_HIL_TARGET_TEMPLATE.md`: per-target evidence form for a physical run.
 - `BME280_HARDWARE_VALIDATION_MATRIX.md`: committed hardware validation ledger.
 
+`v1.6.0` is the direct public successor to `v1.5.0`. Keep release-facing
+change history merged into that single `v1.6.0` entry unless a later release is
+actually published.
+
 ## Source Evidence
 
 - `BME280_datasheet.pdf`: vendor datasheet used for implementation checks.
@@ -34,7 +38,7 @@ contracts.
 
 Prompt-scoped audit, phase, and merge-gate reports are intentionally not kept as
 release-facing documentation. Durable conclusions from that work are folded into
-the maintained docs above and the release notes in `../CHANGELOG.md`.
+the maintained docs above and the `v1.6.0` release notes in `../CHANGELOG.md`.
 
 ## Local Artifacts
 

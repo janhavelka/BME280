@@ -14,6 +14,10 @@ use on ESP32-S2 and ESP32-S3 with Arduino/PlatformIO and ESP-IDF consumers.
 No physical BME280 hardware validation is claimed here. Local ESP-IDF `idf.py`
 validation is claimed only when the exact commands are run and recorded.
 
+Release scope: `v1.6.0` is the direct public successor to `v1.5.0`. The
+release notes for `v1.6.0` contain the accumulated hardening, documentation,
+HIL tooling, ESP-IDF, and release-preparation work.
+
 ## Active Documentation Set
 
 - `README.md`: public usage, API, build, validation, and limitations.
@@ -33,7 +37,7 @@ validation is claimed only when the exact commands are run and recorded.
 
 Prompt-scoped audit reports are not shipped as user-facing release
 documentation. Their durable conclusions are folded into this summary, the
-maintained docs above, and `CHANGELOG.md`.
+maintained docs above, and the `v1.6.0` entry in `CHANGELOG.md`.
 
 ## What Changed
 

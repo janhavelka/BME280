@@ -9,6 +9,10 @@ hardware validation and local pure ESP-IDF `idf.py` builds are not claimed
 unless a hardware matrix, HIL artifact package, or validation log records the
 exact commands and setup.
 
+Release status: `v1.6.0` is the direct public successor to `v1.5.0`. The
+`v1.6.0` changelog entry includes all accumulated hardening, documentation, HIL
+tooling, ESP-IDF, and release-preparation changes since `v1.5.0`.
+
 ## Features
 
 - **Injected I2C transport** - no Wire dependency in library code
@@ -477,6 +481,9 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - `docs/I2C_HIL_TARGET_TEMPLATE.md` - per-target HIL evidence template
 - `docs/extracted-md/00_document_inventory.md` - index for extracted datasheet notes
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
+
+The `v1.6.0` release notes are the single public changelog entry for all
+changes since `v1.5.0`.
 
 ## Known Limitations
 
