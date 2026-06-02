@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.7.0] - 2026-06-02
 
+This is the first public release after `v1.5.0` and includes all changes
+accumulated since that release.
+
 ### Added
 - Formal pre-HIL evidence reporting for the default runner sequence, captured
   command arguments, firmware/library/git/worktree metadata, and operator
@@ -20,15 +23,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   locking, timeout, scheduling, recovery, and HIL evidence expectations.
 - Focused HIL runner parser tests for complete, delayed, and truncated
   calibration/settings evidence.
+- Dirty hardware-configuration diagnostics with `hardwareConfigDirty()`,
+  `hardwareConfigDirtyError()`, and matching `SettingsSnapshot` fields.
+- `lastMeasurementStatus()` for checking scheduler/capture failures after
+  `tick()`.
+- `tools/check_package_contents.py` for validating generated PlatformIO
+  archives.
+- `tools/run_i2c_hil.py`, `tools/check_hil_contract.py`, an HIL runbook, and a
+  target evidence template for future serial hardware validation.
+- Hardware validation matrix and maintained hardening summary documentation.
+- ESP-IDF component metadata for building the framework-neutral core with
+  `idf_component_register`.
+- ESP-IDF basic example with an application-owned `i2c_master` bus/device and
+  transport callbacks.
+- Native ESP-IDF CLI preserving Arduino command coverage without Arduino
+  compatibility facades.
+- ESP-IDF example contract check covering native IDF glue, forbidden Arduino
+  compatibility tokens, component metadata, and required command coverage.
+- Consolidated ESP-IDF port documentation in `docs/IDF_PORT.md`, including
+  component/example structure, adapter contract, validation commands, and
+  remaining hardware checks.
+- Per-channel validity flags on `Measurement`, `RawSample`, and
+  `CompensatedSample`, plus named Bosch skipped-sentinel constants.
+- Native golden-vector coverage for calibration parsing, H4/H5 nibble packing,
+  raw burst reconstruction, fixed-point compensation, humidity clamps, skipped
+  sentinels, and pressure denominator guarding.
 
 ### Changed
 - Default HIL guidance now records forced-mode sleep-return evidence with
   post-`force` `reg 0xF4`, `status`, and `read` commands before any
   normal-mode sequence.
+- Tightened Doxygen and release documentation so the managed synchronous
+  lifecycle, release steps, validation commands, and hardware-validation
+  boundary use the same language across README, AGENTS, and maintained docs.
 - CI now runs the HIL contract checker alongside the CLI and ESP-IDF example
   contract checks without requiring physical hardware.
 - Package validation now requires the ESP-IDF example transport files used by
   the packaged native IDF example.
+- Package validation now checks the archive matching `library.json` and verifies
+  packaged `library.json`, `idf_component.yml`, and `Version.h` agree on the
+  release version.
 - Diagnostic raw writes to BME280 control/config/reset registers now mark
   `hardwareConfigDirty()` and document `recover()`, `begin()`, or a successful
   `softReset()` as the resync path.
@@ -49,9 +83,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output is not split across command boundaries.
 - HIL serial reads no longer rely only on `in_waiting`; the runner performs a
   bounded fallback read before draining available bytes.
+- Core timing guard now rejects Arduino and ESP-IDF framework headers in
+  core/public headers and `src/`.
+- README and ESP-IDF port documentation now describe the native-IDF
+  component/example flow and full Arduino/ESP-IDF CLI parity.
+- `library.json` now advertises both Arduino and ESP-IDF framework support.
+- Native ESP-IDF example timing now uses an explicitly named `currentMs()`
+  helper instead of an Arduino-style `millis()` shim; the IDF example contract
+  rejects future `millis()` / `delay()` timing regressions.
+- Successful typed configuration changes now invalidate cached samples so old
+  values are not reused under a new measurement configuration.
+- Diagnostic CLIs now include address selection, chip-ID/register checks,
+  reset/recover/selftest/stress commands, and clearer health output for HIL
+  evidence.
+- Public documentation was consolidated around maintained user-facing docs;
+  temporary phase and prompt reports were removed from published Doxygen inputs
+  or superseded by maintained docs.
+- Old prompt and split ESP-IDF implementation notes were removed after their
+  useful content was folded into the maintained README, IDF port note, hardening
+  summary, and HIL docs.
+- Generated HIL logs and Doxygen HTML output are ignored by git.
+- Supporting documentation now has a maintained `docs/README.md` map, clearer
+  hardware-evidence policy, and updated wording for the merged hardening work.
+
+### Removed
+- Removed the stale ESP-IDF Arduino compatibility shim and documentation that
+  described compiling Arduino CLI source into IDF examples.
+- Removed superseded industry-readiness intermediate reports after their useful
+  content was folded into the hardening summary, README, changelog, HIL
+  runbook, and hardware matrix.
 
 ### Migration Notes
-- Users upgrading from `v1.5.x` must check `temperatureValid`,
+- Users upgrading from `v1.5.0` must check `temperatureValid`,
   `pressureValid`, and `humidityValid` before using measurement fields.
   Skipped or invalid channels leave numeric fields at zero.
 - `Measurement`, `RawSample`, `CompensatedSample`, and `SettingsSnapshot` have
@@ -77,67 +140,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract checks were run for this release. No physical BME280 HIL,
   environmental accuracy validation, bench fault validation, or long-soak
   hardware validation is claimed by this release.
-
-## [1.6.1] - 2026-06-01
-
-### Changed
-- Tightened Doxygen and release documentation so the managed synchronous
-  lifecycle, release steps, validation commands, and hardware-validation
-  boundary use the same language across README, AGENTS, and maintained docs.
-- CI now runs the HIL contract guard, release-metadata guard, and Doxygen
-  generation, matching the release validation flow.
-- Package validation now checks the archive matching `library.json` and verifies
-  packaged `library.json`, `idf_component.yml`, and `Version.h` agree on the
-  release version.
-
-## [1.6.0] - 2026-06-01
-
-### Added
-- Dirty hardware-configuration diagnostics with `hardwareConfigDirty()`,
-  `hardwareConfigDirtyError()`, and matching `SettingsSnapshot` fields.
-- `lastMeasurementStatus()` for checking scheduler/capture failures after
-  `tick()`.
-- `tools/check_package_contents.py` for validating generated PlatformIO
-  archives.
-- `tools/run_i2c_hil.py`, `tools/check_hil_contract.py`, an HIL runbook, and a
-  target evidence template for future serial hardware validation.
-- Hardware validation matrix and maintained hardening summary documentation.
-- ESP-IDF component metadata for building the framework-neutral core with `idf_component_register`.
-- ESP-IDF basic example with an application-owned `i2c_master` bus/device and transport callbacks.
-- Native ESP-IDF CLI preserving Arduino command coverage without Arduino compatibility facades.
-- ESP-IDF example contract check covering native IDF glue, forbidden Arduino compatibility tokens, component metadata, and required command coverage.
-- Consolidated ESP-IDF port documentation in `docs/IDF_PORT.md`, including
-  component/example structure, adapter contract, validation commands, and
-  remaining hardware checks.
-- Per-channel validity flags on `Measurement`, `RawSample`, and `CompensatedSample`, plus named Bosch skipped-sentinel constants.
-- Native golden-vector coverage for calibration parsing, H4/H5 nibble packing, raw burst reconstruction, fixed-point compensation, humidity clamps, skipped sentinels, and pressure denominator guarding.
-
-### Changed
-- Core timing guard now rejects Arduino and ESP-IDF framework headers in core/public headers and `src/`.
-- README and ESP-IDF port documentation now describe the native-IDF component/example flow and full Arduino/ESP-IDF CLI parity.
-- `library.json` now advertises both Arduino and ESP-IDF framework support.
-- Native ESP-IDF example timing now uses an explicitly named `currentMs()`
-  helper instead of an Arduino-style `millis()` shim; the IDF example contract
-  rejects future `millis()` / `delay()` timing regressions.
-- Successful typed configuration changes now invalidate cached samples so old values are not reused under a new measurement configuration.
-- Diagnostic CLIs now include address selection, chip-ID/register checks,
-  reset/recover/selftest/stress commands, and clearer health output for HIL
-  evidence.
-- Public documentation was consolidated around maintained user-facing docs;
-  temporary phase and prompt reports were removed from published Doxygen inputs
-  or superseded by maintained docs.
-- Old prompt and split ESP-IDF implementation notes were removed after their
-  useful content was folded into the maintained README, IDF port note, hardening
-  summary, and HIL docs.
-- Generated HIL logs and Doxygen HTML output are ignored by git.
-- Supporting documentation now has a maintained `docs/README.md` map, clearer
-  hardware-evidence policy, and updated wording for the merged hardening work.
-
-### Removed
-- Removed the stale ESP-IDF Arduino compatibility shim and documentation that described compiling Arduino CLI source into IDF examples.
-- Removed superseded industry-readiness intermediate reports after their useful
-  content was folded into the hardening summary, README, changelog, HIL
-  runbook, and hardware matrix.
 
 ## [1.5.0] - 2026-05-14
 
@@ -286,9 +288,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doxygen-style documentation in public headers
 
 [Unreleased]: https://github.com/janhavelka/BME280/compare/v1.7.0...HEAD
-[1.7.0]: https://github.com/janhavelka/BME280/compare/v1.6.1...v1.7.0
-[1.6.1]: https://github.com/janhavelka/BME280/compare/v1.6.0...v1.6.1
-[1.6.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.6.0
+[1.7.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.7.0
 [1.5.0]: https://github.com/janhavelka/BME280/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/janhavelka/BME280/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/janhavelka/BME280/compare/v1.2.2...v1.3.0
