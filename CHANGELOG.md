@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.6.0] - 2026-06-02
 
-This is the first public release after `v1.5.0` and includes all changes
-accumulated since that release.
+This is the direct public successor to `v1.5.0`. It is the single release entry
+for all changes accumulated since `v1.5.0`.
 
 ### Added
 - Formal pre-HIL evidence reporting for the default runner sequence, captured
