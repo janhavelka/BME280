@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.7.0] - 2026-06-02
+## [1.6.0] - 2026-06-02
 
 This is the first public release after `v1.5.0` and includes all changes
 accumulated since that release.
@@ -287,8 +287,8 @@ accumulated since that release.
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.7.0...HEAD
-[1.7.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.7.0
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/janhavelka/BME280/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/janhavelka/BME280/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/janhavelka/BME280/compare/v1.2.2...v1.3.0
