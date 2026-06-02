@@ -1,10 +1,10 @@
 # BME280 Industry Hardening Summary
 
-Last updated: 2026-06-01
+Last updated: 2026-06-02
 
 This document is the maintained summary for the merged industry-readiness work.
-It replaces the temporary prompt, phase, and self-test reports that were created
-while that work was being built.
+It replaces the temporary prompt, phase, merge-gate, and self-test records that
+were created while that work was being built.
 
 ## Scope
 
@@ -24,13 +24,16 @@ validation is claimed only when the exact commands are run and recorded.
   artifacts.
 - `docs/IDF_PORT.md`: ESP-IDF component/example boundary and validation notes.
 - `docs/BME280_Register_Reference.md`: register and bitfield reference.
+- `docs/PRODUCTION_SHARED_BUS_GUIDE.md`: production shared-bus integration
+  guidance.
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md`: hardware result ledger.
 - `docs/I2C_HIL_RUNBOOK.md`: serial HIL procedure.
 - `docs/I2C_HIL_TARGET_TEMPLATE.md`: per-target HIL evidence template.
 - `docs/BME280_datasheet.pdf` and extracted markdown: source evidence.
 
-The old prompt files, intermediate hardening reports, split ESP-IDF
-implementation note, and self-test reports are no longer active documentation.
+Prompt-scoped audit reports are not shipped as user-facing release
+documentation. Their durable conclusions are folded into this summary, the
+maintained docs above, and `CHANGELOG.md`.
 
 ## What Changed
 

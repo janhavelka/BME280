@@ -18,8 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invalidation after recovery/reset.
 - Production shared-bus integration guide covering application-owned I2C,
   locking, timeout, scheduling, recovery, and HIL evidence expectations.
-- Final merge-gate and HIL calibration-timeout reports documenting current
-  release readiness, CI/HIL boundaries, and remaining hardware limitations.
 - Focused HIL runner parser tests for complete, delayed, and truncated
   calibration/settings evidence.
 
@@ -42,9 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Successful `recover()` now invalidates cached samples after a complete resync
   so pre-recovery data cannot be reused accidentally.
 - Doxygen inputs now include the production shared-bus guide while excluding
-  local/generated artifacts and historical prompt reports.
-- Documentation now classifies prompt-scoped reports as historical records and
-  clarifies raw diagnostic write resync paths and health counter saturation.
+  local/generated artifacts and source-extraction directories.
+- Release documentation now removes prompt-scoped audit, phase, and merge-gate
+  reports from tracked docs; durable conclusions remain in the maintained docs
+  and release notes.
 - HIL runner `cfg` and cached `calib` evidence now waits for final command
   completion tokens with bounded command windows so long multi-line serial
   output is not split across command boundaries.

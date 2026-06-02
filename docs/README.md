@@ -30,12 +30,11 @@ The extracted markdown is not a second user manual. Treat it as reference
 material when changing register behavior, compensation math, timing, or hardware
 contracts.
 
-## Historical Prompt Reports
+## Audit Records
 
-Files named `BME280_PHASE_*.md` are prompt-scoped engineering records. They are
-not the current user manual, are not included in published Doxygen inputs, and
-must not be used as hardware validation evidence unless a real HIL artifact
-package is referenced by the maintained hardware matrix.
+Prompt-scoped audit, phase, and merge-gate reports are intentionally not kept as
+release-facing documentation. Durable conclusions from that work are folded into
+the maintained docs above and the release notes in `../CHANGELOG.md`.
 
 ## Local Artifacts
 
