@@ -7,17 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Production shared-bus integration guide covering application-owned I2C,
-  locking, timeout, scheduling, recovery, and HIL evidence expectations.
-
-### Changed
-- Doxygen inputs now include the production shared-bus guide while excluding
-  local/generated artifacts and historical prompt reports.
-- Documentation now classifies prompt-scoped reports as historical records and
-  clarifies raw diagnostic write resync paths and health counter saturation.
-
-## [1.7.0] - 2026-06-01
+## [1.7.0] - 2026-06-02
 
 ### Added
 - Formal pre-HIL evidence reporting for the default runner sequence, captured
@@ -26,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native tests pinning diagnostic raw-write dirty-state behavior, health-session
   counter reset semantics, no-clock NVM polling fallback, and sample-cache
   invalidation after recovery/reset.
+- Production shared-bus integration guide covering application-owned I2C,
+  locking, timeout, scheduling, recovery, and HIL evidence expectations.
+- Final merge-gate and HIL calibration-timeout reports documenting current
+  release readiness, CI/HIL boundaries, and remaining hardware limitations.
+- Focused HIL runner parser tests for complete, delayed, and truncated
+  calibration/settings evidence.
 
 ### Changed
 - Default HIL guidance now records forced-mode sleep-return evidence with
@@ -45,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   poll count.
 - Successful `recover()` now invalidates cached samples after a complete resync
   so pre-recovery data cannot be reused accidentally.
+- Doxygen inputs now include the production shared-bus guide while excluding
+  local/generated artifacts and historical prompt reports.
+- Documentation now classifies prompt-scoped reports as historical records and
+  clarifies raw diagnostic write resync paths and health counter saturation.
+- HIL runner `cfg` and cached `calib` evidence now waits for final command
+  completion tokens with bounded command windows so long multi-line serial
+  output is not split across command boundaries.
+- HIL serial reads no longer rely only on `in_waiting`; the runner performs a
+  bounded fallback read before draining available bytes.
 
 ### Migration Notes
 - Users upgrading from `v1.5.x` must check `temperatureValid`,
