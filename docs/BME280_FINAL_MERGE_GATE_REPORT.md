@@ -7,10 +7,10 @@ Date: 2026-06-02
 | Field | Value |
 | --- | --- |
 | Branch | `hardening/bme280-industry-gap-closure` |
-| Verification HEAD before this report commit | `176c610d65cedeabfc28118f657645e9df3f36d1` |
-| Describe | `v1.6.1-6-g176c610` |
+| Gate verification HEAD | `d25937b1370c41351ba3d4eec9a9560113572308` |
+| Describe | `v1.6.1-7-gd25937b` |
 | Upstream | `origin/hardening/bme280-industry-gap-closure` |
-| Local/remote sync | Not synced; local branch was `ahead 1` before this report |
+| Local/remote sync | Not synced; local branch is `ahead 2` |
 | Remote branch HEAD | `6b517a59666c10a7350f21ed98d00b67a3e3db19` |
 | Clean tree | No |
 
@@ -19,8 +19,8 @@ Untracked local docs present at gate start:
 - `docs/BME280_GAP01_GAP05_HIL_REPORT_20260602.md`
 - `docs/BME280_GAP_CLOSURE_BASELINE_REPORT.md`
 
-These are documentation artifacts, not ignored build/HIL artifacts. They must
-be resolved before claiming a clean release tree.
+These are documentation artifacts, not ignored build or HIL artifacts. Resolve
+them before claiming a clean release tree.
 
 ## CI Status
 
@@ -33,15 +33,11 @@ be resolved before claiming a clean release tree.
 
 Conclusion: **CI has not run for current HEAD. Do not claim merge readiness.**
 
-Required PR/CI sequence:
-
-```text
-git status --short
-git push origin hardening/bme280-industry-gap-closure
-# Open a PR from hardening/bme280-industry-gap-closure to the target branch.
-# Wait for GitHub Actions to run on the pushed HEAD.
-# Review every required check before merging.
-```
+CI configuration review: `.github/workflows/ci.yml` includes PlatformIO Arduino
+builds for `esp32s3dev` and `esp32s2dev`, native tests, core timing guard, CLI
+contract, HIL contract, IDF example contract, generated version check, release
+metadata check, Doxygen generation, package pack/check, and ESP-IDF example
+builds for `esp32s3` and `esp32s2` through `espressif/esp-idf-ci-action`.
 
 ## Version Consistency
 
@@ -52,6 +48,7 @@ git push origin hardening/bme280-industry-gap-closure
 | `include/BME280/Version.h` | `BME280_VERSION_STRING "1.7.0"`, `VERSION_MINOR = 7`, `VERSION_CODE = 10700` |
 | `Doxyfile` | `PROJECT_NUMBER = "1.7.0"` |
 | `CHANGELOG.md` | Has `1.7.0`, but `[Unreleased]` still contains entries |
+| `README.md` | Release wording uses validation-boundary language and does not claim physical hardware completion |
 
 Version metadata is aligned at `1.7.0`, but release/tag readiness is blocked
 until the non-empty `[Unreleased]` section is intentionally handled for the
@@ -98,7 +95,7 @@ Latest relevant HIL evidence:
 
 HIL claim boundary:
 
-- Do not claim default HIL pass.
+- Do not claim a successful default HIL run.
 - Do not claim environmental accuracy validation.
 - Do not claim long soak, destructive fault, or shared-bus physical validation.
 - Hardware evidence remains limited to recorded transcripts and operator review
@@ -106,33 +103,28 @@ HIL claim boundary:
 
 ## Documentation Claim Review
 
-Final overclaim scan found no occurrences of:
-
-- `field-proven`
-- `hardware-qualified`
-- `local ESP-IDF passed`
-- `ESP-IDF passed`
-- `hardware validation: PASS`
-- `Physical HIL validation: PASS`
-- `Hardware run: PASS`
+Claim scan result: maintained docs do not make affirmative claims of field
+deployment proof, hardware qualification, current default-HIL success, or local
+pure ESP-IDF success. The README and maintained reports use validation-boundary
+language around physical hardware and IDF checks.
 
 Safe release wording:
 
 - Software-hardened BME280 driver with injected, non-owning I2C transport.
 - HIL tooling and evidence capture are present.
 - Local software checks and package validation passed.
-- Physical HIL pass, field qualification, and environmental accuracy are not
+- Physical HIL success, field qualification, and environmental accuracy are not
   claimed unless a matching hardware matrix and artifacts record them.
 - Local pure ESP-IDF `idf.py` validation is not claimed unless exact local
   command output is recorded.
 
-Unsafe claims:
+Unsafe claims to avoid:
 
-- Do not say field-proven.
-- Do not say hardware-qualified.
-- Do not say HIL-passed for current HEAD.
-- Do not say local pure ESP-IDF passed.
-- Do not say release/tag ready before current-head CI runs.
+- Field deployment proof.
+- Hardware qualification.
+- Default HIL success for current HEAD.
+- Local pure ESP-IDF success.
+- Release/tag readiness before current-head CI runs.
 
 ## Remaining Limitations
 
@@ -163,18 +155,19 @@ Tagging `v1.7.0` should wait until:
 1. `CHANGELOG.md` release contents are final.
 2. Current HEAD is pushed.
 3. PR CI passes on the exact release commit.
-4. A passing/default HIL claim is either captured or explicitly excluded from
+4. A successful/default HIL claim is either captured or explicitly excluded from
    release claims.
 5. The repository is clean except ignored generated artifacts.
 
-## Release/Tag Checklist
+## PR And Release Checklist
 
 Prepare but do not run tags until explicitly approved:
 
 ```text
 git status --short
+# Resolve untracked docs first.
 git push origin hardening/bme280-industry-gap-closure
-# Open/update PR and wait for CI.
+# Open/update PR and wait for CI on the pushed HEAD.
 git checkout <target-branch>
 git pull --ff-only
 git merge --ff-only hardening/bme280-industry-gap-closure
