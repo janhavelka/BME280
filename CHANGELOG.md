@@ -7,7 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+- Production shared-bus integration guide covering application-owned I2C,
+  locking, timeout, scheduling, recovery, and HIL evidence expectations.
+
+### Changed
+- Doxygen inputs now include the production shared-bus guide while excluding
+  local/generated artifacts and historical prompt reports.
+- Documentation now classifies prompt-scoped reports as historical records and
+  clarifies raw diagnostic write resync paths and health counter saturation.
+
+## [1.7.0] - 2026-06-01
+
+### Added
+- Formal pre-HIL evidence reporting for the default runner sequence, captured
+  command arguments, firmware/library/git/worktree metadata, and operator
+  sign-off fields.
+- Native tests pinning diagnostic raw-write dirty-state behavior, health-session
+  counter reset semantics, no-clock NVM polling fallback, and sample-cache
+  invalidation after recovery/reset.
+
+### Changed
+- Default HIL guidance now records forced-mode sleep-return evidence with
+  post-`force` `reg 0xF4`, `status`, and `read` commands before any
+  normal-mode sequence.
+- CI now runs the HIL contract checker alongside the CLI and ESP-IDF example
+  contract checks without requiring physical hardware.
+- Package validation now requires the ESP-IDF example transport files used by
+  the packaged native IDF example.
+- Diagnostic raw writes to BME280 control/config/reset registers now mark
+  `hardwareConfigDirty()` and document `recover()`, `begin()`, or a successful
+  `softReset()` as the resync path.
+- Health counter documentation now describes counters as current health-session
+  totals since the most recent `begin()`, matching existing reset behavior.
+- NVM polling documentation now clarifies that the millisecond deadline requires
+  an advancing `Config::nowMs`; the framework-neutral fallback is bounded by
+  poll count.
+- Successful `recover()` now invalidates cached samples after a complete resync
+  so pre-recovery data cannot be reused accidentally.
+
+### Migration Notes
+- Users upgrading from `v1.5.x` must check `temperatureValid`,
+  `pressureValid`, and `humidityValid` before using measurement fields.
+  Skipped or invalid channels leave numeric fields at zero.
+- `Measurement`, `RawSample`, `CompensatedSample`, and `SettingsSnapshot` have
+  changed public layout since `v1.5.0`; rebuild dependent firmware and avoid
+  assuming binary compatibility across versions.
+- `BME280::BME280` instances are intentionally non-copyable and non-movable.
+  Keep a single owned instance and pass references or pointers.
+- Use typed setters for normal configuration. `writeRegister()` and
+  `writeRegisters()` are diagnostic raw access; writes to reset/control/config
+  registers mark dirty state and require `recover()`, `begin()`, or a
+  successful `softReset()` to resync.
+- After successful `recover()` or any `softReset()` attempt, request a fresh
+  measurement before using cached sample data.
+- Named Bosch skipped-sentinel constants describe skipped raw channels; callers
+  should use the validity flags rather than treating all-zero numeric outputs as
+  valid readings.
+- PlatformIO Arduino builds do not imply local pure ESP-IDF `idf.py` validation.
+  Record exact `idf.py` command results before claiming local pure ESP-IDF
+  builds.
+
+### Validation Boundary
+- Software checks, metadata synchronization, package validation, and HIL
+  contract checks were run for this release. No physical BME280 HIL,
+  environmental accuracy validation, bench fault validation, or long-soak
+  hardware validation is claimed by this release.
 
 ## [1.6.1] - 2026-06-01
 
@@ -55,7 +120,8 @@ No unreleased changes.
   reset/recover/selftest/stress commands, and clearer health output for HIL
   evidence.
 - Public documentation was consolidated around maintained user-facing docs;
-  temporary phase and prompt reports were removed from the docs tree.
+  temporary phase and prompt reports were removed from published Doxygen inputs
+  or superseded by maintained docs.
 - Old prompt and split ESP-IDF implementation notes were removed after their
   useful content was folded into the maintained README, IDF port note, hardening
   summary, and HIL docs.
@@ -215,7 +281,8 @@ No unreleased changes.
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.6.1...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/janhavelka/BME280/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/janhavelka/BME280/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/janhavelka/BME280/compare/v1.4.0...v1.5.0

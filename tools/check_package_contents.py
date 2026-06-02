@@ -8,8 +8,9 @@ import sys
 import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+IDF_MAIN_DIR = ROOT / "examples" / "idf" / "basic" / "main"
 
-REQUIRED_SUFFIXES = {
+BASE_REQUIRED_PATHS = {
     "library.json",
     "include/BME280/BME280.h",
     "include/BME280/CommandTable.h",
@@ -20,9 +21,6 @@ REQUIRED_SUFFIXES = {
     "idf_component.yml",
     "examples/idf/basic/CMakeLists.txt",
     "examples/idf/basic/main/CMakeLists.txt",
-    "examples/idf/basic/main/IdfI2cTransport.cpp",
-    "examples/idf/basic/main/IdfI2cTransport.h",
-    "examples/idf/basic/main/main.cpp",
     "src/BME280.cpp",
 }
 
@@ -31,6 +29,25 @@ FORBIDDEN_PARTS = {
     ".pio",
     "__pycache__",
     "docs/doxygen",
+}
+
+ROOT_LEVEL_NAMES = {
+    ".github",
+    "docs",
+    "examples",
+    "include",
+    "scripts",
+    "src",
+    "test",
+    "tests",
+    "tools",
+    "CMakeLists.txt",
+    "CHANGELOG.md",
+    "Doxyfile",
+    "idf_component.yml",
+    "library.json",
+    "platformio.ini",
+    "README.md",
 }
 
 
@@ -62,20 +79,78 @@ def normalize(name: str) -> str:
     return name.replace("\\", "/").lstrip("./")
 
 
-def read_member(tar: tarfile.TarFile, members: set[str], suffix: str) -> str:
-    matches = sorted(name for name in members if name.endswith(suffix))
-    if len(matches) != 1:
-        fail(f"expected exactly one packaged {suffix}, found {len(matches)}")
-    handle = tar.extractfile(matches[0])
+def strip_package_root(name: str) -> str:
+    normalized = normalize(name)
+    parts = normalized.split("/")
+    if len(parts) > 1 and parts[0] not in ROOT_LEVEL_NAMES:
+        return "/".join(parts[1:])
+    return normalized
+
+
+def package_file_map(tar: tarfile.TarFile) -> tuple[dict[str, str], set[str]]:
+    files: dict[str, str] = {}
+    all_members: set[str] = set()
+    for member in tar.getmembers():
+        normalized = normalize(member.name)
+        stripped = strip_package_root(normalized)
+        all_members.add(normalized)
+        all_members.add(stripped)
+        if not member.isfile():
+            continue
+        if stripped in files:
+            fail(f"duplicate packaged path after root normalization: {stripped}")
+        files[stripped] = normalized
+    return files, all_members
+
+
+def idf_example_required_paths() -> set[str]:
+    required = {
+        "examples/idf/basic/CMakeLists.txt",
+        "examples/idf/basic/main/CMakeLists.txt",
+    }
+    cmake = (IDF_MAIN_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
+    source_names = re.findall(r'"([^"]+\.(?:c|cc|cpp|cxx))"', cmake)
+    pending = [IDF_MAIN_DIR / name for name in source_names]
+    seen: set[pathlib.Path] = set()
+
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        if not path.exists():
+            fail(f"IDF example references missing local file: {path.relative_to(ROOT).as_posix()}")
+        required.add(path.relative_to(ROOT).as_posix())
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for include in re.findall(r'^\s*#\s*include\s+"([^"]+)"', text, flags=re.MULTILINE):
+            include_path = (path.parent / include).resolve()
+            try:
+                include_path.relative_to(IDF_MAIN_DIR.resolve())
+            except ValueError:
+                continue
+            if include_path.exists():
+                pending.append(include_path)
+
+    return required
+
+
+def required_paths() -> set[str]:
+    return set(BASE_REQUIRED_PATHS) | idf_example_required_paths()
+
+
+def read_member(tar: tarfile.TarFile, files: dict[str, str], path: str) -> str:
+    if path not in files:
+        fail(f"missing packaged {path}")
+    handle = tar.extractfile(files[path])
     if handle is None:
-        fail(f"could not read packaged {suffix}")
+        fail(f"could not read packaged {path}")
     return handle.read().decode("utf-8", errors="replace")
 
 
-def validate_packaged_versions(tar: tarfile.TarFile, members: set[str], version: str) -> None:
-    packaged_library = json.loads(read_member(tar, members, "library.json"))
-    packaged_component = read_member(tar, members, "idf_component.yml")
-    packaged_version_h = read_member(tar, members, "include/BME280/Version.h")
+def validate_packaged_versions(tar: tarfile.TarFile, files: dict[str, str], version: str) -> None:
+    packaged_library = json.loads(read_member(tar, files, "library.json"))
+    packaged_component = read_member(tar, files, "idf_component.yml")
+    packaged_version_h = read_member(tar, files, "include/BME280/Version.h")
 
     if packaged_library.get("version") != version:
         fail(
@@ -92,12 +167,12 @@ def main() -> int:
     version = library_version()
     archive = expected_package(version)
     with tarfile.open(archive, "r:gz") as tar:
-        members = {normalize(member.name) for member in tar.getmembers()}
+        files, members = package_file_map(tar)
 
     missing = []
-    for suffix in sorted(REQUIRED_SUFFIXES):
-        if not any(name.endswith(suffix) for name in members):
-            missing.append(suffix)
+    for path in sorted(required_paths()):
+        if path not in files:
+            missing.append(path)
     if missing:
         fail("missing required files: " + ", ".join(missing))
 
@@ -110,7 +185,8 @@ def main() -> int:
         fail("forbidden build/internal paths in archive: " + ", ".join(sorted(forbidden_hits)[:8]))
 
     with tarfile.open(archive, "r:gz") as tar:
-        validate_packaged_versions(tar, members, version)
+        files, _ = package_file_map(tar)
+        validate_packaged_versions(tar, files, version)
 
     print(f"Package contents PASSED ({archive.name})")
     return 0

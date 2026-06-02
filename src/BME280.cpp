@@ -108,6 +108,40 @@ static bool isTransportFailure(const Status& st) {
   }
 }
 
+static bool mayHaveReachedDeviceAfterDiagnosticWrite(const Status& st) {
+  switch (st.code) {
+    case Err::I2C_ERROR:
+    case Err::I2C_NACK_DATA:
+    case Err::I2C_TIMEOUT:
+    case Err::I2C_BUS:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static bool registerRangeContains(uint8_t startReg, size_t len, uint8_t reg) {
+  if (len == 0) {
+    return false;
+  }
+  const size_t start = startReg;
+  const size_t target = reg;
+  return target >= start && (target - start) < len;
+}
+
+static bool touchesDiagnosticConfigRegister(uint8_t startReg, size_t len) {
+  return registerRangeContains(startReg, len, cmd::REG_CTRL_HUM) ||
+         registerRangeContains(startReg, len, cmd::REG_CTRL_MEAS) ||
+         registerRangeContains(startReg, len, cmd::REG_CONFIG) ||
+         registerRangeContains(startReg, len, cmd::REG_RESET);
+}
+
+static Status diagnosticRawWriteDirtyStatus(uint8_t startReg) {
+  return Status::Error(Err::INVALID_CONFIG,
+                       "Diagnostic raw write may desync cached config",
+                       startReg);
+}
+
 static bool isValidMeasurementSelection(Oversampling osrsT,
                                         Oversampling osrsP,
                                         Oversampling osrsH) {
@@ -404,6 +438,9 @@ Status BME280::recover() {
 
     return Status::Ok();
   }();
+  if (result.ok()) {
+    _invalidateSampleCache();
+  }
   if (startedOffline && !result.ok() && !result.inProgress()) {
     _reassertOfflineLatch();
   }
@@ -502,7 +539,7 @@ Status BME280::requestMeasurement() {
     }
 
     const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::FORCED);
-    st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+    st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
     if (!st.ok()) {
       _lastMeasurementStatus = st;
       return st;
@@ -627,7 +664,7 @@ Status BME280::setMode(Mode mode) {
 
   const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
                                          registerModeForConfig(mode));
-  Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     return st;
@@ -662,7 +699,7 @@ Status BME280::setOversamplingT(Oversampling osrs) {
 
   const uint8_t ctrlMeas = buildCtrlMeas(osrs, _config.osrsP,
                                          registerModeForConfig(_config.mode));
-  Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     return st;
@@ -685,7 +722,7 @@ Status BME280::setOversamplingP(Oversampling osrs) {
 
   const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, osrs,
                                          registerModeForConfig(_config.mode));
-  Status st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     return st;
@@ -707,7 +744,7 @@ Status BME280::setOversamplingH(Oversampling osrs) {
   }
 
   const uint8_t ctrlHum = buildCtrlHum(osrs);
-  Status st = writeRegister(cmd::REG_CTRL_HUM, ctrlHum);
+  Status st = writeRegs(cmd::REG_CTRL_HUM, &ctrlHum, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     return st;
@@ -715,7 +752,7 @@ Status BME280::setOversamplingH(Oversampling osrs) {
 
   const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
                                          registerModeForConfig(_config.mode));
-  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     return st;
@@ -744,7 +781,7 @@ Status BME280::setFilter(Filter filter) {
     return st;
   }
 
-  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeasSleep);
+  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     return st;
@@ -753,22 +790,22 @@ Status BME280::setFilter(Filter filter) {
   st = _ensureConfigWriteReady();
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
-    const Status restore = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
     if (!restore.ok()) {
       _markHardwareConfigDirty(restore);
     }
     return st;
   }
 
-  st = writeRegister(cmd::REG_CONFIG, config);
+  st = writeRegs(cmd::REG_CONFIG, &config, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     // Best-effort restore: always return the original config-write error.
-    const Status restore = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
     (void)restore;
     return st;
   }
-  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     return st;
@@ -797,7 +834,7 @@ Status BME280::setStandby(Standby standby) {
     return st;
   }
 
-  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeasSleep);
+  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     return st;
@@ -806,22 +843,22 @@ Status BME280::setStandby(Standby standby) {
   st = _ensureConfigWriteReady();
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
-    const Status restore = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
     if (!restore.ok()) {
       _markHardwareConfigDirty(restore);
     }
     return st;
   }
 
-  st = writeRegister(cmd::REG_CONFIG, config);
+  st = writeRegs(cmd::REG_CONFIG, &config, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     // Best-effort restore: always return the original config-write error.
-    const Status restore = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
     (void)restore;
     return st;
   }
-  st = writeRegister(cmd::REG_CTRL_MEAS, ctrlMeas);
+  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
     return st;
@@ -887,7 +924,8 @@ Status BME280::softReset() {
     _measurementStartMs = 0;
     _sampleTimestampMs = 0;
 
-    Status st = writeRegister(cmd::REG_RESET, cmd::RESET_VALUE);
+    const uint8_t resetValue = cmd::RESET_VALUE;
+    Status st = writeRegs(cmd::REG_RESET, &resetValue, 1);
     if (!st.ok()) {
       if (st.code != Err::I2C_NACK_ADDR && st.code != Err::DEVICE_NOT_FOUND) {
         _markHardwareConfigDirty(st);
@@ -1108,7 +1146,16 @@ Status BME280::writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len) 
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  return writeRegs(startReg, buf, len);
+  const bool touchesConfig = touchesDiagnosticConfigRegister(startReg, len);
+  const Status st = writeRegs(startReg, buf, len);
+  if (touchesConfig) {
+    if (st.ok()) {
+      _markHardwareConfigDirty(diagnosticRawWriteDirtyStatus(startReg));
+    } else if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+      _markHardwareConfigDirty(st);
+    }
+  }
+  return st;
 }
 
 Status BME280::readRegister(uint8_t reg, uint8_t& value) {
@@ -1122,7 +1169,7 @@ Status BME280::writeRegister(uint8_t reg, uint8_t value) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  return writeRegs(reg, &value, 1);
+  return writeRegisters(reg, &value, 1);
 }
 
 Status BME280::_readRegisterRaw(uint8_t reg, uint8_t& value) {

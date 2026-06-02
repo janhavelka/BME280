@@ -59,12 +59,18 @@ Configuration, reset, and recovery:
 
 - Multi-register config paths expose `hardwareConfigDirty()` and the original
   dirty-state error when hardware and cache may diverge.
+- Diagnostic raw writes to `ctrl_hum`, `ctrl_meas`, `config`, or `reset` mark
+  dirty state so service commands cannot silently desynchronize the typed
+  config cache.
 - Dirty state is cleared only after a complete successful config resync through
   `begin()`, `recover()`, or `softReset()`.
+- Successful recovery and reset resync invalidate cached samples so
+  pre-recovery data cannot be reused accidentally.
 - `setFilter()` and `setStandby()` avoid config writes while the sensor reports
   `measuring`.
-- Reset and NVM polling are bounded and preserve useful root-cause errors where
-  possible.
+- Reset and NVM polling are bounded by poll count and, when an advancing
+  `Config::nowMs` hook is supplied, by a real millisecond deadline. Useful
+  root-cause errors are preserved where possible.
 
 Examples, ESP-IDF, and CI:
 
@@ -83,7 +89,8 @@ HIL preparation:
 - `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` is the hardware result ledger.
 - `docs/I2C_HIL_RUNBOOK.md` describes the serial HIL procedure.
 - `docs/I2C_HIL_TARGET_TEMPLATE.md` captures per-target setup and evidence.
-- `tools/run_i2c_hil.py` captures serial transcripts and summaries.
+- `tools/run_i2c_hil.py` captures grouped serial transcripts, summaries,
+  command plans, environment records, CSV/JSON results, and artifact manifests.
 
 ## Validation Boundary
 
@@ -114,9 +121,19 @@ The CLI does not support counted commands such as `read 10` or `read 20`.
 Use repeated `read` commands for normal-mode evidence and `stress N` only as a
 forced-measurement stress substitute.
 
+Default HIL evidence captures `force`, then `reg 0xF4`, `status`, and `read`.
+For forced-mode sleep-return evidence, `ctrl_meas` mode bits `[1:0]` must read
+`00` after the forced conversion completes.
+
+Normal-mode soak evidence is separate from forced `stress N`; use repeated
+`read` commands in normal mode and record reference/timestamp notes before
+claiming soak coverage.
+
 ## Release Gate
 
-- Merge status: the hardening work is present on `main`.
+- Merge status: the hardening work is present in the maintained release
+  history. Check the current branch and release tag before publishing new
+  evidence.
 - Release status: version metadata, changelog entries, generated version
   header, and Doxygen project metadata must be aligned on the exact release
   commit before tagging. Publishing still requires the pushed tag and

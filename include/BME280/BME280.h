@@ -162,7 +162,10 @@ public:
   /// Verifies chip ID 0x60, waits for NVM copy to finish, reads calibration,
   /// validates coefficients, and applies cached config. Call after device POR
   /// and I2C bus readiness; address NACK maps to DEVICE_NOT_FOUND while other
-  /// transport errors are preserved.
+  /// transport errors are preserved. Starts a new health session and resets
+  /// tracked I2C counters. NVM polling is always bounded by poll count; the
+  /// millisecond deadline is real only when Config::nowMs supplies an
+  /// advancing monotonic clock.
   /// @param config Configuration including transport callbacks
   /// @return Status::Ok() on success, error otherwise
   Status begin(const Config& config);
@@ -200,8 +203,9 @@ public:
   /// Attempt to recover from DEGRADED/OFFLINE state by verifying chip ID,
   /// waiting for NVM copy, reloading calibration, validating it, and reapplying
   /// cached config.
-  /// Cached raw/compensated samples may predate recovery; request a fresh
-  /// measurement before using cached samples after recovery.
+  /// A successful recovery invalidates cached raw/compensated samples and any
+  /// pending measurement state; a failed recovery leaves pre-existing cached
+  /// samples unchanged.
   /// @return Status::Ok() if device now responsive, error otherwise
   Status recover();
 
@@ -262,16 +266,19 @@ public:
   /// @return Last tracked error status
   Status lastError() const { return _lastError; }
   
-  /// Consecutive failures since last success
+  /// Consecutive failures since last success.
+  /// Saturates at UINT8_MAX and resets to zero on tracked I2C success.
   /// @return Consecutive tracked failures
   uint8_t consecutiveFailures() const { return _consecutiveFailures; }
   
-  /// Total failure count (lifetime)
-  /// @return Lifetime tracked failure count
+  /// Total tracked I2C failures in the current health session.
+  /// Saturates at UINT32_MAX and is reset by begin(); it does not wrap.
+  /// @return Tracked failure count since the most recent begin()
   uint32_t totalFailures() const { return _totalFailures; }
   
-  /// Total success count (lifetime)
-  /// @return Lifetime tracked success count
+  /// Total tracked I2C successes in the current health session.
+  /// Saturates at UINT32_MAX and is reset by begin(); it does not wrap.
+  /// @return Tracked success count since the most recent begin()
   uint32_t totalSuccess() const { return _totalSuccess; }
   
   // =========================================================================
@@ -333,7 +340,7 @@ public:
   Status getCompensatedSample(CompensatedSample& out) const;
 
   /// Get cached calibration coefficients.
-  /// @param[out] out Cached coefficients read during begin() or softReset()
+  /// @param[out] out Cached coefficients read during begin(), recover(), or softReset()
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getCalibration(Calibration& out) const;
 
@@ -428,8 +435,11 @@ public:
 
   /// Soft reset device. Writes 0xB6 to 0xE0, polls status.im_update with a
   /// bounded deadline/poll limit, reloads calibration, validates it, and
-  /// reapplies cached config. If reset write succeeds but a later step fails,
-  /// hardwareConfigDirty() remains set with the root-cause status.
+  /// reapplies cached config. A reset attempt invalidates cached samples before
+  /// touching hardware. If reset write succeeds but a later step fails,
+  /// hardwareConfigDirty() remains set with the root-cause status. NVM polling
+  /// is always bounded by poll count; the millisecond deadline is real only
+  /// when Config::nowMs supplies an advancing monotonic clock.
   /// @return Status::Ok() on success, error otherwise
   Status softReset();
 
@@ -484,9 +494,12 @@ public:
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
   ///         INVALID_PARAM for null/zero/oversized writes, BUSY while OFFLINE,
   ///         or the original tracked transport status.
-  /// @note Diagnostic raw writes can desynchronize cached configuration from
-  ///       hardware; call recover() or begin() to resync after manual
-  ///       config-register edits.
+  /// @note Diagnostic writes that overlap ctrl_hum (0xF2), ctrl_meas (0xF4),
+  ///       config (0xF5), or reset (0xE0) mark hardwareConfigDirty() on
+  ///       success. Transport failures that may have partially reached those
+  ///       registers preserve the original status as hardwareConfigDirtyError().
+  ///       Call recover(), begin(), or a successful softReset() to resync after
+  ///       manual config-register edits.
   Status writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len);
 
   /// Read a single register through tracked I2C.
@@ -501,9 +514,12 @@ public:
   /// @param value Value to write
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), BUSY while
   ///         OFFLINE, or the original tracked transport status.
-  /// @note Diagnostic raw writes can desynchronize cached configuration from
-  ///       hardware; call recover() or begin() to resync after manual
-  ///       config-register edits.
+  /// @note Diagnostic writes to ctrl_hum (0xF2), ctrl_meas (0xF4), config
+  ///       (0xF5), or reset (0xE0) mark hardwareConfigDirty() on success.
+  ///       Transport failures that may have partially reached those registers
+  ///       preserve the original status as hardwareConfigDirtyError(). Call
+  ///       recover(), begin(), or a successful softReset() to resync after
+  ///       manual config-register edits.
   Status writeRegister(uint8_t reg, uint8_t value);
 
   // =========================================================================
