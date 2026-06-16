@@ -71,6 +71,7 @@ bool pendingRead = false;
 uint32_t pendingStartMs = 0;
 int stressRemaining = 0;
 StressStats stressStats;
+uint8_t activeAddress = 0x76;
 static constexpr uint32_t STRESS_PROGRESS_UPDATES = 10U;
 
 void cancelPending();
@@ -87,8 +88,8 @@ BME280::Config makeDefaultConfig() {
   BME280::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
-  cfg.i2cAddress = 0x76;
+  cfg.i2cUser = transport::configUser();
+  cfg.i2cAddress = activeAddress;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.nowMs = exampleNowMs;
   cfg.offlineThreshold = 5;
@@ -257,6 +258,36 @@ void printStatus(const BME280::Status& st) {
   }
 }
 
+void printDirtyState() {
+  const BME280::Status dirty = device.hardwareConfigDirtyError();
+  Serial.printf("  Hardware config dirty: %s%s%s\n",
+                device.hardwareConfigDirty() ? LOG_COLOR_YELLOW : LOG_COLOR_GREEN,
+                device.hardwareConfigDirty() ? "true" : "false",
+                LOG_COLOR_RESET);
+  if (device.hardwareConfigDirty() && !dirty.ok()) {
+    Serial.printf("  Dirty cause: %s (detail=%ld)\n",
+                  errToStr(dirty.code),
+                  static_cast<long>(dirty.detail));
+  }
+}
+
+void printValidity(bool temperatureValid, bool pressureValid, bool humidityValid) {
+  Serial.printf("  Valid channels: T=%d P=%d H=%d\n",
+                temperatureValid ? 1 : 0,
+                pressureValid ? 1 : 0,
+                humidityValid ? 1 : 0);
+}
+
+void printSampleAge() {
+  if (!device.hasSample()) {
+    Serial.println("  Cached sample: none");
+    return;
+  }
+  Serial.printf("  Cached sample age: %lu ms (timestamp=%lu ms)\n",
+                static_cast<unsigned long>(device.sampleAgeMs(millis())),
+                static_cast<unsigned long>(device.sampleTimestampMs()));
+}
+
 void printDriverHealth() {
   const uint32_t now = millis();
   const uint32_t totalOk = device.totalSuccess();
@@ -278,6 +309,8 @@ void printDriverHealth() {
                 online ? LOG_COLOR_GREEN : LOG_COLOR_RED,
                 log_bool_str(online),
                 LOG_COLOR_RESET);
+  Serial.printf("  Active I2C address: 0x%02X\n", activeAddress);
+  printDirtyState();
   Serial.printf("  Consecutive failures: %s%u%s\n",
                 goodIfZeroColor(device.consecutiveFailures()),
                 device.consecutiveFailures(),
@@ -328,6 +361,7 @@ void printDriverHealth() {
 void printMeasurement(const BME280::Measurement& m) {
   Serial.printf("Temp: %.2f C, Pressure: %.2f Pa, Humidity: %.2f %%\n",
                 m.temperatureC, m.pressurePa, m.humidityPct);
+  printValidity(m.temperatureValid, m.pressureValid, m.humidityValid);
 }
 
 void printRawSample() {
@@ -341,6 +375,8 @@ void printRawSample() {
                 static_cast<long>(raw.adcT),
                 static_cast<long>(raw.adcP),
                 static_cast<long>(raw.adcH));
+  printValidity(raw.temperatureValid, raw.pressureValid, raw.humidityValid);
+  printSampleAge();
 }
 
 void printCompensatedSample() {
@@ -356,6 +392,8 @@ void printCompensatedSample() {
                 static_cast<long>(sample.tempC_x100),
                 static_cast<unsigned long>(sample.pressurePa),
                 humidityPct);
+  printValidity(sample.temperatureValid, sample.pressureValid, sample.humidityValid);
+  printSampleAge();
 }
 
 void printDataRegisters() {
@@ -390,9 +428,9 @@ void printDataRegisters() {
                 static_cast<long>(adcT),
                 static_cast<long>(adcH));
   Serial.printf("  Sentinel check: P_skip=%d T_skip=%d H_skip=%d\n",
-                adcP == 0x80000L ? 1 : 0,
-                adcT == 0x80000L ? 1 : 0,
-                adcH == 0x8000L ? 1 : 0);
+                adcP == BME280::cmd::RAW_PRESSURE_SKIPPED ? 1 : 0,
+                adcT == BME280::cmd::RAW_TEMPERATURE_SKIPPED ? 1 : 0,
+                adcH == BME280::cmd::RAW_HUMIDITY_SKIPPED ? 1 : 0);
 }
 
 void printTimingInfo() {
@@ -441,6 +479,14 @@ void printCalibration() {
                 static_cast<int>(calib.digH4),
                 static_cast<int>(calib.digH5),
                 static_cast<int>(calib.digH6));
+  const bool plausible = calib.digT1 != 0U && calib.digP1 != 0U &&
+                         (calib.digH1 != 0U || calib.digH2 != 0 ||
+                          calib.digH3 != 0U || calib.digH4 != 0 ||
+                          calib.digH5 != 0 || calib.digH6 != 0);
+  Serial.printf("  Plausibility: %s%s%s (T1/P1 nonzero, humidity coeffs not all zero)\n",
+                plausible ? LOG_COLOR_GREEN : LOG_COLOR_RED,
+                plausible ? "PASS" : "CHECK",
+                LOG_COLOR_RESET);
 }
 
 void printCalibrationRaw() {
@@ -583,6 +629,7 @@ void printAllSettings() {
   } else {
     printVerboseState();
   }
+  printDirtyState();
 }
 
 void printModeSettings() {
@@ -1065,7 +1112,8 @@ void runSelfTest() {
     report(name, SelftestOutcome::SKIP, note);
   };
 
-  Serial.println("=== BME280 selftest (safe commands) ===");
+  Serial.println("=== BME280 selftest (safe command smoke check) ===");
+  Serial.println("  Plausibility ranges are loose and environment-dependent; this is not factory calibration.");
   cancelPending();
 
   BME280::Mode origMode = BME280::Mode::SLEEP;
@@ -1145,7 +1193,8 @@ void runSelfTest() {
   BME280::Measurement m;
   st = performMeasurementBlocking(m);
   reportCheck("measurement cycle", st.ok(), st.ok() ? "" : errToStr(st.code));
-  const bool mRange = (m.temperatureC > -60.0f && m.temperatureC < 130.0f) &&
+  const bool mRange = m.temperatureValid && m.pressureValid && m.humidityValid &&
+                      (m.temperatureC > -60.0f && m.temperatureC < 130.0f) &&
                       (m.humidityPct >= 0.0f && m.humidityPct <= 100.0f) &&
                       (m.pressurePa > 20000.0f && m.pressurePa < 130000.0f);
   reportCheck("measurement in plausible range", st.ok() && mRange, "");
@@ -1322,6 +1371,21 @@ bool parseU32(const String& token, uint32_t& out) {
   return true;
 }
 
+bool parseI2cAddress(const String& token, uint8_t& out) {
+  uint32_t value = 0;
+  if (!parseU32(token, value) || (value != 0x76U && value != 0x77U)) {
+    return false;
+  }
+  out = static_cast<uint8_t>(value);
+  return true;
+}
+
+void printActiveAddress() {
+  Serial.printf("Active I2C address: 0x%02X (%s)\n",
+                activeAddress,
+                activeAddress == 0x76 ? "SDO=GND" : "SDO=VDDIO");
+}
+
 void printHelp() {
   Serial.println();
   cli::printHelpHeader("BME280 CLI Help");
@@ -1329,10 +1393,13 @@ void printHelp() {
   cli::printHelpItem("help / ?", "Show this help");
   cli::printHelpItem("version / ver", "Print firmware and library version info");
   cli::printHelpItem("scan", "Scan I2C bus");
+  cli::printHelpItem("addr [0x76|0x77]", "Show or select diagnostic I2C address");
   cli::printHelpItem("begin", "Run begin() with the default example config");
   cli::printHelpItem("read", "Request and display measurement");
-  cli::printHelpItem("raw", "Show last raw ADC sample");
-  cli::printHelpItem("comp", "Show last compensated sample");
+  cli::printHelpItem("force", "Trigger one forced-mode measurement");
+  cli::printHelpItem("normal on/off", "Enable normal mode or return to sleep");
+  cli::printHelpItem("raw", "Show cached raw ADC sample and validity flags");
+  cli::printHelpItem("comp", "Show cached compensated sample and validity flags");
   cli::printHelpItem("data", "Burst-read and decode live data registers");
   cli::printHelpItem("measuring", "Show measuring flag");
   cli::printHelpItem("timing", "Show measurement and cycle timing estimates");
@@ -1340,17 +1407,17 @@ void printHelp() {
   cli::printHelpSection("Configuration");
   cli::printHelpItem("mode [sleep|forced|normal]", "Set or show operating mode");
   cli::printHelpItem("osrs [t|p|h <0..5>]", "Set or show oversampling");
-  cli::printHelpItem("filter [0..4]", "Set or show IIR filter");
+  cli::printHelpItem("filter [0..4]", "Set or show IIR filter (temperature/pressure only)");
   cli::printHelpItem("standby [0..7]", "Set or show standby time");
   cli::printHelpItem("cfg / settings", "Show chip and internal settings");
   cli::printHelpItem("calib [raw]", "Show cached or raw calibration");
   cli::printHelpItem("status", "Read status register");
-  cli::printHelpItem("chipid", "Read chip ID");
+  cli::printHelpItem("id / chipid", "Read chip ID");
   cli::printHelpItem("reset", "Soft reset device");
 
   cli::printHelpSection("Registers");
   cli::printHelpItem("reg <addr>", "Read 8-bit register (hex address)");
-  cli::printHelpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic only; may desync cached config)");
+  cli::printHelpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic; config/reset writes mark dirty)");
 
   cli::printHelpSection("Diagnostics");
   cli::printHelpItem("drv", "Show driver state and health");
@@ -1360,7 +1427,7 @@ void printHelp() {
   cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   cli::printHelpItem("stress [N]", "Run N measurement cycles");
   cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles");
-  cli::printHelpItem("selftest", "Run safe command self-test report");
+  cli::printHelpItem("selftest", "Run safe command smoke-test report");
 }
 
 void printVersionInfo() {
@@ -1398,6 +1465,32 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "addr") {
+    printActiveAddress();
+    return;
+  }
+
+  if (cmd.startsWith("addr ")) {
+    String arg = cmd.substring(5);
+    arg.trim();
+    uint8_t address = 0;
+    if (!parseI2cAddress(arg, address)) {
+      LOGW("Usage: addr 0x76|0x77");
+      return;
+    }
+
+    LOGI("Selecting BME280 address 0x%02X", address);
+    cancelPending();
+    device.end();
+    activeAddress = address;
+    BME280::Status st = device.begin(makeDefaultConfig());
+    printStatus(st);
+    if (st.ok()) {
+      printDriverHealth();
+    }
+    return;
+  }
+
   if (cmd == "begin") {
     LOGI("Initializing BME280...");
     cancelPending();
@@ -1416,6 +1509,32 @@ void processCommand(const String& cmdLine) {
     if (st.code != BME280::Err::IN_PROGRESS) {
       printStatus(st);
     }
+    return;
+  }
+
+  if (cmd == "force") {
+    cancelPending();
+    BME280::Status st = device.setMode(BME280::Mode::FORCED);
+    if (st.ok()) {
+      st = scheduleMeasurement();
+    }
+    if (st.code != BME280::Err::IN_PROGRESS) {
+      printStatus(st);
+    }
+    return;
+  }
+
+  if (cmd == "normal") {
+    printModeSettings();
+    return;
+  }
+
+  if (cmd == "normal on" || cmd == "normal off") {
+    cancelPending();
+    const BME280::Mode mode =
+        (cmd == "normal on") ? BME280::Mode::NORMAL : BME280::Mode::SLEEP;
+    BME280::Status st = device.setMode(mode);
+    printStatus(st);
     return;
   }
 
@@ -1585,10 +1704,14 @@ void processCommand(const String& cmdLine) {
     const bool imUpdate = (status & BME280::cmd::MASK_STATUS_IM_UPDATE) != 0;
     Serial.printf("Status: 0x%02X (measuring=%d, im_update=%d)\n",
                   status, measuring ? 1 : 0, imUpdate ? 1 : 0);
+    Serial.printf("Driver: state=%s online=%s dirty=%s\n",
+                  stateToStr(device.state()),
+                  device.isOnline() ? "true" : "false",
+                  device.hardwareConfigDirty() ? "true" : "false");
     return;
   }
 
-  if (cmd == "chipid") {
+  if (cmd == "chipid" || cmd == "id") {
     uint8_t id = 0;
     BME280::Status st = device.readChipId(id);
     if (!st.ok()) {
@@ -1688,6 +1811,7 @@ void processCommand(const String& cmdLine) {
     Serial.println("  Health changes:");
     printHealthDiff(before, after);
     printDriverHealth();
+    Serial.println("  Note: successful recover invalidates cached samples; run read before using them.");
     return;
   }
 
@@ -1765,6 +1889,7 @@ void setup() {
     return;
   }
   LOGI("I2C initialized (SDA=%d, SCL=%d)", board::I2C_SDA, board::I2C_SCL);
+  LOGI("BME280 diagnostic address 0x%02X", activeAddress);
 
   bus_diag::scan();
 

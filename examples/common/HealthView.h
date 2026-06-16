@@ -55,6 +55,7 @@ struct Snapshot {
   uint8_t consecutiveFailures = 0;
   uint32_t totalFailures = 0;
   uint32_t totalSuccess = 0;
+  bool hardwareConfigDirty = false;
 
   void capture(const DriverT& driver) {
     state = static_cast<int>(driver.state());
@@ -62,6 +63,7 @@ struct Snapshot {
     consecutiveFailures = driver.consecutiveFailures();
     totalFailures = driver.totalFailures();
     totalSuccess = driver.totalSuccess();
+    hardwareConfigDirty = driver.hardwareConfigDirty();
   }
 };
 
@@ -75,12 +77,15 @@ inline void printHealthView(const DriverT& driver) {
                            static_cast<float>(total))
                         : 0.0f;
 
-  Serial.printf("Health: state=%s%s%s online=%s%s%s consec=%s%u%s ok=%s%lu%s fail=%s%lu%s rate=%s%.1f%%%s\n",
+  Serial.printf("Health: state=%s%s%s online=%s%s%s dirty=%s%s%s consec=%s%u%s ok=%s%lu%s fail=%s%lu%s rate=%s%.1f%%%s\n",
                 failureColor(static_cast<uint32_t>(snap.consecutiveFailures)),
                 stateToString(snap.state),
                 colorReset(),
                 boolColor(snap.online),
                 snap.online ? "true" : "false",
+                colorReset(),
+                snap.hardwareConfigDirty ? colorYellow() : colorGreen(),
+                snap.hardwareConfigDirty ? "true" : "false",
                 colorReset(),
                 failureColor(static_cast<uint32_t>(snap.consecutiveFailures)),
                 static_cast<unsigned>(snap.consecutiveFailures),
@@ -119,6 +124,12 @@ inline void printHealthDiff(const Snapshot<DriverT>& before,
                   boolColor(after.online),
                   after.online ? "true" : "false",
                   colorReset());
+    changed = true;
+  }
+  if (before.hardwareConfigDirty != after.hardwareConfigDirty) {
+    Serial.printf("  Dirty: %s -> %s\n",
+                  before.hardwareConfigDirty ? "true" : "false",
+                  after.hardwareConfigDirty ? "true" : "false");
     changed = true;
   }
   if (before.consecutiveFailures != after.consecutiveFailures) {

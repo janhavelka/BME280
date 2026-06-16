@@ -14,7 +14,7 @@ enum class Err : uint8_t {
   I2C_ERROR,                 ///< I2C communication failure
   TIMEOUT,                   ///< Operation timed out
   INVALID_PARAM,             ///< Invalid parameter value
-  DEVICE_NOT_FOUND,          ///< Device not responding on I2C bus
+  DEVICE_NOT_FOUND,          ///< Definite address NACK / device absent on I2C bus
   CHIP_ID_MISMATCH,          ///< Chip ID != 0x60 (not a BME280)
   CALIBRATION_INVALID,       ///< Compensation data failed validation
   MEASUREMENT_NOT_READY,     ///< Sample not yet available
@@ -32,16 +32,23 @@ enum class Err : uint8_t {
 
 /// Status structure returned by all fallible operations
 struct Status {
-  Err code = Err::OK;
+  Err code = Err::OK;          ///< Repository-standard error code.
   int32_t detail = 0;        ///< Implementation-specific detail (e.g., I2C error code)
   const char* msg = "";      ///< Static string describing the error
 
+  /// Create an OK status.
   constexpr Status() = default;
+
+  /// Create a status with explicit fields.
+  /// @param c Error code.
+  /// @param d Implementation-specific detail value.
+  /// @param m Static status message.
   constexpr Status(Err c, int32_t d, const char* m) : code(c), detail(d), msg(m) {}
   
   /// @return true if operation succeeded
   constexpr bool ok() const { return code == Err::OK; }
 
+  /// @param err Error code to compare against.
   /// @return true if the status matches the provided error code
   constexpr bool is(Err err) const { return code == err; }
 
@@ -52,9 +59,14 @@ struct Status {
   explicit constexpr operator bool() const { return ok(); }
 
   /// Create a success status
+  /// @return Success status with Err::OK.
   static constexpr Status Ok() { return Status{Err::OK, 0, "OK"}; }
   
   /// Create an error status
+  /// @param err Error code.
+  /// @param message Static error string.
+  /// @param detailCode Optional implementation-specific detail code.
+  /// @return Status carrying the supplied error fields.
   static constexpr Status Error(Err err, const char* message, int32_t detailCode = 0) {
     return Status{err, detailCode, message};
   }

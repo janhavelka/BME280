@@ -9,13 +9,150 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `Config::nvmReadyTimeoutMs` and `SettingsSnapshot::nvmReadyTimeoutMs` for explicit NVM-ready deadline visibility.
+- Chunked job APIs for integration owners that need bounded transfer budgets:
+  `startInitJob()`, `startForcedMeasurementJob()`, `startApplyConfigJob()`,
+  `startRecoveryJob()`, and `pollJob(nowMs, maxInstructions)`.
 - TunnelMonitor fit report with synchronous API classification and optional ENV absence-vs-fault mapping notes.
-- Native coverage for NVM-ready single-read `BUSY`/wrap-safe timeout behavior, chip-ID transport error preservation, calibration-invalid begin failures, and I2C timeout propagation.
+- Native coverage for staged init/apply/forced/recovery jobs, NVM-ready single-read `BUSY`/wrap-safe timeout behavior, chip-ID transport error preservation, calibration-invalid begin failures, and I2C timeout propagation.
 
 ### Changed
 - Synchronous NVM readiness checks now perform one raw status read per call and return visible `BUSY`, `TIMEOUT`, or detailed transport errors instead of hiding a tight polling loop.
 - `begin()`, `probe()`, and staged init preserve chip-ID transport faults; only address NACK maps to `DEVICE_NOT_FOUND`.
-- Arduino timing fallback is conditional so the core can build without `Arduino.h` when `Config::nowMs` is supplied.
+- Core time fallback is routed through private `PlatformTime` and remains inert; production timestamps and deadlines should come from `Config::nowMs`.
+
+## [1.6.0] - 2026-06-02
+
+This is the direct public successor to `v1.5.0`. It is the single release entry
+for all changes accumulated since `v1.5.0`.
+
+### Added
+- Formal pre-HIL evidence reporting for the default runner sequence, captured
+  command arguments, firmware/library/git/worktree metadata, and operator
+  sign-off fields.
+- Native tests pinning diagnostic raw-write dirty-state behavior, health-session
+  counter reset semantics, no-clock NVM polling fallback, and sample-cache
+  invalidation after recovery/reset.
+- Production shared-bus integration guide covering application-owned I2C,
+  locking, timeout, scheduling, recovery, and HIL evidence expectations.
+- Focused HIL runner parser tests for complete, delayed, and truncated
+  calibration/settings evidence.
+- Dirty hardware-configuration diagnostics with `hardwareConfigDirty()`,
+  `hardwareConfigDirtyError()`, and matching `SettingsSnapshot` fields.
+- `lastMeasurementStatus()` for checking scheduler/capture failures after
+  `tick()`.
+- `tools/check_package_contents.py` for validating generated PlatformIO
+  archives.
+- `tools/run_i2c_hil.py`, `tools/check_hil_contract.py`, an HIL runbook, and a
+  target evidence template for future serial hardware validation.
+- Hardware validation matrix and maintained hardening summary documentation.
+- ESP-IDF component metadata for building the framework-neutral core with
+  `idf_component_register`.
+- ESP-IDF basic example with an application-owned `i2c_master` bus/device and
+  transport callbacks.
+- Native ESP-IDF CLI preserving Arduino command coverage without Arduino
+  compatibility facades.
+- ESP-IDF example contract check covering native IDF glue, forbidden Arduino
+  compatibility tokens, component metadata, and required command coverage.
+- Consolidated ESP-IDF port documentation in `docs/IDF_PORT.md`, including
+  component/example structure, adapter contract, validation commands, and
+  remaining hardware checks.
+- Per-channel validity flags on `Measurement`, `RawSample`, and
+  `CompensatedSample`, plus named Bosch skipped-sentinel constants.
+- Native golden-vector coverage for calibration parsing, H4/H5 nibble packing,
+  raw burst reconstruction, fixed-point compensation, humidity clamps, skipped
+  sentinels, and pressure denominator guarding.
+
+### Changed
+- Default HIL guidance now records forced-mode sleep-return evidence with
+  post-`force` `reg 0xF4`, `status`, and `read` commands before any
+  normal-mode sequence.
+- Tightened Doxygen and release documentation so the managed synchronous
+  lifecycle, release steps, validation commands, and hardware-validation
+  boundary use the same language across README, AGENTS, and maintained docs.
+- CI now runs the HIL contract checker alongside the CLI and ESP-IDF example
+  contract checks without requiring physical hardware.
+- Package validation now requires the ESP-IDF example transport files used by
+  the packaged native IDF example.
+- Package validation now checks the archive matching `library.json` and verifies
+  packaged `library.json`, `idf_component.yml`, and `Version.h` agree on the
+  release version.
+- Diagnostic raw writes to BME280 control/config/reset registers now mark
+  `hardwareConfigDirty()` and document `recover()`, `begin()`, or a successful
+  `softReset()` as the resync path.
+- Health counter documentation now describes counters as current health-session
+  totals since the most recent `begin()`, matching existing reset behavior.
+- NVM polling documentation now clarifies that the millisecond deadline requires
+  an advancing `Config::nowMs`; the framework-neutral fallback is bounded by
+  poll count.
+- Successful `recover()` now invalidates cached samples after a complete resync
+  so pre-recovery data cannot be reused accidentally.
+- Doxygen inputs now include the production shared-bus guide while excluding
+  local/generated artifacts and source-extraction directories.
+- Release documentation now removes prompt-scoped audit, phase, and merge-gate
+  reports from tracked docs; durable conclusions remain in the maintained docs
+  and release notes.
+- HIL runner `cfg` and cached `calib` evidence now waits for final command
+  completion tokens with bounded command windows so long multi-line serial
+  output is not split across command boundaries.
+- HIL serial reads no longer rely only on `in_waiting`; the runner performs a
+  bounded fallback read before draining available bytes.
+- Core timing guard now rejects Arduino and ESP-IDF framework headers in
+  core/public headers and `src/`.
+- README and ESP-IDF port documentation now describe the native-IDF
+  component/example flow and full Arduino/ESP-IDF CLI parity.
+- `library.json` now advertises both Arduino and ESP-IDF framework support.
+- Native ESP-IDF example timing now uses an explicitly named `currentMs()`
+  helper instead of an Arduino-style `millis()` shim; the IDF example contract
+  rejects future `millis()` / `delay()` timing regressions.
+- Successful typed configuration changes now invalidate cached samples so old
+  values are not reused under a new measurement configuration.
+- Diagnostic CLIs now include address selection, chip-ID/register checks,
+  reset/recover/selftest/stress commands, and clearer health output for HIL
+  evidence.
+- Public documentation was consolidated around maintained user-facing docs;
+  temporary phase and prompt reports were removed from published Doxygen inputs
+  or superseded by maintained docs.
+- Old prompt and split ESP-IDF implementation notes were removed after their
+  useful content was folded into the maintained README, IDF port note, hardening
+  summary, and HIL docs.
+- Generated HIL logs and Doxygen HTML output are ignored by git.
+- Supporting documentation now has a maintained `docs/README.md` map, clearer
+  hardware-evidence policy, and updated wording for the merged hardening work.
+
+### Removed
+- Removed the stale ESP-IDF Arduino compatibility shim and documentation that
+  described compiling Arduino CLI source into IDF examples.
+- Removed superseded industry-readiness intermediate reports after their useful
+  content was folded into the hardening summary, README, changelog, HIL
+  runbook, and hardware matrix.
+
+### Migration Notes
+- Users upgrading from `v1.5.0` must check `temperatureValid`,
+  `pressureValid`, and `humidityValid` before using measurement fields.
+  Skipped or invalid channels leave numeric fields at zero.
+- `Measurement`, `RawSample`, `CompensatedSample`, and `SettingsSnapshot` have
+  changed public layout since `v1.5.0`; rebuild dependent firmware and avoid
+  assuming binary compatibility across versions.
+- `BME280::BME280` instances are intentionally non-copyable and non-movable.
+  Keep a single owned instance and pass references or pointers.
+- Use typed setters for normal configuration. `writeRegister()` and
+  `writeRegisters()` are diagnostic raw access; writes to reset/control/config
+  registers mark dirty state and require `recover()`, `begin()`, or a
+  successful `softReset()` to resync.
+- After successful `recover()` or any `softReset()` attempt, request a fresh
+  measurement before using cached sample data.
+- Named Bosch skipped-sentinel constants describe skipped raw channels; callers
+  should use the validity flags rather than treating all-zero numeric outputs as
+  valid readings.
+- PlatformIO Arduino builds do not imply local pure ESP-IDF `idf.py` validation.
+  Record exact `idf.py` command results before claiming local pure ESP-IDF
+  builds.
+
+### Validation Boundary
+- Software checks, metadata synchronization, package validation, and HIL
+  contract checks were run for this release. No physical BME280 HIL,
+  environmental accuracy validation, bench fault validation, or long-soak
+  hardware validation is claimed by this release.
 
 ## [1.5.0] - 2026-05-14
 
@@ -112,7 +249,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Unified bringup helper layer under `examples/common/*` (`BusDiag`, `CliShell`, `HealthView`, `TransportAdapter`).
-- `docs/IDF_PORT.md` and `docs/UNIFICATION_STANDARD.md` as baseline portability/unification references.
+- `docs/IDF_PORT.md` and `docs/UNIFICATION_STANDARD.md` as baseline portability/unification references. `docs/UNIFICATION_STANDARD.md` was later superseded by the maintained README, AGENTS, and IDF/HIL docs.
 - CLI/timing contract validation scripts in `tools/`.
 
 ### Changed
@@ -122,21 +259,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.0] - 2026-02-22
 
 ### Added
-- `getStandbyTimeMs()` — returns configured standby interval in milliseconds (rounded up)
-- `estimateNormalCycleMs()` — returns full normal-mode cycle time (measurement + standby)
+- `getStandbyTimeMs()` - returns configured standby interval in milliseconds (rounded up)
+- `estimateNormalCycleMs()` - returns full normal-mode cycle time (measurement + standby)
 
 ### Fixed
-- **`tick()` used `millis()` directly** — broke determinism; now uses only the caller-supplied `nowMs` parameter
-- **`softReset()` polling used tracked reads** — during POR (~2 ms) the BME280 may NACK, which inflated health-failure counters and could abort reset prematurely; now uses raw reads and tolerates transient I2C errors
-- **`setFilter()`/`setStandby()` masked original error** — if config-register write failed and restore-to-original-mode also failed, the restore error was returned instead of the root cause; restore is now best-effort
-- **`end()` didn't put device to sleep** — device continued measuring in normal mode after shutdown; now sends best-effort sleep command via raw I2C before clearing state
-- **`_compensate()` didn't handle skipped channels** — running compensation on sentinel ADC values when `osrsT/P/H == SKIP` produced garbage; now guards each channel and returns `COMPENSATION_ERROR` if temperature is skipped while P/H are enabled
-- **`recover()` didn't re-apply configuration** — after a power glitch, device registers revert to defaults; `recover()` now calls `_applyConfig()` after successful probe
+- **`tick()` used `millis()` directly** - broke determinism; now uses only the caller-supplied `nowMs` parameter
+- **`softReset()` polling used tracked reads** - during POR (~2 ms) the BME280 may NACK, which inflated health-failure counters and could abort reset prematurely; now uses raw reads and tolerates transient I2C errors
+- **`setFilter()`/`setStandby()` masked original error** - if config-register write failed and restore-to-original-mode also failed, the restore error was returned instead of the root cause; restore is now best-effort
+- **`end()` didn't put device to sleep** - device continued measuring in normal mode after shutdown; now sends best-effort sleep command via raw I2C before clearing state
+- **`_compensate()` didn't handle skipped channels** - running compensation on sentinel ADC values when `osrsT/P/H == SKIP` produced garbage; now guards each channel and returns `COMPENSATION_ERROR` if temperature is skipped while P/H are enabled
+- **`recover()` didn't re-apply configuration** - after a power glitch, device registers revert to defaults; `recover()` now calls `_applyConfig()` after successful probe
 
 ## [1.0.0] - 2026-01-20
 
 ### Added
-- **First stable release** 🎉
+- **First stable release**
 - Complete BME280 driver with Bosch compensation formulas (32-bit/64-bit)
 - Injected I2C transport architecture (no Wire dependency in library)
 - Health monitoring with automatic state tracking (READY/DEGRADED/OFFLINE)
@@ -163,10 +300,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/janhavelka/BME280/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/janhavelka/BME280/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/janhavelka/BME280/compare/v1.2.2...v1.3.0
+[1.2.2]: https://github.com/janhavelka/BME280/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/janhavelka/BME280/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/janhavelka/BME280/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/janhavelka/BME280/compare/v1.1.0...v1.1.1

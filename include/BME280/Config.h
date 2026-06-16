@@ -8,7 +8,12 @@
 
 namespace BME280 {
 
-/// I2C write callback signature
+/// I2C write callback signature.
+///
+/// The application owns bus handles, locking, pins, and timeout policy. This
+/// callback is invoked synchronously from task-context driver APIs and must
+/// return within the supplied timeout. It must not recursively call into the
+/// same BME280 driver instance.
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
@@ -18,7 +23,12 @@ namespace BME280 {
 using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
                               uint32_t timeoutMs, void* user);
 
-/// I2C write-then-read callback signature
+/// I2C write-then-read callback signature.
+///
+/// The application owns bus handles, locking, pins, and timeout policy. This
+/// callback is invoked synchronously from task-context driver APIs and must
+/// return within the supplied timeout. It must not recursively call into the
+/// same BME280 driver instance.
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
@@ -32,6 +42,8 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
                                   void* user);
 
 /// Millisecond timestamp callback.
+///
+/// requestMeasurement() and tick(nowMs) must use the same monotonic timebase.
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
 using NowMsFn = uint32_t (*)(void* user);
@@ -49,17 +61,17 @@ enum class Oversampling : uint8_t {
 /// Measurement mode
 enum class Mode : uint8_t {
   SLEEP = 0,  ///< No measurements, lowest power
-  FORCED = 1, ///< Single measurement, returns to sleep
+  FORCED = 1, ///< On-demand single measurement; requestMeasurement() triggers conversion
   NORMAL = 3  ///< Continuous measurements
 };
 
 /// IIR filter coefficient
 enum class Filter : uint8_t {
-  OFF = 0,
-  X2 = 1,
-  X4 = 2,
-  X8 = 3,
-  X16 = 4
+  OFF = 0, ///< Filter disabled
+  X2 = 1,  ///< 2x filter coefficient
+  X4 = 2,  ///< 4x filter coefficient
+  X8 = 3,  ///< 8x filter coefficient
+  X16 = 4  ///< 16x filter coefficient
 };
 
 /// Standby time between measurements (normal mode)
@@ -74,19 +86,27 @@ enum class Standby : uint8_t {
   MS_20 = 7    ///< 20 ms
 };
 
-/// Configuration for BME280 driver
+/// Configuration for BME280 driver.
+///
+/// Driver instances are non-owning: callbacks and user pointers must remain
+/// valid for the lifetime of the driver configuration.
+/// The application owns shared-bus serialization, timeout policy, recovery, and
+/// all platform resources; the core driver never resets or reconfigures the bus.
+///
+/// `nowMs` is optional for `begin()` but required for measurement scheduling.
+/// `tick(nowMs)` and `nowMs(user)` should use the same monotonic clock.
 struct Config {
   // === I2C Transport (required) ===
   I2cWriteFn i2cWrite = nullptr;        ///< I2C write function pointer
   I2cWriteReadFn i2cWriteRead = nullptr; ///< I2C write-read function pointer
   void* i2cUser = nullptr;               ///< User context for callbacks
 
-  // === Timing Hooks (optional) ===
-  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source
+  // === Timing Hooks (optional for begin, required for measurement scheduling) ===
+  NowMsFn nowMs = nullptr;               ///< Monotonic millisecond source; required by requestMeasurement()
   void* timeUser = nullptr;              ///< User context for timing hook
   
   // === Device Settings ===
-  uint8_t i2cAddress = 0x76;             ///< 0x76 (SDO=GND) or 0x77 (SDO=VDD)
+  uint8_t i2cAddress = 0x76;             ///< 0x76 (SDO=GND) or 0x77 (SDO=VDDIO)
   uint32_t i2cTimeoutMs = 50;            ///< I2C transaction timeout in ms
   uint32_t nvmReadyTimeoutMs = 10;        ///< NVM ready timeout after POR/reset in ms
 

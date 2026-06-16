@@ -1,7 +1,7 @@
 {
   "name": "BME280",
-  "version": "1.5.0",
-  "description": "Production-grade BME280 environmental sensor driver.",
+  "version": "1.6.0",
+  "description": "Production-oriented BME280 environmental sensor driver.",
   "keywords": [
     "bme280",
     "sensor",
@@ -11,6 +11,8 @@
     "i2c",
     "esp32",
     "arduino",
+    "espidf",
+    "esp-idf",
     "platformio"
   ],
   "authors": [
@@ -33,7 +35,8 @@
   "license": "MIT",
   "homepage": "https://www.thymos.cz",
   "frameworks": [
-    "arduino"
+    "arduino",
+    "espidf"
   ],
   "platforms": [
     "espressif32"

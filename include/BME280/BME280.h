@@ -1,5 +1,10 @@
 /// @file BME280.h
-/// @brief Main driver class for BME280
+/// @brief Framework-neutral BME280 I2C driver API.
+///
+/// The core driver owns no I2C bus, pins, locks, reset GPIOs, or platform
+/// timers. Applications inject transport and time callbacks through
+/// BME280::Config. Public APIs are task-context APIs; driver instances are not
+/// internally thread-safe and are not ISR-safe.
 #pragma once
 
 #include <cstddef>
@@ -49,13 +54,19 @@ struct Measurement {
   float temperatureC = 0.0f; ///< Temperature in Celsius
   float pressurePa = 0.0f;   ///< Pressure in Pascals
   float humidityPct = 0.0f;  ///< Relative humidity in percent
+  bool temperatureValid = false; ///< True when temperature was measured and compensated
+  bool pressureValid = false;    ///< True when pressure was measured and compensated
+  bool humidityValid = false;    ///< True when humidity was measured and compensated
 };
 
 /// Raw ADC values
 struct RawSample {
-  int32_t adcT = 0; ///< Raw temperature ADC (20-bit)
-  int32_t adcP = 0; ///< Raw pressure ADC (20-bit)
-  int32_t adcH = 0; ///< Raw humidity ADC (16-bit)
+  int32_t adcT = 0; ///< Raw temperature ADC (20-bit; 0x80000 when skipped)
+  int32_t adcP = 0; ///< Raw pressure ADC (20-bit; 0x80000 when skipped)
+  int32_t adcH = 0; ///< Raw humidity ADC (16-bit; 0x8000 when skipped)
+  bool temperatureValid = false; ///< True when adcT is a measured value
+  bool pressureValid = false;    ///< True when adcP is a measured value
+  bool humidityValid = false;    ///< True when adcH is a measured value
 };
 
 /// Fixed-point compensated values (no float)
@@ -63,6 +74,9 @@ struct CompensatedSample {
   int32_t tempC_x100 = 0;        ///< Temperature * 100 (e.g., 2534 = 25.34 degC)
   uint32_t pressurePa = 0;       ///< Pressure in Pa
   uint32_t humidityPct_x1024 = 0; ///< Humidity * 1024 (Q22.10 format)
+  bool temperatureValid = false; ///< True when tempC_x100 is usable
+  bool pressureValid = false;    ///< True when pressurePa is usable
+  bool humidityValid = false;    ///< True when humidityPct_x1024 is usable
 };
 
 /// Cached calibration coefficients from the device
@@ -92,8 +106,8 @@ struct Calibration {
 
 /// Raw calibration register blocks
 struct CalibrationRaw {
-  uint8_t tp[cmd::REG_CALIB_TP_LEN] = {}; ///< Raw 0x88..0xA1 temperature/pressure block
-  uint8_t h1 = 0;                         ///< Raw 0xA1 humidity byte
+  uint8_t tp[cmd::REG_CALIB_TP_LEN] = {}; ///< Raw 0x88..0xA1 block; last byte is dig_H1
+  uint8_t h1 = 0;                         ///< Raw 0xA1 humidity byte, duplicated for clarity
   uint8_t h[cmd::REG_CALIB_H_LEN] = {};   ///< Raw 0xE1..0xE7 humidity block
 };
 
@@ -112,9 +126,12 @@ struct SettingsSnapshot {
   Oversampling osrsH = Oversampling::SKIP;    ///< Humidity oversampling
   Filter filter = Filter::OFF;                ///< IIR filter coefficient
   Standby standby = Standby::MS_0_5;         ///< Standby time for normal mode
-  bool measurementRequested = false;          ///< True after forced-mode trigger
-  bool measurementReady = false;              ///< True when data registers are ready
+  bool measurementRequested = false;          ///< True while the scheduler has a pending capture
+  bool measurementReady = false;              ///< True when an unread cached measurement is ready
+  Status lastMeasurementStatus = Status::Ok(); ///< Last request/tick status for measurement scheduling
   bool hasSample = false;                     ///< True when a compensated sample is cached
+  bool hardwareConfigDirty = false;           ///< True when hardware config may differ from cache
+  Status hardwareConfigDirtyError = Status::Ok(); ///< First error that made config state uncertain
   uint32_t measurementStartMs = 0;            ///< Timestamp of last measurement trigger
   uint32_t sampleTimestampMs = 0;             ///< Timestamp of the last cached sample
   int32_t tFine = 0;                          ///< Last t_fine intermediate value
@@ -123,29 +140,78 @@ struct SettingsSnapshot {
   Calibration calibration = {};               ///< Cached compensation coefficients
 };
 
-/// BME280 driver class
+/// BME280 driver class.
+///
+/// Instances are not internally thread-safe and public APIs are not ISR-safe.
+/// Applications sharing a driver or I2C bus across tasks must serialize access
+/// externally. Transport callbacks must not recursively call into the same
+/// driver instance.
+///
+/// Device contract:
+/// - Supported I2C addresses are 0x76 and 0x77.
+/// - begin() and probe() verify BME280 identity by reading chip ID 0x60.
+/// - The application owns I2C bus setup, pins, pull-ups, locks, reset/power
+///   control, timeout policy, and the monotonic clock used by Config::nowMs.
+/// - Multi-register configuration failures are reported through
+///   hardwareConfigDirty() and hardwareConfigDirtyError().
 class BME280 {
 public:
+  /// Construct an uninitialized driver instance.
+  BME280() = default;
+
+  /// Destroy the driver object. Does not perform I2C; call end() for cleanup.
+  ~BME280() = default;
+
+  /// Driver instances are not copyable because they hold runtime state.
+  /// @param other Other driver instance.
+  BME280(const BME280& other) = delete;
+
+  /// Driver instances are not copy-assignable because they hold runtime state.
+  /// @param other Other driver instance.
+  /// @return Reference to this driver.
+  BME280& operator=(const BME280& other) = delete;
+
+  /// Driver instances are not movable because transport callbacks are non-owning.
+  /// @param other Other driver instance.
+  BME280(BME280&& other) = delete;
+
+  /// Driver instances are not move-assignable because transport callbacks are non-owning.
+  /// @param other Other driver instance.
+  /// @return Reference to this driver.
+  BME280& operator=(BME280&& other) = delete;
+
   // =========================================================================
   // Lifecycle
   // =========================================================================
   
-  /// Initialize the driver with configuration
+  /// Initialize the driver with configuration.
+  /// Verifies chip ID 0x60, waits for NVM copy to finish, reads calibration,
+  /// validates coefficients, and applies cached config. Call after device POR
+  /// and I2C bus readiness; address NACK maps to DEVICE_NOT_FOUND while other
+  /// transport errors are preserved. Starts a new health session and resets
+  /// tracked I2C counters. NVM polling is always bounded by poll count; the
+  /// millisecond deadline is real only when Config::nowMs supplies an
+  /// advancing monotonic clock.
   /// @param config Configuration including transport callbacks
   /// @return Status::Ok() on success, error otherwise
   Status begin(const Config& config);
   
-  /// Process pending operations (call regularly from loop)
-  /// @param nowMs Current timestamp in milliseconds
+  /// Process pending measurement operations (call regularly from task context).
+  /// @param nowMs Current monotonic timestamp in milliseconds from the same
+  ///              timebase as Config::nowMs
+  /// Measurement errors are retained in lastMeasurementStatus() and
+  /// SettingsSnapshot::lastMeasurementStatus because tick() itself is void.
   void tick(uint32_t nowMs);
   
   /// Shutdown the driver, put the sensor to sleep best-effort, and clear runtime state
   void end();
 
   /// Check if begin() completed successfully and end() has not been called
+  /// @return true when the driver has completed begin() and has not been ended
   bool isInitialized() const { return _initialized; }
 
   /// Get the cached configuration snapshot currently owned by the driver
+  /// @return Const reference to the active driver configuration copy
   const Config& getConfig() const { return _config; }
 
   // =========================================================================
@@ -188,11 +254,20 @@ public:
   // Diagnostics
   // =========================================================================
   
-  /// Check if device is present on the bus (no health tracking)
-  /// @return Status::Ok() if device responds, error otherwise
+  /// Check if device is present on the bus (raw I2C, no health tracking).
+  /// Address NACK maps to DEVICE_NOT_FOUND; other transport errors and chip-ID
+  /// mismatch are preserved. Does not clear OFFLINE.
+  /// Requires a successful begin() so the transport callbacks and address are
+  /// configured.
+  /// @return Status::Ok() if device responds with chip ID 0x60, error otherwise
   Status probe();
   
-  /// Attempt to recover from DEGRADED/OFFLINE state by probing and reapplying cached config
+  /// Attempt to recover from DEGRADED/OFFLINE state by verifying chip ID,
+  /// waiting for NVM copy, reloading calibration, validating it, and reapplying
+  /// cached config.
+  /// A successful recovery invalidates cached raw/compensated samples and any
+  /// pending measurement state; a failed recovery leaves pre-existing cached
+  /// samples unchanged.
   /// @return Status::Ok() if device now responsive, error otherwise
   Status recover();
 
@@ -200,18 +275,38 @@ public:
   /// @param[out] out Snapshot to fill
   /// @return Status::Ok() always
   Status getSettings(SettingsSnapshot& out) const;
+
+  /// True when a failed config/resync/reset operation may have left sensor
+  /// registers different from the cached settings. Cleared only by a complete
+  /// successful config resync in begin(), recover(), or softReset().
+  /// @return true when hardware register state needs a full resync
+  bool hardwareConfigDirty() const { return _hardwareConfigDirty; }
+
+  /// First transport/status error that made hardware config state uncertain.
+  /// @return Root-cause status for hardwareConfigDirty(), or Status::Ok()
+  Status hardwareConfigDirtyError() const { return _hardwareConfigDirtyError; }
+
+  /// Last measurement scheduler/capture status recorded by requestMeasurement()
+  /// or tick(). This is Status::Ok() after a sample is captured, IN_PROGRESS
+  /// while a request is pending, and the original error when polling, raw read,
+  /// or compensation fails.
+  /// @return Last measurement scheduling or capture status
+  Status lastMeasurementStatus() const { return _lastMeasurementStatus; }
   
   // =========================================================================
   // Driver State
   // =========================================================================
   
   /// Get current driver state
+  /// @return Current health/lifecycle state
   DriverState state() const { return _driverState; }
 
   /// Alias for state() used by shared diagnostics.
+  /// @return Current health/lifecycle state
   DriverState driverState() const { return state(); }
   
   /// Check if driver is ready for operations
+  /// @return true for READY or DEGRADED, false for UNINIT or OFFLINE
   bool isOnline() const { 
     return _driverState == DriverState::READY || 
            _driverState == DriverState::DEGRADED; 
@@ -222,41 +317,57 @@ public:
   // =========================================================================
   
   /// Timestamp of last successful I2C operation
+  /// @return Last successful tracked I2C timestamp in milliseconds, or 0
   uint32_t lastOkMs() const { return _lastOkMs; }
   
   /// Timestamp of last failed I2C operation
+  /// @return Last failed tracked I2C timestamp in milliseconds, or 0
   uint32_t lastErrorMs() const { return _lastErrorMs; }
   
   /// Most recent error status
+  /// @return Last tracked error status
   Status lastError() const { return _lastError; }
   
-  /// Consecutive failures since last success
+  /// Consecutive failures since last success.
+  /// Saturates at UINT8_MAX and resets to zero on tracked I2C success.
+  /// @return Consecutive tracked failures
   uint8_t consecutiveFailures() const { return _consecutiveFailures; }
   
-  /// Total failure count (lifetime)
+  /// Total tracked I2C failures in the current health session.
+  /// Saturates at UINT32_MAX and is reset by begin(); it does not wrap.
+  /// @return Tracked failure count since the most recent begin()
   uint32_t totalFailures() const { return _totalFailures; }
   
-  /// Total success count (lifetime)
+  /// Total tracked I2C successes in the current health session.
+  /// Saturates at UINT32_MAX and is reset by begin(); it does not wrap.
+  /// @return Tracked success count since the most recent begin()
   uint32_t totalSuccess() const { return _totalSuccess; }
   
   // =========================================================================
   // Measurement API
   // =========================================================================
   
-  /// Request a measurement (non-blocking)
+  /// Request a measurement (non-blocking).
   /// In FORCED mode: triggers measurement if idle.
   /// In NORMAL mode: waits one estimated normal cycle before reading, so the
   /// sample is fresh relative to the request.
-  /// Returns IN_PROGRESS if measurement started, BUSY if already measuring or OFFLINE
+  /// Returns IN_PROGRESS if a request is accepted or an already-running forced
+  /// conversion can be tracked, BUSY if a driver request is already pending or
+  /// the driver is OFFLINE, INVALID_CONFIG if Config::nowMs is missing, or
+  /// INVALID_PARAM in sleep mode.
+  /// @return Scheduling status
   Status requestMeasurement();
 
   /// Check if measurement is ready to read
+  /// @return true when getMeasurement() can consume a pending sample
   bool measurementReady() const { return _measurementReady; }
 
   /// True after at least one sample has been cached.
+  /// @return true when raw and compensated cached sample data exists
   bool hasSample() const { return _hasSample; }
 
   /// Timestamp of the last cached sample, or 0 if none exists.
+  /// @return Last cached sample timestamp in milliseconds
   uint32_t sampleTimestampMs() const { return _sampleTimestampMs; }
 
   /// Age of the cached sample in milliseconds.
@@ -266,24 +377,32 @@ public:
     return _hasSample ? (nowMs - _sampleTimestampMs) : 0;
   }
 
-  /// Get measurement result (float)
-  /// Returns MEASUREMENT_NOT_READY if not available
+  /// Get measurement result (float).
+  /// Returns MEASUREMENT_NOT_READY until an unread cached measurement is ready
   /// Clears ready flag after successful read
   /// Does not invalidate cached raw/fixed-point samples.
+  /// Numeric fields remain zero for skipped/invalid channels; check the
+  /// matching validity flag before using a channel.
+  /// @param[out] out Last cached compensated measurement as floats.
+  /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured.
   Status getMeasurement(Measurement& out);
 
   /// Get raw ADC values.
   /// @param[out] out Last cached raw ADC sample
   /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
+  /// Channels skipped by configuration or reported as Bosch skipped sentinels
+  /// have their validity flag set false.
   Status getRawSample(RawSample& out) const;
 
   /// Get fixed-point compensated values.
   /// @param[out] out Last cached fixed-point compensated sample
   /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
+  /// Numeric fields remain zero for skipped/invalid channels; check the
+  /// matching validity flag before using a channel.
   Status getCompensatedSample(CompensatedSample& out) const;
 
   /// Get cached calibration coefficients.
-  /// @param[out] out Cached coefficients read during begin() or softReset()
+  /// @param[out] out Cached coefficients read during begin(), recover(), or softReset()
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getCalibration(Calibration& out) const;
 
@@ -298,80 +417,171 @@ public:
 
   /// Set operating mode (SLEEP, FORCED, NORMAL).
   /// FORCED is an on-demand policy and does not trigger a conversion until
-  /// requestMeasurement() is called.
+  /// requestMeasurement() is called. A successful mode change invalidates the
+  /// cached sample.
+  /// @param mode New operating mode
+  /// @return Status::Ok() on success, error otherwise
   Status setMode(Mode mode);
 
   /// Get current mode
+  /// @param[out] out Cached mode
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getMode(Mode& out) const;
 
   /// Set oversampling for temperature.
-  /// Temperature must be enabled when pressure or humidity is enabled.
+  /// Temperature must be enabled when pressure or humidity is enabled. A
+  /// successful change invalidates the cached sample.
+  /// @param osrs New temperature oversampling
+  /// @return Status::Ok() on success, error otherwise
   Status setOversamplingT(Oversampling osrs);
 
   /// Set oversampling for pressure.
-  /// Temperature must be enabled when pressure is enabled.
+  /// Temperature must be enabled when pressure is enabled. A successful change
+  /// invalidates the cached sample.
+  /// @param osrs New pressure oversampling
+  /// @return Status::Ok() on success, error otherwise
   Status setOversamplingP(Oversampling osrs);
 
   /// Set oversampling for humidity.
-  /// Temperature must be enabled when humidity is enabled.
+  /// Temperature must be enabled when humidity is enabled. The hardware
+  /// sequence writes ctrl_hum first, then ctrl_meas to latch the humidity
+  /// setting. A successful change invalidates the cached sample.
+  /// @param osrs New humidity oversampling
+  /// @return Status::Ok() on success, error otherwise
   Status setOversamplingH(Oversampling osrs);
 
-  /// Set IIR filter coefficient
+  /// Set IIR filter coefficient. The driver verifies the device is not
+  /// currently measuring, switches to sleep, verifies again before writing
+  /// config, then restores the cached mode. A successful change invalidates the
+  /// cached sample. The BME280 IIR filter applies to pressure and temperature,
+  /// not humidity, and changing it resets the hardware filter memory. If
+  /// measuring appears after the sleep write, config is skipped and dirty state
+  /// is set.
+  /// @param filter New IIR filter coefficient
+  /// @return Status::Ok() on success, error otherwise
   Status setFilter(Filter filter);
 
-  /// Set standby time (normal mode only)
+  /// Set standby time (normal mode only). The driver verifies the device is not
+  /// currently measuring, switches to sleep, verifies again before writing
+  /// config, then restores the cached mode. A successful change invalidates the
+  /// cached sample. If measuring appears after the sleep write, config is
+  /// skipped and dirty state is set.
+  /// @param standby New normal-mode standby interval
+  /// @return Status::Ok() on success, error otherwise
   Status setStandby(Standby standby);
 
   /// Get oversampling for temperature
+  /// @param[out] out Cached temperature oversampling
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getOversamplingT(Oversampling& out) const;
 
   /// Get oversampling for pressure
+  /// @param[out] out Cached pressure oversampling
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getOversamplingP(Oversampling& out) const;
 
   /// Get oversampling for humidity
+  /// @param[out] out Cached humidity oversampling
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getOversamplingH(Oversampling& out) const;
 
   /// Get IIR filter coefficient
+  /// @param[out] out Cached IIR filter coefficient
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getFilter(Filter& out) const;
 
   /// Get standby time
+  /// @param[out] out Cached standby interval enum
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getStandby(Standby& out) const;
 
-  /// Soft reset device
+  /// Soft reset device. Writes 0xB6 to 0xE0, polls status.im_update with a
+  /// bounded deadline/poll limit, reloads calibration, validates it, and
+  /// reapplies cached config. A reset attempt invalidates cached samples before
+  /// touching hardware. If reset write succeeds but a later step fails,
+  /// hardwareConfigDirty() remains set with the root-cause status. NVM polling
+  /// is always bounded by poll count; the millisecond deadline is real only
+  /// when Config::nowMs supplies an advancing monotonic clock.
+  /// @return Status::Ok() on success, error otherwise
   Status softReset();
 
   /// Read chip ID
+  /// @param[out] id Chip-ID register value
+  /// @return Status::Ok() on success, error otherwise
   Status readChipId(uint8_t& id);
 
   /// Read status register
+  /// @param[out] status Status register value
+  /// @return Status::Ok() on success, error otherwise
   Status readStatus(uint8_t& status);
 
   /// Read ctrl_hum register
+  /// @param[out] value ctrl_hum register value
+  /// @return Status::Ok() on success, error otherwise
   Status readCtrlHum(uint8_t& value);
 
   /// Read ctrl_meas register
+  /// @param[out] value ctrl_meas register value
+  /// @return Status::Ok() on success, error otherwise
   Status readCtrlMeas(uint8_t& value);
 
   /// Read config register
+  /// @param[out] value config register value
+  /// @return Status::Ok() on success, error otherwise
   Status readConfig(uint8_t& value);
 
   /// Check if device is currently measuring
+  /// @param[out] measuring true when status.measuring is set
+  /// @return Status::Ok() on success, error otherwise
   Status isMeasuring(bool& measuring);
 
   // =========================================================================
   // Raw Register Access
   // =========================================================================
 
-  /// Read a contiguous register block
+  /// Read a contiguous register block through tracked I2C.
+  /// @param startReg First register address to read
+  /// @param[out] buf Destination buffer; must not be null
+  /// @param len Number of bytes to read; must be nonzero
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
+  ///         INVALID_PARAM for null/zero buffers, BUSY while OFFLINE, or the
+  ///         original tracked transport status.
   Status readRegisters(uint8_t startReg, uint8_t* buf, size_t len);
 
-  /// Write a contiguous register block
+  /// Write a contiguous register block through tracked I2C.
+  /// @param startReg First register address to write
+  /// @param buf Source buffer; must not be null
+  /// @param len Number of bytes to write; must be nonzero and fit the internal
+  ///            bounded stack payload
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
+  ///         INVALID_PARAM for null/zero/oversized writes, BUSY while OFFLINE,
+  ///         or the original tracked transport status.
+  /// @note Diagnostic writes that overlap ctrl_hum (0xF2), ctrl_meas (0xF4),
+  ///       config (0xF5), or reset (0xE0) mark hardwareConfigDirty() on
+  ///       success. Transport failures that may have partially reached those
+  ///       registers preserve the original status as hardwareConfigDirtyError().
+  ///       Call recover(), begin(), or a successful softReset() to resync after
+  ///       manual config-register edits.
   Status writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len);
 
-  /// Read a single register
+  /// Read a single register through tracked I2C.
+  /// @param reg Register address to read
+  /// @param[out] value Register value
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), BUSY while
+  ///         OFFLINE, or the original tracked transport status.
   Status readRegister(uint8_t reg, uint8_t& value);
 
-  /// Write a single register
+  /// Write a single register through tracked I2C.
+  /// @param reg Register address to write
+  /// @param value Value to write
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), BUSY while
+  ///         OFFLINE, or the original tracked transport status.
+  /// @note Diagnostic writes to ctrl_hum (0xF2), ctrl_meas (0xF4), config
+  ///       (0xF5), or reset (0xE0) mark hardwareConfigDirty() on success.
+  ///       Transport failures that may have partially reached those registers
+  ///       preserve the original status as hardwareConfigDirtyError(). Call
+  ///       recover(), begin(), or a successful softReset() to resync after
+  ///       manual config-register edits.
   Status writeRegister(uint8_t reg, uint8_t value);
 
   // =========================================================================
@@ -380,12 +590,15 @@ public:
 
   /// Estimate max measurement time based on current oversampling
   /// Returns time in milliseconds
+  /// @return Estimated measurement duration in milliseconds
   uint32_t estimateMeasurementTimeMs() const;
 
   /// Get the configured standby interval in milliseconds (rounded up)
+  /// @return Standby interval in milliseconds
   uint32_t getStandbyTimeMs() const;
 
   /// Estimate full normal-mode cycle time (measurement + standby) in ms
+  /// @return Estimated normal-mode cycle in milliseconds
   uint32_t estimateNormalCycleMs() const;
 
 private:
@@ -434,6 +647,8 @@ private:
   /// Record non-transport semantic failures that make recovery unsuccessful.
   Status _recordFailure(const Status& st);
   void _reassertOfflineLatch();
+  void _markHardwareConfigDirty(const Status& st);
+  void _clearHardwareConfigDirty();
 
   // =========================================================================
   // Internal
@@ -473,11 +688,13 @@ private:
   Status _readCalibrationTp();
   Status _readCalibrationH();
   Status _applyConfig();
-  Status _waitForNvmReady();
+  Status _ensureConfigWriteReady();
+  Status _waitForNvmReady(bool tracked);
   Status _readCalibration();
   Status _validateCalibration();
   Status _readRawData();
   Status _compensate();
+  void _invalidateSampleCache();
   uint32_t _nowMs() const;
   
   // =========================================================================
@@ -496,6 +713,8 @@ private:
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
   bool _allowOfflineI2c = false;
+  bool _hardwareConfigDirty = false;
+  Status _hardwareConfigDirtyError = Status::Ok();
 
   // Staged job state
   JobKind _jobKind = JobKind::NONE;
@@ -529,6 +748,7 @@ private:
   // Measurement state
   bool _measurementRequested = false;
   bool _measurementReady = false;
+  Status _lastMeasurementStatus = Status::Ok();
   bool _hasSample = false;
   uint32_t _measurementStartMs = 0;
   uint32_t _sampleTimestampMs = 0;
