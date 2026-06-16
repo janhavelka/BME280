@@ -66,6 +66,11 @@ driver falls back to `millis()` on Arduino/native-test builds.
 `src/`, provide equivalent `Config::i2cWrite` and `Config::i2cWriteRead` callbacks in
 your application.
 
+For optional sensor slots, treat address NACK during chip-ID presence checks as
+`DEVICE_NOT_FOUND`. Data NACK, bus errors, transaction timeouts, and generic I2C
+faults are preserved as transport faults and should not be collapsed into optional
+absence by adapters.
+
 ## Health Monitoring
 
 The driver tracks I2C communication health:
@@ -107,6 +112,18 @@ Serial.printf("Failures: %u consecutive, %lu total\n",
 - `Status recover()` - Attempt recovery from DEGRADED/OFFLINE (re-applies config)
 - `Status getSettings(SettingsSnapshot& out)` - Populate a snapshot of cached config and runtime state (no I2C)
 
+### Staged I2C Jobs
+
+- `Status startInitJob(const Config& config)` - Start chunked initialization
+- `Status startForcedMeasurementJob()` - Start a chunked forced-mode sample
+- `Status startApplyConfigJob()` - Re-apply cached config after the device is idle
+- `Status startRecoveryJob()` - Run soft reset, NVM polling, calibration reload, and config re-apply
+- `JobPollResult pollJob(uint32_t nowMs, uint8_t maxInstructions = 1)` - Advance the active job
+
+`instructionsUsed` counts only transport callbacks (`i2cWrite` / `i2cWriteRead`).
+Readiness waits and delay gates return `WAITING` without hidden polling loops; a busy
+NVM or measuring bit is checked at most once per `pollJob()` call.
+
 ### Measurement
 
 - `Status requestMeasurement()` - Start a forced measurement or schedule a fresh normal-mode cycle; returns `IN_PROGRESS` when accepted
@@ -121,6 +138,10 @@ Forced mode is an on-demand policy: `begin()` and `setMode(FORCED)` keep the har
 sleep until `requestMeasurement()` writes the forced-mode trigger. Normal-mode requests
 wait one estimated normal cycle before reading registers, so the returned sample is fresh
 relative to the request.
+
+Raw and fixed-point outputs are first-class. `CompensatedSample::pressurePa` is
+integer Pascals for control and telemetry paths; `Measurement` is a float
+convenience view over cached compensated data.
 
 ### Configuration
 
@@ -164,6 +185,11 @@ Invalid combinations are rejected in `begin()` and typed setters before touching
 - `uint32_t estimateMeasurementTimeMs()` - Max measurement time for current oversampling
 - `uint32_t getStandbyTimeMs()` - Configured standby interval in ms
 - `uint32_t estimateNormalCycleMs()` - Full normal-mode cycle (measurement + standby)
+
+`Config::nvmReadyTimeoutMs` controls the visible NVM-ready deadline after POR or
+reset. The synchronous check performs one status-register transaction per call
+and returns `BUSY`, `TIMEOUT`, or the detailed transport error instead of hiding
+a tight polling loop.
 
 ## Examples
 
@@ -211,6 +237,7 @@ pio run -e esp32s2dev
 ## Documentation
 
 - `CHANGELOG.md` - full release history
+- `docs/TUNNELMONITOR_FIT_REPORT.md` - TunnelMonitor API classification and adapter notes
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification

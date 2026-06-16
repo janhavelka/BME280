@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Config::nvmReadyTimeoutMs` and `SettingsSnapshot::nvmReadyTimeoutMs` for explicit NVM-ready deadline visibility.
+- TunnelMonitor fit report with synchronous API classification and optional ENV absence-vs-fault mapping notes.
+- Native coverage for NVM-ready single-read `BUSY`/wrap-safe timeout behavior, chip-ID transport error preservation, calibration-invalid begin failures, and I2C timeout propagation.
+
+### Changed
+- Synchronous NVM readiness checks now perform one raw status read per call and return visible `BUSY`, `TIMEOUT`, or detailed transport errors instead of hiding a tight polling loop.
+- `begin()`, `probe()`, and staged init preserve chip-ID transport faults; only address NACK maps to `DEVICE_NOT_FOUND`.
+- Arduino timing fallback is conditional so the core can build without `Arduino.h` when `Config::nowMs` is supplied.
+
 ## [1.5.0] - 2026-05-14
 
 ### Added

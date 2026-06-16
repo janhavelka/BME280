@@ -19,6 +19,31 @@ enum class DriverState : uint8_t {
   OFFLINE    ///< consecutiveFailures >= offlineThreshold
 };
 
+/// Active staged job type.
+enum class JobKind : uint8_t {
+  NONE,                ///< No staged job is active
+  INIT,                ///< Initialization job started by startInitJob()
+  FORCED_MEASUREMENT,  ///< Forced conversion job started by startForcedMeasurementJob()
+  APPLY_CONFIG,        ///< Config apply job started by startApplyConfigJob()
+  RECOVERY             ///< Recovery job started by startRecoveryJob()
+};
+
+/// State of the staged job runner.
+enum class JobState : uint8_t {
+  IDLE,     ///< No staged job is active
+  RUNNING,  ///< Job can make more progress when instruction budget is available
+  WAITING,  ///< Job is waiting for time or chip status before more progress
+  DONE,     ///< Job completed successfully
+  FAILED    ///< Job stopped on error; inspect status
+};
+
+/// Result returned by pollJob().
+struct JobPollResult {
+  JobState state = JobState::IDLE; ///< Job state after this poll
+  Status status = Status::Ok();    ///< OK, IN_PROGRESS, or terminal error
+  uint8_t instructionsUsed = 0;    ///< I2C callbacks used by this poll
+};
+
 /// Measurement result (float)
 struct Measurement {
   float temperatureC = 0.0f; ///< Temperature in Celsius
@@ -78,6 +103,7 @@ struct SettingsSnapshot {
   DriverState state = DriverState::UNINIT;    ///< Current driver state
   uint8_t i2cAddress = 0x76;                  ///< Active 7-bit I2C address
   uint32_t i2cTimeoutMs = 0;                  ///< Active I2C timeout
+  uint32_t nvmReadyTimeoutMs = 0;             ///< Active NVM ready timeout
   uint8_t offlineThreshold = 0;               ///< Failure threshold for OFFLINE
   bool hasNowMsHook = false;                  ///< True when Config::nowMs is set
   Mode mode = Mode::SLEEP;                    ///< Active measurement mode
@@ -121,6 +147,42 @@ public:
 
   /// Get the cached configuration snapshot currently owned by the driver
   const Config& getConfig() const { return _config; }
+
+  // =========================================================================
+  // Staged I2C Jobs
+  // =========================================================================
+
+  /// Start a staged initialization job. Poll with pollJob() until DONE/FAILED.
+  /// @param config Configuration including transport callbacks
+  /// @return IN_PROGRESS when accepted, error otherwise
+  Status startInitJob(const Config& config);
+
+  /// Start a staged forced-mode measurement job.
+  /// @return IN_PROGRESS when accepted, error otherwise
+  Status startForcedMeasurementJob();
+
+  /// Start a staged re-apply of the cached configuration.
+  /// @return IN_PROGRESS when accepted, error otherwise
+  Status startApplyConfigJob();
+
+  /// Start a staged soft-reset recovery job.
+  /// @return IN_PROGRESS when accepted, error otherwise
+  Status startRecoveryJob();
+
+  /// Advance the active staged job.
+  /// @param nowMs Current timestamp in milliseconds
+  /// @param maxInstructions Maximum I2C callbacks to issue this poll; defaults to 1
+  /// @return Job state, status, and number of I2C callbacks used
+  JobPollResult pollJob(uint32_t nowMs, uint8_t maxInstructions = 1);
+
+  /// Current staged job type.
+  JobKind jobKind() const { return _jobKind; }
+
+  /// Current staged job state.
+  JobState jobState() const { return _jobState; }
+
+  /// Last staged job status.
+  Status jobStatus() const { return _jobStatus; }
   
   // =========================================================================
   // Diagnostics
@@ -377,6 +439,39 @@ private:
   // Internal
   // =========================================================================
 
+  enum class JobPhase : uint8_t {
+    NONE,
+    INIT_READ_CHIP_ID,
+    INIT_NVM_START,
+    NVM_POLL,
+    CALIB_TP,
+    CALIB_H,
+    VALIDATE_CALIBRATION,
+    APPLY_WAIT_IDLE,
+    APPLY_CTRL_MEAS_SLEEP,
+    APPLY_CONFIG,
+    APPLY_CTRL_HUM,
+    APPLY_CTRL_MEAS,
+    FORCE_WRITE_CTRL_HUM,
+    FORCE_WRITE_CTRL_MEAS,
+    FORCE_WAIT_TIME,
+    FORCE_READ_STATUS,
+    FORCE_READ_DATA,
+    FORCE_COMPENSATE,
+    RECOVERY_WRITE_RESET,
+    COMPLETE
+  };
+
+  void _resetRuntime();
+  Status _prepareBeginConfig(const Config& config);
+  bool _jobActive() const;
+  void _clearJob();
+  Status _startJob(JobKind kind, JobPhase phase);
+  JobPollResult _jobResult(uint8_t instructionsUsed) const;
+  JobPollResult _failJob(const Status& st, uint8_t instructionsUsed);
+  JobPollResult _completeJob(uint8_t instructionsUsed);
+  Status _readCalibrationTp();
+  Status _readCalibrationH();
   Status _applyConfig();
   Status _waitForNvmReady();
   Status _readCalibration();
@@ -401,6 +496,15 @@ private:
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
   bool _allowOfflineI2c = false;
+
+  // Staged job state
+  JobKind _jobKind = JobKind::NONE;
+  JobState _jobState = JobState::IDLE;
+  JobPhase _jobPhase = JobPhase::NONE;
+  Status _jobStatus = Status::Ok();
+  uint32_t _jobDeadlineMs = 0;
+  uint16_t _jobNvmPolls = 0;
+  bool _jobStartedOffline = false;
 
   // Calibration data
   uint16_t _digT1 = 0;

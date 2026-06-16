@@ -5,15 +5,20 @@
 
 #include "BME280/BME280.h"
 
-#include <Arduino.h>
 #include <cstring>
 #include <limits>
+
+#if __has_include(<Arduino.h>)
+#include <Arduino.h>
+#define BME280_HAS_ARDUINO_MILLIS 1
+#else
+#define BME280_HAS_ARDUINO_MILLIS 0
+#endif
 
 namespace BME280 {
 namespace {
 
 static constexpr size_t MAX_WRITE_LEN = 16;
-static constexpr uint32_t NVM_READY_TIMEOUT_MS = 10;
 static constexpr uint16_t NVM_READY_MAX_POLLS = 255;
 static constexpr uint32_t MEASUREMENT_MARGIN_US = 1000;
 static constexpr int64_t HUMIDITY_MAX_X4096 = 419430400;
@@ -38,6 +43,14 @@ private:
 
 static bool deadlineReached(uint32_t nowMs, uint32_t deadlineMs) {
   return static_cast<int32_t>(nowMs - deadlineMs) >= 0;
+}
+
+static Status mapPresenceReadFailure(const Status& st) {
+  if (st.code == Err::I2C_NACK_ADDR) {
+    return Status::Error(Err::DEVICE_NOT_FOUND, "Device address not acknowledged",
+                         st.detail);
+  }
+  return st;
 }
 
 static uint8_t osrsToReg(Oversampling osrs) {
@@ -128,7 +141,7 @@ static int16_t signExtend12(int16_t value) {
 
 }  // namespace
 
-Status BME280::begin(const Config& config) {
+void BME280::_resetRuntime() {
   _config = Config{};
   _initialized = false;
   _driverState = DriverState::UNINIT;
@@ -149,6 +162,7 @@ Status BME280::begin(const Config& config) {
   _tFine = 0;
   _rawSample = RawSample{};
   _compSample = CompensatedSample{};
+
   _digT1 = 0;
   _digT2 = 0;
   _digT3 = 0;
@@ -168,11 +182,20 @@ Status BME280::begin(const Config& config) {
   _digH5 = 0;
   _digH6 = 0;
 
+  _clearJob();
+}
+
+Status BME280::_prepareBeginConfig(const Config& config) {
+  _resetRuntime();
+
   if (config.i2cWrite == nullptr || config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C callbacks not set");
   }
   if (config.i2cTimeoutMs == 0) {
     return Status::Error(Err::INVALID_CONFIG, "I2C timeout must be > 0");
+  }
+  if (config.nvmReadyTimeoutMs == 0) {
+    return Status::Error(Err::INVALID_CONFIG, "NVM timeout must be > 0");
   }
   if (config.i2cAddress != 0x76 && config.i2cAddress != 0x77) {
     return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address");
@@ -194,10 +217,19 @@ Status BME280::begin(const Config& config) {
     _config.offlineThreshold = 1;
   }
 
-  uint8_t chipId = 0;
-  Status st = _readRegisterRaw(cmd::REG_CHIP_ID, chipId);
+  return Status::Ok();
+}
+
+Status BME280::begin(const Config& config) {
+  Status st = _prepareBeginConfig(config);
   if (!st.ok()) {
-    return Status::Error(Err::DEVICE_NOT_FOUND, "Device not responding", st.detail);
+    return st;
+  }
+
+  uint8_t chipId = 0;
+  st = _readRegisterRaw(cmd::REG_CHIP_ID, chipId);
+  if (!st.ok()) {
+    return mapPresenceReadFailure(st);
   }
   if (chipId != cmd::CHIP_ID_BME280) {
     return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
@@ -229,6 +261,9 @@ Status BME280::begin(const Config& config) {
 
 void BME280::tick(uint32_t nowMs) {
   if (!_initialized || !_measurementRequested) {
+    return;
+  }
+  if (_jobActive()) {
     return;
   }
 
@@ -305,6 +340,7 @@ void BME280::end() {
   _tFine = 0;
   _rawSample = RawSample{};
   _compSample = CompensatedSample{};
+  _clearJob();
 }
 
 Status BME280::probe() {
@@ -315,7 +351,7 @@ Status BME280::probe() {
   uint8_t chipId = 0;
   Status st = _readRegisterRaw(cmd::REG_CHIP_ID, chipId);
   if (!st.ok()) {
-    return Status::Error(Err::DEVICE_NOT_FOUND, "Device not responding", st.detail);
+    return mapPresenceReadFailure(st);
   }
   if (chipId != cmd::CHIP_ID_BME280) {
     return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
@@ -362,6 +398,7 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   out.state = _driverState;
   out.i2cAddress = _config.i2cAddress;
   out.i2cTimeoutMs = _config.i2cTimeoutMs;
+  out.nvmReadyTimeoutMs = _config.nvmReadyTimeoutMs;
   out.offlineThreshold = _config.offlineThreshold;
   out.hasNowMsHook = (_config.nowMs != nullptr);
   out.mode = _config.mode;
@@ -397,6 +434,433 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   out.calibration.digH5 = _digH5;
   out.calibration.digH6 = _digH6;
   return Status::Ok();
+}
+
+bool BME280::_jobActive() const {
+  return _jobKind != JobKind::NONE &&
+         (_jobState == JobState::RUNNING || _jobState == JobState::WAITING);
+}
+
+void BME280::_clearJob() {
+  _jobKind = JobKind::NONE;
+  _jobState = JobState::IDLE;
+  _jobPhase = JobPhase::NONE;
+  _jobStatus = Status::Ok();
+  _jobDeadlineMs = 0;
+  _jobNvmPolls = 0;
+  _jobStartedOffline = false;
+}
+
+Status BME280::_startJob(JobKind kind, JobPhase phase) {
+  if (_jobActive()) {
+    return Status::Error(Err::BUSY, "Job already running");
+  }
+
+  _jobKind = kind;
+  _jobState = JobState::RUNNING;
+  _jobPhase = phase;
+  _jobStatus = Status::Error(Err::IN_PROGRESS, "Job in progress");
+  _jobDeadlineMs = 0;
+  _jobNvmPolls = 0;
+  _jobStartedOffline = false;
+  return Status::Error(Err::IN_PROGRESS, "Job started");
+}
+
+JobPollResult BME280::_jobResult(uint8_t instructionsUsed) const {
+  JobPollResult result;
+  result.state = _jobState;
+  result.status = _jobStatus;
+  result.instructionsUsed = instructionsUsed;
+  return result;
+}
+
+JobPollResult BME280::_failJob(const Status& st, uint8_t instructionsUsed) {
+  _jobState = JobState::FAILED;
+  _jobStatus = st;
+  _jobPhase = JobPhase::NONE;
+  if (_jobKind == JobKind::RECOVERY && _jobStartedOffline &&
+      !st.ok() && !st.inProgress()) {
+    _reassertOfflineLatch();
+  }
+  return _jobResult(instructionsUsed);
+}
+
+JobPollResult BME280::_completeJob(uint8_t instructionsUsed) {
+  _jobState = JobState::DONE;
+  _jobStatus = Status::Ok();
+  _jobPhase = JobPhase::COMPLETE;
+  _jobNvmPolls = 0;
+  _jobStartedOffline = false;
+  return _jobResult(instructionsUsed);
+}
+
+Status BME280::startInitJob(const Config& config) {
+  if (_jobActive()) {
+    return Status::Error(Err::BUSY, "Job already running");
+  }
+  Status st = _prepareBeginConfig(config);
+  if (!st.ok()) {
+    return st;
+  }
+  return _startJob(JobKind::INIT, JobPhase::INIT_READ_CHIP_ID);
+}
+
+Status BME280::startForcedMeasurementJob() {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_driverState == DriverState::OFFLINE) {
+    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
+  }
+  if (_config.mode != Mode::FORCED) {
+    return Status::Error(Err::INVALID_PARAM, "Device is not in forced mode");
+  }
+  if (_measurementRequested && !_measurementReady) {
+    return Status::Error(Err::BUSY, "Measurement in progress");
+  }
+
+  Status st = _startJob(JobKind::FORCED_MEASUREMENT, JobPhase::FORCE_WRITE_CTRL_HUM);
+  if (st.inProgress()) {
+    _measurementReady = false;
+  }
+  return st;
+}
+
+Status BME280::startApplyConfigJob() {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_driverState == DriverState::OFFLINE) {
+    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
+  }
+  return _startJob(JobKind::APPLY_CONFIG, JobPhase::APPLY_WAIT_IDLE);
+}
+
+Status BME280::startRecoveryJob() {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+
+  const bool startedOffline = (_driverState == DriverState::OFFLINE);
+  Status st = _startJob(JobKind::RECOVERY, JobPhase::RECOVERY_WRITE_RESET);
+  if (st.inProgress()) {
+    _jobStartedOffline = startedOffline;
+    _measurementRequested = false;
+    _measurementReady = false;
+    _hasSample = false;
+    _measurementStartMs = 0;
+    _sampleTimestampMs = 0;
+  }
+  return st;
+}
+
+JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
+  if (_jobKind == JobKind::NONE || _jobState == JobState::IDLE ||
+      _jobState == JobState::DONE || _jobState == JobState::FAILED) {
+    return _jobResult(0);
+  }
+  if (maxInstructions == 0) {
+    return _jobResult(0);
+  }
+
+  uint8_t instructionsUsed = 0;
+
+  for (uint8_t guard = 0; guard < 32; ++guard) {
+    _jobState = JobState::RUNNING;
+    _jobStatus = Status::Error(Err::IN_PROGRESS, "Job in progress");
+
+    switch (_jobPhase) {
+      case JobPhase::INIT_READ_CHIP_ID: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        uint8_t chipId = 0;
+        const Status st = _readRegisterRaw(cmd::REG_CHIP_ID, chipId);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(mapPresenceReadFailure(st), instructionsUsed);
+        }
+        if (chipId != cmd::CHIP_ID_BME280) {
+          return _failJob(
+              Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId),
+              instructionsUsed);
+        }
+        _jobPhase = JobPhase::INIT_NVM_START;
+        break;
+      }
+
+      case JobPhase::INIT_NVM_START:
+        _jobDeadlineMs = nowMs + _config.nvmReadyTimeoutMs;
+        _jobNvmPolls = 0;
+        _jobPhase = JobPhase::NVM_POLL;
+        break;
+
+      case JobPhase::NVM_POLL: {
+        if (_jobNvmPolls >= NVM_READY_MAX_POLLS) {
+          return _failJob(
+              Status::Error(Err::TIMEOUT, "NVM ready polling limit reached",
+                            NVM_READY_MAX_POLLS),
+              instructionsUsed);
+        }
+        if (deadlineReached(nowMs, _jobDeadlineMs)) {
+          return _failJob(Status::Error(Err::TIMEOUT, "NVM ready timeout",
+                                        static_cast<int32_t>(_config.nvmReadyTimeoutMs)),
+                          instructionsUsed);
+        }
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+
+        uint8_t status = 0;
+        const Status st = _readRegisterRaw(cmd::REG_STATUS, status);
+        ++instructionsUsed;
+        ++_jobNvmPolls;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        if ((status & cmd::MASK_STATUS_IM_UPDATE) != 0) {
+          _jobState = JobState::WAITING;
+          _jobStatus = Status::Error(Err::IN_PROGRESS, "NVM update in progress");
+          return _jobResult(instructionsUsed);
+        }
+        _jobPhase = JobPhase::CALIB_TP;
+        break;
+      }
+
+      case JobPhase::CALIB_TP: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const Status st = _readCalibrationTp();
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::CALIB_H;
+        break;
+      }
+
+      case JobPhase::CALIB_H: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const Status st = _readCalibrationH();
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::VALIDATE_CALIBRATION;
+        break;
+      }
+
+      case JobPhase::VALIDATE_CALIBRATION: {
+        const Status st = _validateCalibration();
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::APPLY_CTRL_MEAS_SLEEP;
+        break;
+      }
+
+      case JobPhase::APPLY_WAIT_IDLE: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        uint8_t status = 0;
+        const Status st = readRegs(cmd::REG_STATUS, &status, 1);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+          _jobState = JobState::WAITING;
+          _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
+          return _jobResult(instructionsUsed);
+        }
+        _jobPhase = JobPhase::APPLY_CTRL_MEAS_SLEEP;
+        break;
+      }
+
+      case JobPhase::APPLY_CTRL_MEAS_SLEEP: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const uint8_t value = buildCtrlMeas(_config.osrsT, _config.osrsP,
+                                            Mode::SLEEP);
+        const Status st = writeRegs(cmd::REG_CTRL_MEAS, &value, 1);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::APPLY_CONFIG;
+        break;
+      }
+
+      case JobPhase::APPLY_CONFIG: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const uint8_t value = buildConfig(_config.standby, _config.filter);
+        const Status st = writeRegs(cmd::REG_CONFIG, &value, 1);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::APPLY_CTRL_HUM;
+        break;
+      }
+
+      case JobPhase::APPLY_CTRL_HUM: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const uint8_t value = buildCtrlHum(_config.osrsH);
+        const Status st = writeRegs(cmd::REG_CTRL_HUM, &value, 1);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::APPLY_CTRL_MEAS;
+        break;
+      }
+
+      case JobPhase::APPLY_CTRL_MEAS: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const uint8_t value = buildCtrlMeas(_config.osrsT, _config.osrsP,
+                                            registerModeForConfig(_config.mode));
+        const Status st = writeRegs(cmd::REG_CTRL_MEAS, &value, 1);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::COMPLETE;
+        break;
+      }
+
+      case JobPhase::FORCE_WRITE_CTRL_HUM: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const uint8_t value = buildCtrlHum(_config.osrsH);
+        const Status st = writeRegs(cmd::REG_CTRL_HUM, &value, 1);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::FORCE_WRITE_CTRL_MEAS;
+        break;
+      }
+
+      case JobPhase::FORCE_WRITE_CTRL_MEAS: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const uint8_t value = buildCtrlMeas(_config.osrsT, _config.osrsP,
+                                            Mode::FORCED);
+        const Status st = writeRegs(cmd::REG_CTRL_MEAS, &value, 1);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _measurementRequested = true;
+        _measurementReady = false;
+        _measurementStartMs = nowMs;
+        _jobDeadlineMs = nowMs + estimateMeasurementTimeMs();
+        _jobPhase = JobPhase::FORCE_WAIT_TIME;
+        break;
+      }
+
+      case JobPhase::FORCE_WAIT_TIME:
+        if (!deadlineReached(nowMs, _jobDeadlineMs)) {
+          _jobState = JobState::WAITING;
+          _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement delay active");
+          return _jobResult(instructionsUsed);
+        }
+        _jobPhase = JobPhase::FORCE_READ_STATUS;
+        break;
+
+      case JobPhase::FORCE_READ_STATUS: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        uint8_t status = 0;
+        const Status st = readRegs(cmd::REG_STATUS, &status, 1);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+          _jobState = JobState::WAITING;
+          _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
+          return _jobResult(instructionsUsed);
+        }
+        _jobPhase = JobPhase::FORCE_READ_DATA;
+        break;
+      }
+
+      case JobPhase::FORCE_READ_DATA: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const Status st = _readRawData();
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::FORCE_COMPENSATE;
+        break;
+      }
+
+      case JobPhase::FORCE_COMPENSATE: {
+        const Status st = _compensate();
+        if (!st.ok()) {
+          _measurementRequested = false;
+          return _failJob(st, instructionsUsed);
+        }
+        _measurementReady = true;
+        _hasSample = true;
+        _sampleTimestampMs = nowMs;
+        _measurementRequested = false;
+        _jobPhase = JobPhase::COMPLETE;
+        break;
+      }
+
+      case JobPhase::RECOVERY_WRITE_RESET: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const uint8_t value = cmd::RESET_VALUE;
+        ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
+        const Status st = writeRegs(cmd::REG_RESET, &value, 1);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::INIT_NVM_START;
+        break;
+      }
+
+      case JobPhase::COMPLETE:
+        if (_jobKind == JobKind::INIT) {
+          _initialized = true;
+          _driverState = DriverState::READY;
+        } else if (_jobKind == JobKind::RECOVERY) {
+          _driverState = DriverState::READY;
+          _consecutiveFailures = 0;
+        }
+        return _completeJob(instructionsUsed);
+
+      case JobPhase::NONE:
+      default:
+        return _failJob(Status::Error(Err::BUSY, "Invalid job state"),
+                        instructionsUsed);
+    }
+  }
+
+  return _failJob(Status::Error(Err::BUSY, "Job state machine stalled"),
+                  instructionsUsed);
 }
 
 Status BME280::requestMeasurement() {
@@ -1093,22 +1557,68 @@ Status BME280::_applyConfig() {
 }
 
 Status BME280::_waitForNvmReady() {
-  const uint32_t deadline = _nowMs() + NVM_READY_TIMEOUT_MS;
-  for (uint16_t poll = 0; poll < NVM_READY_MAX_POLLS; ++poll) {
-    if (deadlineReached(_nowMs(), deadline)) {
-      return Status::Error(Err::TIMEOUT, "NVM ready timeout");
-    }
+  const uint32_t deadline = _nowMs() + _config.nvmReadyTimeoutMs;
 
-    uint8_t status = 0;
-    const Status st = _readRegisterRaw(cmd::REG_STATUS, status);
-    if (st.ok() && (status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
-      return Status::Ok();
-    }
-    // I2C errors and im_update=1 are both expected during reset/POR.
+  uint8_t status = 0;
+  const Status st = _readRegisterRaw(cmd::REG_STATUS, status);
+  if (!st.ok()) {
+    return st;
+  }
+  if ((status & cmd::MASK_STATUS_IM_UPDATE) == 0) {
+    return Status::Ok();
   }
 
-  return Status::Error(Err::TIMEOUT, "NVM ready polling limit reached",
-                       NVM_READY_MAX_POLLS);
+  if (deadlineReached(_nowMs(), deadline)) {
+    return Status::Error(Err::TIMEOUT, "NVM ready timeout",
+                         static_cast<int32_t>(_config.nvmReadyTimeoutMs));
+  }
+
+  return Status::Error(Err::BUSY, "NVM update in progress",
+                       static_cast<int32_t>(_config.nvmReadyTimeoutMs));
+}
+
+Status BME280::_readCalibrationTp() {
+  uint8_t calibTP[cmd::REG_CALIB_TP_LEN] = {};
+  Status st = readRegs(cmd::REG_CALIB_TP_START, calibTP, sizeof(calibTP));
+  if (!st.ok()) {
+    return st;
+  }
+
+  _digT1 = static_cast<uint16_t>((calibTP[1] << 8) | calibTP[0]);
+  _digT2 = static_cast<int16_t>((calibTP[3] << 8) | calibTP[2]);
+  _digT3 = static_cast<int16_t>((calibTP[5] << 8) | calibTP[4]);
+
+  _digP1 = static_cast<uint16_t>((calibTP[7] << 8) | calibTP[6]);
+  _digP2 = static_cast<int16_t>((calibTP[9] << 8) | calibTP[8]);
+  _digP3 = static_cast<int16_t>((calibTP[11] << 8) | calibTP[10]);
+  _digP4 = static_cast<int16_t>((calibTP[13] << 8) | calibTP[12]);
+  _digP5 = static_cast<int16_t>((calibTP[15] << 8) | calibTP[14]);
+  _digP6 = static_cast<int16_t>((calibTP[17] << 8) | calibTP[16]);
+  _digP7 = static_cast<int16_t>((calibTP[19] << 8) | calibTP[18]);
+  _digP8 = static_cast<int16_t>((calibTP[21] << 8) | calibTP[20]);
+  _digP9 = static_cast<int16_t>((calibTP[23] << 8) | calibTP[22]);
+  _digH1 = calibTP[25];
+
+  return Status::Ok();
+}
+
+Status BME280::_readCalibrationH() {
+  uint8_t calibH[cmd::REG_CALIB_H_LEN] = {};
+  Status st = readRegs(cmd::REG_CALIB_H_START, calibH, sizeof(calibH));
+  if (!st.ok()) {
+    return st;
+  }
+
+  _digH2 = static_cast<int16_t>((calibH[1] << 8) | calibH[0]);
+  _digH3 = calibH[2];
+
+  int16_t h4 = static_cast<int16_t>((calibH[3] << 4) | (calibH[4] & 0x0F));
+  int16_t h5 = static_cast<int16_t>((calibH[5] << 4) | (calibH[4] >> 4));
+  _digH4 = signExtend12(h4);
+  _digH5 = signExtend12(h5);
+  _digH6 = static_cast<int8_t>(calibH[6]);
+
+  return Status::Ok();
 }
 
 Status BME280::_readCalibration() {
@@ -1281,7 +1791,11 @@ uint32_t BME280::_nowMs() const {
   if (_config.nowMs != nullptr) {
     return _config.nowMs(_config.timeUser);
   }
+#if BME280_HAS_ARDUINO_MILLIS
   return millis();
+#else
+  return 0;
+#endif
 }
 
 }  // namespace BME280
