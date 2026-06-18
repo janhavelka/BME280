@@ -28,6 +28,13 @@ def first_cfg_spec() -> run_i2c_hil.CommandSpec:
     raise AssertionError("default HIL command list is missing cfg")
 
 
+def probe_spec() -> run_i2c_hil.CommandSpec:
+    for spec in run_i2c_hil.BASE_COMMANDS:
+        if spec.command == "probe":
+            return spec
+    raise AssertionError("default HIL command list is missing probe")
+
+
 class HilCalibClassificationTest(unittest.TestCase):
     def test_complete_calib_output_passes(self) -> None:
         spec = calib_spec()
@@ -74,6 +81,20 @@ class HilCalibClassificationTest(unittest.TestCase):
 
         self.assertEqual(run_i2c_hil.RESULT_TIMEOUT, result)
         self.assertIn("timed out", reason)
+
+    def test_repeated_failure_tokens_fail_once_classified(self) -> None:
+        spec = probe_spec()
+        output = (
+            "Probe\n"
+            "Status: I2C_TIMEOUT\n"
+            "Status: I2C_TIMEOUT\n"
+            "[E] I2C_TIMEOUT\n"
+        )
+
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
+        self.assertIn("I2C_TIMEOUT", reason)
 
     def test_calib_spec_uses_bounded_extended_window(self) -> None:
         spec = calib_spec()

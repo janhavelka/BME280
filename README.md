@@ -19,7 +19,7 @@ tooling, ESP-IDF, and release-preparation changes since `v1.5.0`.
 - **Framework-neutral core** - Arduino and ESP-IDF integration live behind callbacks/adapters
 - **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
 - **Deterministic behavior** - no unbounded loops, no heap allocations
-- **Managed synchronous lifecycle** - blocking bounded reset/NVM polling and tick-driven measurement polling
+- **Managed synchronous lifecycle** - visible reset/NVM readiness status and tick-driven measurement polling
 
 ## Installation
 
@@ -166,7 +166,7 @@ tracked I2C success. The counters do not wrap.
 
 ### Lifecycle
 
-- `Status begin(const Config& config)` - Initialize driver, verify chip ID `0x60`, wait for NVM copy, read calibration, apply config, and start a new health session
+- `Status begin(const Config& config)` - Initialize driver, verify chip ID `0x60`, check NVM readiness once, read calibration, apply config, and start a new health session
 - `void tick(uint32_t nowMs)` - Process pending measurement operations; `nowMs` must use the same monotonic timebase as `Config::nowMs`
 - `void end()` - Shutdown driver and best-effort return the sensor to sleep
 - `bool isInitialized()` - True after successful `begin()` until `end()`
@@ -175,7 +175,7 @@ tracked I2C success. The counters do not wrap.
 ### Diagnostics
 
 - `Status probe()` - Check device presence and chip ID through raw I2C without health tracking
-- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE; waits for NVM, reloads calibration, reapplies cached config, and invalidates cached samples on success
+- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE; checks NVM readiness once, reloads calibration, reapplies cached config, and invalidates cached samples on success
 - `Status getSettings(SettingsSnapshot& out)` - Populate a snapshot of cached config and runtime state (no I2C)
 - `Status lastMeasurementStatus()` - Last measurement request, polling, raw-read, or compensation status retained because `tick()` is void
 
@@ -222,7 +222,7 @@ burst-read, or compensation step fails.
 - `Status setOversamplingT/P/H(Oversampling osrs)` - Configure temperature, pressure, or humidity oversampling
 - `Status setFilter(Filter filter)` - Configure the IIR filter coefficient through a safe sleep/config/restore sequence
 - `Status setStandby(Standby standby)` - Configure standby interval for normal mode through a safe sleep/config/restore sequence
-- `Status softReset()` - Write `0xB6` to reset register `0xE0`, wait for NVM copy, reload calibration, reapply cached config, and invalidate cached samples
+- `Status softReset()` - Write `0xB6` to reset register `0xE0`, check NVM readiness once, reload calibration, reapply cached config, and invalidate cached samples
 - `Status readChipId/readStatus/readCtrlHum/readCtrlMeas/readConfig(...)` - Read status/config registers
 - `Status isMeasuring(bool& measuring)` - Read the measuring bit
 
@@ -245,7 +245,8 @@ If a multi-register configuration sequence touches hardware and then fails, the
 driver sets `hardwareConfigDirty()` and preserves the original error in
 `hardwareConfigDirtyError()` and `SettingsSnapshot::hardwareConfigDirtyError`.
 The dirty flag is cleared only by a complete successful resync through
-`begin()`, `recover()`, or `softReset()`.
+`begin()`, `recover()`, `softReset()`, or the equivalent successful staged
+init/apply-config/recovery job.
 
 ### Probe, Begin, Recover, and Reset Diagnostics
 
@@ -261,23 +262,21 @@ counters or clear an `OFFLINE` latch. It maps only definite address NACK to
 `DEVICE_NOT_FOUND`; other transport errors and chip-ID mismatch are returned
 unchanged.
 
-`softReset()` writes the Bosch reset command, then polls status bit `im_update`
-until NVM copy completes. Polling is bounded by both a 10 ms deadline when
-`Config::nowMs` supplies an advancing monotonic clock and an unconditional
-255-poll cap. Without an injected clock, the real wall-time bound is the poll
-cap multiplied by the transport timeout. Transient status-read errors are
-tolerated during reset/POR if a later poll succeeds. If NVM never becomes ready,
-the first useful transport error is returned; if status reads succeed but
-`im_update` remains set, the result is `TIMEOUT`.
+`begin()`, `recover()`, and `softReset()` check status bit `im_update` once
+when NVM readiness matters. If NVM is still busy, they return `BUSY` or
+`TIMEOUT` instead of hiding a polling loop. Transport errors from that status
+read are preserved. Owners that need repeated NVM polling without exceeding a
+per-poll transaction budget should use the staged `startInitJob()` or
+`startRecoveryJob()` path and advance it with `pollJob()`.
 
-After a successful reset write, hardware config may be back at defaults. If NVM
-polling, calibration reload, validation, or config reapply fails,
+After a successful reset write, hardware config may be back at defaults. If an
+NVM readiness check, calibration reload, validation, or config reapply fails,
 `hardwareConfigDirty()` remains set with the root-cause status. A successful
 `softReset()` or `recover()` reloads calibration, invalidates cached samples,
 and clears dirty state only after the full cached configuration is reapplied.
-Runtime reset/recover NVM
-polling uses health-tracked I2C, so repeated status-read transport failures can
-move the driver to `DEGRADED` or `OFFLINE` while preserving the root-cause
+Runtime reset/recover NVM readiness checks use health-tracked I2C, so a
+status-read transport failure can move the driver to `DEGRADED` or `OFFLINE`
+according to the configured failure threshold while preserving the root-cause
 `Status`.
 
 A failed `recover()` leaves any pre-existing cached sample unchanged. A
@@ -288,14 +287,14 @@ compensated samples so callers cannot accidentally reuse pre-recovery data.
 
 | API | Typical I2C transactions | Notes |
 |-----|--------------------------|-------|
-| `begin()` | chip ID read, bounded NVM status polling, calibration reads, status guard, config writes | Does not require `Config::nowMs`; without it NVM wait is bounded by poll count, not a real 10 ms deadline |
+| `begin()` | chip ID read, one NVM status read, calibration reads, status guard, config writes | Returns visible `BUSY`/`TIMEOUT` if NVM is not ready; staged init owns repeated polling |
 | `requestMeasurement()` in forced mode | status read, `ctrl_meas` write | Returns `IN_PROGRESS` when accepted |
 | `tick()` after deadline | status read, one `0xF7..0xFE` burst read | Captures coherent pressure, temperature, and humidity ADC bytes |
 | `setOversamplingT/P()` | one `ctrl_meas` write | Invalid combinations are rejected before I2C |
 | `setOversamplingH()` | `ctrl_hum` write, `ctrl_meas` write | `ctrl_meas` latches humidity oversampling |
 | `setFilter()` / `setStandby()` | status read, sleep write, status read, `config` write, restore write | Returns `BUSY` without writes if already measuring; skips `config` and marks dirty if still measuring after sleep write |
-| `recover()` | chip ID read, bounded NVM polling, calibration reads, status guard, config resync writes | Allowed while OFFLINE; reloads calibration before config reapply |
-| `softReset()` | reset write, bounded NVM polling, calibration reads, status guard, config resync writes | Marks dirty if reset succeeds but any later step fails |
+| `recover()` | chip ID read, one NVM status read, calibration reads, status guard, config resync writes | Allowed while OFFLINE; reloads calibration before config reapply |
+| `softReset()` | reset write, one NVM status read, calibration reads, status guard, config resync writes | Marks dirty if reset succeeds but any later step fails |
 
 ### Blocking Latency Bounds
 
@@ -303,13 +302,13 @@ All library I2C calls are synchronous and bounded by the injected transport time
 
 | API | Blocking bound |
 |-----|----------------|
-| `begin()` | A fixed sequence of I2C operations plus bounded NVM polling; each transport callback receives `Config::i2cTimeoutMs` |
+| `begin()` | A fixed sequence of I2C operations including one NVM status read; each transport callback receives `Config::i2cTimeoutMs` |
 | `probe()` | One chip-ID register read through raw I2C, bounded by `Config::i2cTimeoutMs` |
 | `requestMeasurement()` | Forced mode performs one status read and one mode write; normal mode schedules work and returns |
 | `tick()` | Before deadline: no I2C. After deadline: one status read and one `0xF7..0xFE` burst read |
 | Typed setters | One or a small fixed sequence of register reads/writes; `setFilter()` and `setStandby()` use a sleep/config/restore sequence |
-| `recover()` | Chip-ID read, bounded NVM polling, calibration reload, and full config resync |
-| `softReset()` | Reset write, bounded NVM polling with a 10 ms real-clock deadline when an advancing `Config::nowMs` is supplied, calibration reload, and config resync |
+| `recover()` | Chip-ID read, one NVM status read, calibration reload, and full config resync |
+| `softReset()` | Reset write, one NVM status read, calibration reload, and config resync |
 
 Sample numeric units are stable: `Measurement` returns degrees Celsius, Pascals,
 and percent RH; `CompensatedSample` returns `tempC_x100`, integer Pascals, and
@@ -429,7 +428,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 9. Driver instances are not thread-safe and public APIs are not ISR-safe. Shared-bus users must serialize access externally.
 10. `setFilter()` and `setStandby()` return `BUSY` without config writes when the device initially reports `measuring`; if `measuring` appears after the sleep write, config is skipped and dirty state is set.
 11. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
-12. Reset and NVM polling are bounded by a poll cap and, when `Config::nowMs` advances, a real millisecond deadline. If status reads never succeed, the first transport error is returned; if successful status reads keep reporting `im_update`, the result is `TIMEOUT`.
+12. Synchronous reset/recover NVM readiness checks perform one status read and return visible `BUSY`, `TIMEOUT`, or the original transport error. Repeated NVM polling belongs to staged jobs advanced by `pollJob()`.
 
 ## Migration From v1.5.x
 

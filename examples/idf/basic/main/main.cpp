@@ -761,7 +761,13 @@ BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t tim
   while (!device.measurementReady()) {
     const uint32_t now = currentMs();
     device.tick(now);
+    const BME280::Status pollStatus = device.lastMeasurementStatus();
+    if (!pollStatus.ok() && !pollStatus.inProgress()) {
+      cancelPending();
+      return pollStatus;
+    }
     if (static_cast<uint32_t>(now - start) > timeoutMs) {
+      cancelPending();
       return BME280::Status::Error(BME280::Err::TIMEOUT, "Measurement wait timeout");
     }
     vTaskDelay(pdMS_TO_TICKS(1));

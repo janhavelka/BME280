@@ -185,13 +185,13 @@ public:
   // =========================================================================
   
   /// Initialize the driver with configuration.
-  /// Verifies chip ID 0x60, waits for NVM copy to finish, reads calibration,
+  /// Verifies chip ID 0x60, checks NVM readiness once, reads calibration,
   /// validates coefficients, and applies cached config. Call after device POR
   /// and I2C bus readiness; address NACK maps to DEVICE_NOT_FOUND while other
   /// transport errors are preserved. Starts a new health session and resets
-  /// tracked I2C counters. NVM polling is always bounded by poll count; the
-  /// millisecond deadline is real only when Config::nowMs supplies an
-  /// advancing monotonic clock.
+  /// tracked I2C counters. If NVM is still busy, returns BUSY or TIMEOUT
+  /// instead of hiding a polling loop; use startInitJob()/pollJob() when the
+  /// owner needs staged NVM polling.
   /// @param config Configuration including transport callbacks
   /// @return Status::Ok() on success, error otherwise
   Status begin(const Config& config);
@@ -219,6 +219,8 @@ public:
   // =========================================================================
 
   /// Start a staged initialization job. Poll with pollJob() until DONE/FAILED.
+  /// Successful completion starts a new health session and clears dirty config
+  /// state after the cached configuration has been applied.
   /// @param config Configuration including transport callbacks
   /// @return IN_PROGRESS when accepted, error otherwise
   Status startInitJob(const Config& config);
@@ -228,10 +230,14 @@ public:
   Status startForcedMeasurementJob();
 
   /// Start a staged re-apply of the cached configuration.
+  /// Partial write failures preserve dirty config diagnostics; successful
+  /// completion clears dirty config state.
   /// @return IN_PROGRESS when accepted, error otherwise
   Status startApplyConfigJob();
 
   /// Start a staged soft-reset recovery job.
+  /// Successful completion clears dirty config state after reset, calibration
+  /// reload, validation, and cached config re-apply all complete.
   /// @return IN_PROGRESS when accepted, error otherwise
   Status startRecoveryJob();
 
@@ -263,8 +269,8 @@ public:
   Status probe();
   
   /// Attempt to recover from DEGRADED/OFFLINE state by verifying chip ID,
-  /// waiting for NVM copy, reloading calibration, validating it, and reapplying
-  /// cached config.
+  /// checking NVM readiness once, reloading calibration, validating it, and
+  /// reapplying cached config.
   /// A successful recovery invalidates cached raw/compensated samples and any
   /// pending measurement state; a failed recovery leaves pre-existing cached
   /// samples unchanged.
@@ -495,13 +501,13 @@ public:
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
   Status getStandby(Standby& out) const;
 
-  /// Soft reset device. Writes 0xB6 to 0xE0, polls status.im_update with a
-  /// bounded deadline/poll limit, reloads calibration, validates it, and
-  /// reapplies cached config. A reset attempt invalidates cached samples before
-  /// touching hardware. If reset write succeeds but a later step fails,
-  /// hardwareConfigDirty() remains set with the root-cause status. NVM polling
-  /// is always bounded by poll count; the millisecond deadline is real only
-  /// when Config::nowMs supplies an advancing monotonic clock.
+  /// Soft reset device. Writes 0xB6 to 0xE0, checks status.im_update once,
+  /// reloads calibration, validates it, and reapplies cached config. A reset
+  /// attempt invalidates cached samples before touching hardware. If reset
+  /// write succeeds but a later step fails, hardwareConfigDirty() remains set
+  /// with the root-cause status. If NVM is still busy, returns BUSY or TIMEOUT
+  /// instead of hiding a polling loop; use startRecoveryJob()/pollJob() when
+  /// the owner needs staged NVM polling.
   /// @return Status::Ok() on success, error otherwise
   Status softReset();
 
@@ -664,6 +670,7 @@ private:
     VALIDATE_CALIBRATION,
     APPLY_WAIT_IDLE,
     APPLY_CTRL_MEAS_SLEEP,
+    APPLY_WAIT_AFTER_SLEEP,
     APPLY_CONFIG,
     APPLY_CTRL_HUM,
     APPLY_CTRL_MEAS,
@@ -685,8 +692,11 @@ private:
   JobPollResult _jobResult(uint8_t instructionsUsed) const;
   JobPollResult _failJob(const Status& st, uint8_t instructionsUsed);
   JobPollResult _completeJob(uint8_t instructionsUsed);
+  void _trackJobConfigWriteResult(const Status& st);
   Status _readCalibrationTp();
   Status _readCalibrationH();
+  Status _validateCalibrationValues(uint16_t digT1, uint16_t digP1) const;
+  void _commitCalibration(const Calibration& calibration);
   Status _applyConfig();
   Status _ensureConfigWriteReady();
   Status _waitForNvmReady(bool tracked);
@@ -724,6 +734,8 @@ private:
   uint32_t _jobDeadlineMs = 0;
   uint16_t _jobNvmPolls = 0;
   bool _jobStartedOffline = false;
+  bool _jobHardwareConfigTouched = false;
+  Calibration _jobCalibration = {};
 
   // Calibration data
   uint16_t _digT1 = 0;

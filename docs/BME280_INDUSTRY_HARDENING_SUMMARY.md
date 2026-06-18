@@ -75,9 +75,9 @@ Configuration, reset, and recovery:
   pre-recovery data cannot be reused accidentally.
 - `setFilter()` and `setStandby()` avoid config writes while the sensor reports
   `measuring`.
-- Reset and NVM polling are bounded by poll count and, when an advancing
-  `Config::nowMs` hook is supplied, by a real millisecond deadline. Useful
-  root-cause errors are preserved where possible.
+- Synchronous reset/recover NVM readiness checks perform one status read and
+  return visible `BUSY`, `TIMEOUT`, or the original transport error. Repeated
+  bounded NVM polling is available through staged jobs advanced by `pollJob()`.
 
 Examples, ESP-IDF, and CI:
 

@@ -73,6 +73,7 @@ int stressRemaining = 0;
 StressStats stressStats;
 uint8_t activeAddress = 0x76;
 static constexpr uint32_t STRESS_PROGRESS_UPDATES = 10U;
+static constexpr size_t CLI_INPUT_MAX_LEN = 127U;
 
 void cancelPending();
 
@@ -873,8 +874,14 @@ BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t tim
     if (device.measurementReady()) {
       return device.getMeasurement(out);
     }
+    const BME280::Status pollStatus = device.lastMeasurementStatus();
+    if (!pollStatus.ok() && !pollStatus.inProgress()) {
+      cancelPending();
+      return pollStatus;
+    }
     yield();
   }
+  cancelPending();
   return BME280::Status::Error(BME280::Err::TIMEOUT, "measurement timeout", timeoutMs);
 }
 
@@ -1929,16 +1936,28 @@ void loop() {
   handleMeasurementReady();
 
   static String inputBuffer;
+  static bool inputOverflow = false;
   while (Serial.available()) {
     const char c = static_cast<char>(Serial.read());
     if (c == '\n' || c == '\r') {
+      if (inputOverflow) {
+        inputBuffer = "";
+        inputOverflow = false;
+        Serial.println("Command too long");
+        cli::printPrompt();
+        continue;
+      }
       if (inputBuffer.length() > 0) {
         processCommand(inputBuffer);
         inputBuffer = "";
         cli::printPrompt();
       }
     } else {
-      inputBuffer += c;
+      if (inputBuffer.length() < CLI_INPUT_MAX_LEN) {
+        inputBuffer += c;
+      } else {
+        inputOverflow = true;
+      }
     }
   }
 }
