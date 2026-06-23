@@ -74,6 +74,7 @@ def runner_args(**overrides):
         "normal_soak_interval_s": 1.0,
         "include_destructive": False,
         "include_fault_tests": False,
+        "include_job_api": False,
         "timeout": 8.0,
     }
     data.update(overrides)
@@ -174,6 +175,11 @@ def main() -> int:
     assert_contains(runner_text, "runner_command", RUNNER)
     assert_contains(runner_text, "runner_args", RUNNER)
     assert_contains(runner_text, "summary_md", RUNNER)
+    assert_contains(runner_text, "--include-job-api", RUNNER)
+    assert_contains(runner_text, "--require-pass", RUNNER)
+    assert_contains(runner_text, "--fail-on-review", RUNNER)
+    assert_contains(runner_text, "VALIDATOR_JOB_DONE_OR_FAILED", RUNNER)
+    assert_contains(runner_text, "VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED", RUNNER)
 
     destructive_args = runner_args(include_destructive=True)
     destructive_sequence = [spec.command for spec in runner.build_command_sequence(destructive_args)[0]]
@@ -200,6 +206,29 @@ def main() -> int:
     if "Hardware config dirty:" not in soak_cfg_specs[0].completion:
         fail("--include-normal-soak cfg command must wait for dirty-state output")
 
+    job_args = runner_args(include_job_api=True)
+    expected_job_sequence = [
+        "job status",
+        "job poll 1",
+        "job init 1",
+        "job apply 1",
+        "job force 1",
+        "raw",
+        "comp",
+        "job recover 1",
+        "cfg",
+        "status",
+        "job force 3",
+        "drv",
+    ]
+    job_specs = [spec for spec in runner.build_command_sequence(job_args)[0] if spec.group == "job-api"]
+    if [spec.command for spec in job_specs] != expected_job_sequence:
+        fail("--include-job-api sequence does not include the expected job-api command order")
+    if not any(runner.VALIDATOR_JOB_DONE_OR_FAILED in spec.validators for spec in job_specs):
+        fail("job-api commands must validate terminal job state")
+    if not any(runner.VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED in spec.validators for spec in job_specs):
+        fail("job-api commands must validate instruction budgets")
+
     fault_args = runner_args(include_fault_tests=True)
     _, fault_manual = runner.build_command_sequence(fault_args)
     if not any("Requested via --include-fault-tests" in item.notes for item in fault_manual):
@@ -218,6 +247,7 @@ def main() -> int:
         "OPERATOR_CHECK_REQUIRED",
         "REVIEW_REQUIRED",
         "SERIAL_OK_OR_REVIEW",
+        "UNKNOWN",
         "FAIL",
         "TIMEOUT",
         "SKIPPED_DRY_RUN",
@@ -346,7 +376,7 @@ def main() -> int:
     assert_contains(matrix_text, "tools/run_i2c_hil.py", MATRIX)
     assert_contains(matrix_text, "stress 10 as an automated forced-measurement stress substitute", MATRIX)
     assert_contains(summary_text, "merged industry-readiness work", SUMMARY)
-    assert_contains(summary_text, "The CLI does not support counted commands", SUMMARY)
+    assert_contains(summary_text, "The CLI does not support counted read commands", SUMMARY)
 
     print("HIL contract PASSED")
     return 0

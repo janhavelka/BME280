@@ -1,6 +1,6 @@
 # BME280 Industry Hardening Summary
 
-Last updated: 2026-06-02
+Last updated: 2026-06-23
 
 This document is the maintained summary for the merged industry-readiness work.
 It replaces the temporary prompt, phase, merge-gate, and self-test records that
@@ -14,9 +14,9 @@ use on ESP32-S2 and ESP32-S3 with Arduino/PlatformIO and ESP-IDF consumers.
 No physical BME280 hardware validation is claimed here. Local ESP-IDF `idf.py`
 validation is claimed only when the exact commands are run and recorded.
 
-Release scope: `v1.6.0` is the direct public successor to `v1.5.0`. The
-release notes for `v1.6.0` contain the accumulated hardening, documentation,
-HIL tooling, ESP-IDF, and release-preparation work.
+Release scope: `v1.7.0` is the direct public successor to `v1.6.0`. The
+release notes for `v1.7.0` contain the staged recovery closure, sample
+freshness API, job CLI/HIL coverage, and release-gating runner flags.
 
 ## Active Documentation Set
 
@@ -37,7 +37,7 @@ HIL tooling, ESP-IDF, and release-preparation work.
 
 Prompt-scoped audit reports are not shipped as user-facing release
 documentation. Their durable conclusions are folded into this summary, the
-maintained docs above, and the `v1.6.0` entry in `CHANGELOG.md`.
+maintained docs above, and the current release entry in `CHANGELOG.md`.
 
 ## What Changed
 
@@ -71,8 +71,9 @@ Configuration, reset, and recovery:
   config cache.
 - Dirty state is cleared only after a complete successful config resync through
   `begin()`, `recover()`, or `softReset()`.
-- Successful recovery and reset resync invalidate cached samples so
-  pre-recovery data cannot be reused accidentally.
+- Successful recovery and reset resync invalidate cached samples. Failed staged
+  recovery preserves stale-but-readable cached samples and exposes freshness via
+  `sampleFreshness()` / `SettingsSnapshot::sampleFreshness`.
 - `setFilter()` and `setStandby()` avoid config writes while the sensor reports
   `measuring`.
 - Synchronous reset/recover NVM readiness checks perform one status read and
@@ -83,6 +84,8 @@ Examples, ESP-IDF, and CI:
 
 - The Arduino bring-up CLI and native ESP-IDF CLI share the same command
   contract without sharing Arduino source in IDF builds.
+- Both CLIs expose `job status`, `job init`, `job force`, `job apply`,
+  `job recover`, and `job poll` diagnostics for the public staged-job API.
 - The ESP-IDF example uses `app_main`, `driver/i2c_master.h`, `esp_timer`, and
   fixed C command buffers.
 - Guard scripts check core framework neutrality, CLI parity, IDF example
@@ -97,7 +100,9 @@ HIL preparation:
 - `docs/I2C_HIL_RUNBOOK.md` describes the serial HIL procedure.
 - `docs/I2C_HIL_TARGET_TEMPLATE.md` captures per-target setup and evidence.
 - `tools/run_i2c_hil.py` captures grouped serial transcripts, summaries,
-  command plans, environment records, CSV/JSON results, and artifact manifests.
+  command plans, environment records, CSV/JSON results, and artifact manifests;
+  `--include-job-api` adds staged-job HIL coverage, while `--require-pass` and
+  `--fail-on-review` provide release-gating exit modes.
 
 ## Validation Boundary
 
@@ -124,7 +129,7 @@ template before flashing.
 `scan` is only I2C ACK evidence. Use `chipid` or `reg 0xD0` reading `0x60` as
 the BME280 identity check.
 
-The CLI does not support counted commands such as `read 10` or `read 20`.
+The CLI does not support counted read commands such as `read 10` or `read 20`.
 Use repeated `read` commands for normal-mode evidence and `stress N` only as a
 forced-measurement stress substitute.
 

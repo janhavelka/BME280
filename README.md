@@ -9,9 +9,9 @@ hardware validation and local pure ESP-IDF `idf.py` builds are not claimed
 unless a hardware matrix, HIL artifact package, or validation log records the
 exact commands and setup.
 
-Release status: `v1.6.0` is the direct public successor to `v1.5.0`. The
-`v1.6.0` changelog entry includes all accumulated hardening, documentation, HIL
-tooling, ESP-IDF, and release-preparation changes since `v1.5.0`.
+Release status: `v1.7.0` is the direct public successor to `v1.6.0`. The
+`v1.7.0` changelog entry covers the staged recovery closure, sample freshness
+API, job CLI/HIL coverage, and release-gating runner flags.
 
 ## Features
 
@@ -20,6 +20,7 @@ tooling, ESP-IDF, and release-preparation changes since `v1.5.0`.
 - **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
 - **Deterministic behavior** - no unbounded loops, no heap allocations
 - **Managed synchronous lifecycle** - visible reset/NVM readiness status and tick-driven measurement polling
+- **Staged job API** - optional chunked init, forced measurement, config apply, and recovery jobs with bounded I2C instruction budgets
 
 ## Installation
 
@@ -198,6 +199,8 @@ NVM or measuring bit is checked at most once per `pollJob()` call.
 - `Status getMeasurement(Measurement& out)` - Get floating-point temperature, pressure, and humidity plus per-channel validity flags
 - `Status getRawSample(RawSample& out)` - Get the latest raw ADC sample plus per-channel validity flags after at least one capture
 - `Status getCompensatedSample(CompensatedSample& out)` - Get fixed-point compensated values plus per-channel validity flags after at least one capture
+- `SampleFreshness sampleFreshness()` - Classify the cached sample as `NONE`, `FRESH`, `STALE_AFTER_ERROR`, or `STALE_AFTER_CONFIG_DIRTY`
+- `bool sampleFresh(uint32_t nowMs, uint32_t maxAgeMs)` - True only when a cached sample is fresh and within the caller's age budget
 - `Status getCalibration(Calibration& out)` - Return cached calibration coefficients
 - `Status readCalibrationRaw(CalibrationRaw& out)` - Read calibration register blocks from the device
 
@@ -215,6 +218,11 @@ retained in `lastMeasurementStatus()` and `SettingsSnapshot::lastMeasurementStat
 The value is `IN_PROGRESS` while a request is pending, `OK` after a sample is
 captured, and the original transport or compensation error when a polling,
 burst-read, or compensation step fails.
+
+Raw and fixed-point cached samples remain readable after later refresh failures
+unless a successful resync invalidates them. Use `sampleFreshness()` or
+`SettingsSnapshot::sampleFreshness` to distinguish fresh samples from
+stale-but-readable samples after errors or uncertain hardware configuration.
 
 ### Configuration
 
@@ -430,6 +438,18 @@ Not part of the library. These simulate project-level glue and keep examples sel
 11. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
 12. Synchronous reset/recover NVM readiness checks perform one status read and return visible `BUSY`, `TIMEOUT`, or the original transport error. Repeated NVM polling belongs to staged jobs advanced by `pollJob()`.
 
+## Migration From v1.6.x
+
+- Rebuild dependent firmware: `SettingsSnapshot` changed public layout by
+  adding `sampleFreshness`, and applications can now use `sampleFreshness()` or
+  `sampleFresh(nowMs, maxAgeMs)` instead of inferring freshness from cached data
+  presence alone.
+- Staged recovery from `OFFLINE` keeps the offline latch until the full recovery
+  job completes; public non-recovery I2C remains blocked during intermediate
+  recovery phases.
+- The diagnostic CLIs now expose `job status`, `job init`, `job force`,
+  `job apply`, `job recover`, and `job poll` for staged-job HIL coverage.
+
 ## Migration From v1.5.x
 
 - Check `temperatureValid`, `pressureValid`, and `humidityValid` before using
@@ -461,7 +481,9 @@ python tools/check_idf_example_contract.py
 python scripts/generate_version.py check
 python tools/check_release_metadata.py
 python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py tools/check_release_metadata.py
+python tools/run_i2c_hil.py --parser-self-test
 python tools/run_i2c_hil.py --dry-run
+python tools/run_i2c_hil.py --dry-run --include-job-api
 doxygen Doxyfile
 python -m platformio test -e native
 python -m platformio run -e esp32s3dev
@@ -508,8 +530,8 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - `docs/extracted-md/00_document_inventory.md` - index for extracted datasheet notes
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
-The `v1.6.0` release notes are the single public changelog entry for all
-changes since `v1.5.0`.
+The `v1.7.0` release notes are the public changelog entry for the staged
+recovery, sample freshness, and job-HIL closure work after `v1.6.0`.
 
 ## Known Limitations
 

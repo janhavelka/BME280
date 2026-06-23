@@ -15,6 +15,7 @@ namespace {
 
 static constexpr size_t MAX_WRITE_LEN = 16;
 static constexpr uint16_t NVM_READY_MAX_POLLS = 255;
+static constexpr uint16_t MEASURING_READY_MAX_POLLS = 255;
 static constexpr uint32_t MEASUREMENT_MARGIN_US = 1000;
 static constexpr int64_t HUMIDITY_MAX_X4096 = 419430400;
 
@@ -233,6 +234,8 @@ void BME280::_resetRuntime() {
   _lastMeasurementStatus = Status::Ok();
   _hasSample = false;
   _measurementStartMs = 0;
+  _measurementDeadlineMs = 0;
+  _measurementStatusPolls = 0;
   _sampleTimestampMs = 0;
   _tFine = 0;
   _rawSample = RawSample{};
@@ -374,10 +377,22 @@ void BME280::tick(uint32_t nowMs) {
     _lastMeasurementStatus = st;
     if (_driverState == DriverState::OFFLINE) {
       _measurementRequested = false;
+      _measurementDeadlineMs = 0;
+      _measurementStatusPolls = 0;
     }
     return;
   }
   if (measuring) {
+    if (deadlineReached(nowMs, _measurementDeadlineMs) ||
+        _measurementStatusPolls >= MEASURING_READY_MAX_POLLS) {
+      _measurementRequested = false;
+      _measurementDeadlineMs = 0;
+      _measurementStatusPolls = 0;
+      _lastMeasurementStatus =
+          Status::Error(Err::TIMEOUT, "Measurement ready timeout");
+      return;
+    }
+    _measurementStatusPolls++;
     _lastMeasurementStatus = Status::Error(Err::IN_PROGRESS, "Measurement still running");
     return;
   }
@@ -387,6 +402,8 @@ void BME280::tick(uint32_t nowMs) {
     _lastMeasurementStatus = st;
     if (_driverState == DriverState::OFFLINE) {
       _measurementRequested = false;
+      _measurementDeadlineMs = 0;
+      _measurementStatusPolls = 0;
     }
     return;
   }
@@ -395,6 +412,8 @@ void BME280::tick(uint32_t nowMs) {
   if (!st.ok()) {
     _lastMeasurementStatus = st;
     _measurementRequested = false;
+    _measurementDeadlineMs = 0;
+    _measurementStatusPolls = 0;
     return;
   }
 
@@ -402,6 +421,8 @@ void BME280::tick(uint32_t nowMs) {
   _hasSample = true;
   _sampleTimestampMs = nowMs;
   _measurementRequested = false;
+  _measurementDeadlineMs = 0;
+  _measurementStatusPolls = 0;
   _lastMeasurementStatus = Status::Ok();
 }
 
@@ -423,6 +444,8 @@ void BME280::end() {
   _lastMeasurementStatus = Status::Ok();
   _hasSample = false;
   _measurementStartMs = 0;
+  _measurementDeadlineMs = 0;
+  _measurementStatusPolls = 0;
   _sampleTimestampMs = 0;
   _tFine = 0;
   _rawSample = RawSample{};
@@ -519,6 +542,7 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   out.measurementReady = _measurementReady;
   out.lastMeasurementStatus = _lastMeasurementStatus;
   out.hasSample = _hasSample;
+  out.sampleFreshness = sampleFreshness();
   out.hardwareConfigDirty = _hardwareConfigDirty;
   out.hardwareConfigDirtyError = _hardwareConfigDirtyError;
   out.measurementStartMs = _measurementStartMs;
@@ -547,6 +571,24 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   return Status::Ok();
 }
 
+SampleFreshness BME280::sampleFreshness() const {
+  if (!_hasSample) {
+    return SampleFreshness::NONE;
+  }
+  if (_hardwareConfigDirty) {
+    return SampleFreshness::STALE_AFTER_CONFIG_DIRTY;
+  }
+  if (!_lastMeasurementStatus.ok()) {
+    return SampleFreshness::STALE_AFTER_ERROR;
+  }
+  return SampleFreshness::FRESH;
+}
+
+bool BME280::sampleFresh(uint32_t nowMs, uint32_t maxAgeMs) const {
+  return sampleFreshness() == SampleFreshness::FRESH &&
+         sampleAgeMs(nowMs) <= maxAgeMs;
+}
+
 bool BME280::_jobActive() const {
   return _jobKind != JobKind::NONE &&
          (_jobState == JobState::RUNNING || _jobState == JobState::WAITING);
@@ -559,6 +601,7 @@ void BME280::_clearJob() {
   _jobStatus = Status::Ok();
   _jobDeadlineMs = 0;
   _jobNvmPolls = 0;
+  _jobWaitPolls = 0;
   _jobStartedOffline = false;
   _jobHardwareConfigTouched = false;
   _jobCalibration = Calibration{};
@@ -575,6 +618,7 @@ Status BME280::_startJob(JobKind kind, JobPhase phase) {
   _jobStatus = Status::Error(Err::IN_PROGRESS, "Job in progress");
   _jobDeadlineMs = 0;
   _jobNvmPolls = 0;
+  _jobWaitPolls = 0;
   _jobStartedOffline = false;
   _jobHardwareConfigTouched = false;
   _jobCalibration = Calibration{};
@@ -602,6 +646,8 @@ JobPollResult BME280::_failJob(const Status& st, uint8_t instructionsUsed) {
       !finalStatus.ok() && !finalStatus.inProgress()) {
     _measurementRequested = false;
     _measurementReady = false;
+    _measurementDeadlineMs = 0;
+    _measurementStatusPolls = 0;
     _lastMeasurementStatus = finalStatus;
   }
   _jobState = JobState::FAILED;
@@ -619,6 +665,7 @@ JobPollResult BME280::_completeJob(uint8_t instructionsUsed) {
   _jobStatus = Status::Ok();
   _jobPhase = JobPhase::COMPLETE;
   _jobNvmPolls = 0;
+  _jobWaitPolls = 0;
   _jobStartedOffline = false;
   _jobHardwareConfigTouched = false;
   return _jobResult(instructionsUsed);
@@ -662,6 +709,8 @@ Status BME280::startForcedMeasurementJob() {
   Status st = _startJob(JobKind::FORCED_MEASUREMENT, JobPhase::FORCE_WRITE_CTRL_HUM);
   if (st.inProgress()) {
     _measurementReady = false;
+    _lastMeasurementStatus = Status::Error(Err::IN_PROGRESS,
+                                           "Measurement job started");
   }
   return st;
 }
@@ -687,9 +736,9 @@ Status BME280::startRecoveryJob() {
     _jobStartedOffline = startedOffline;
     _measurementRequested = false;
     _measurementReady = false;
-    _hasSample = false;
     _measurementStartMs = 0;
-    _sampleTimestampMs = 0;
+    _measurementDeadlineMs = 0;
+    _measurementStatusPolls = 0;
   }
   return st;
 }
@@ -704,6 +753,9 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
   }
 
   uint8_t instructionsUsed = 0;
+  const bool recoveryJobActive = (_jobKind == JobKind::RECOVERY);
+  ScopedOfflineI2cAllowance recoveryOfflineI2c(_allowOfflineI2c,
+                                               recoveryJobActive);
 
   for (uint8_t guard = 0; guard < 32; ++guard) {
     _jobState = JobState::RUNNING;
@@ -817,10 +869,21 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           return _failJob(st, instructionsUsed);
         }
         if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+          if (_jobWaitPolls == 0) {
+            _jobDeadlineMs = nowMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+          }
+          if (deadlineReached(nowMs, _jobDeadlineMs) ||
+              _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
+            return _failJob(Status::Error(Err::TIMEOUT,
+                                          "Measurement idle wait timeout"),
+                            instructionsUsed);
+          }
+          ++_jobWaitPolls;
           _jobState = JobState::WAITING;
           _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
           return _jobResult(instructionsUsed);
         }
+        _jobWaitPolls = 0;
         _jobPhase = JobPhase::APPLY_CTRL_MEAS_SLEEP;
         break;
       }
@@ -852,12 +915,23 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           return _failJob(st, instructionsUsed);
         }
         if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+          if (_jobWaitPolls == 0) {
+            _jobDeadlineMs = nowMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+          }
+          if (deadlineReached(nowMs, _jobDeadlineMs) ||
+              _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
+            return _failJob(Status::Error(Err::TIMEOUT,
+                                          "Measurement sleep wait timeout"),
+                            instructionsUsed);
+          }
+          ++_jobWaitPolls;
           _markHardwareConfigDirty(
               Status::Error(Err::BUSY, "Device still measuring after sleep write"));
           _jobState = JobState::WAITING;
           _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
           return _jobResult(instructionsUsed);
         }
+        _jobWaitPolls = 0;
         _jobPhase = JobPhase::APPLY_CONFIG;
         break;
       }
@@ -936,6 +1010,8 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         _measurementRequested = true;
         _measurementReady = false;
         _measurementStartMs = nowMs;
+        _measurementDeadlineMs = nowMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+        _measurementStatusPolls = 0;
         _jobDeadlineMs = nowMs + estimateMeasurementTimeMs();
         _jobPhase = JobPhase::FORCE_WAIT_TIME;
         break;
@@ -945,8 +1021,11 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (!deadlineReached(nowMs, _jobDeadlineMs)) {
           _jobState = JobState::WAITING;
           _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement delay active");
+          _lastMeasurementStatus = _jobStatus;
           return _jobResult(instructionsUsed);
         }
+        _jobDeadlineMs = nowMs + _config.i2cTimeoutMs;
+        _jobWaitPolls = 0;
         _jobPhase = JobPhase::FORCE_READ_STATUS;
         break;
 
@@ -961,10 +1040,19 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           return _failJob(st, instructionsUsed);
         }
         if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+          if (deadlineReached(nowMs, _jobDeadlineMs) ||
+              _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
+            return _failJob(Status::Error(Err::TIMEOUT,
+                                          "Measurement ready timeout"),
+                            instructionsUsed);
+          }
+          ++_jobWaitPolls;
           _jobState = JobState::WAITING;
           _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
+          _lastMeasurementStatus = _jobStatus;
           return _jobResult(instructionsUsed);
         }
+        _jobWaitPolls = 0;
         _jobPhase = JobPhase::FORCE_READ_DATA;
         break;
       }
@@ -992,6 +1080,9 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         _hasSample = true;
         _sampleTimestampMs = nowMs;
         _measurementRequested = false;
+        _measurementDeadlineMs = 0;
+        _measurementStatusPolls = 0;
+        _lastMeasurementStatus = Status::Ok();
         _jobPhase = JobPhase::COMPLETE;
         break;
       }
@@ -1001,12 +1092,30 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           return _jobResult(instructionsUsed);
         }
         const uint8_t value = cmd::RESET_VALUE;
-        ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
         const Status st = writeRegs(cmd::REG_RESET, &value, 1);
         ++instructionsUsed;
         _trackJobConfigWriteResult(st);
         if (!st.ok()) {
           return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::RECOVERY_READ_CHIP_ID;
+        break;
+      }
+
+      case JobPhase::RECOVERY_READ_CHIP_ID: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        uint8_t chipId = 0;
+        const Status st = readRegister(cmd::REG_CHIP_ID, chipId);
+        ++instructionsUsed;
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        if (chipId != cmd::CHIP_ID_BME280) {
+          return _failJob(
+              Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId),
+              instructionsUsed);
         }
         _jobPhase = JobPhase::INIT_NVM_START;
         break;
@@ -1021,6 +1130,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           _clearHardwareConfigDirty();
         } else if (_jobKind == JobKind::RECOVERY) {
           _clearHardwareConfigDirty();
+          _invalidateSampleCache();
           _driverState = DriverState::READY;
           _consecutiveFailures = 0;
         }
@@ -1078,6 +1188,9 @@ Status BME280::requestMeasurement() {
       // Track completion instead of forcing the caller to re-issue the request.
       _measurementRequested = true;
       _measurementStartMs = _nowMs();
+      _measurementDeadlineMs =
+          _measurementStartMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+      _measurementStatusPolls = 0;
       st = Status::Error(Err::IN_PROGRESS, "Measurement already in progress");
       _lastMeasurementStatus = st;
       return st;
@@ -1092,6 +1205,9 @@ Status BME280::requestMeasurement() {
 
     _measurementRequested = true;
     _measurementStartMs = _nowMs();
+    _measurementDeadlineMs =
+        _measurementStartMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+    _measurementStatusPolls = 0;
 
     st = Status::Error(Err::IN_PROGRESS, "Measurement started");
     _lastMeasurementStatus = st;
@@ -1100,6 +1216,9 @@ Status BME280::requestMeasurement() {
 
   _measurementRequested = true;
   _measurementStartMs = _nowMs();
+  _measurementDeadlineMs =
+      _measurementStartMs + estimateNormalCycleMs() + _config.i2cTimeoutMs;
+  _measurementStatusPolls = 0;
   Status st = Status::Error(Err::IN_PROGRESS, "Measurement scheduled");
   _lastMeasurementStatus = st;
   return st;
@@ -1211,7 +1330,9 @@ Status BME280::setMode(Mode mode) {
                                          registerModeForConfig(mode));
   Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
-    _markHardwareConfigDirty(st);
+    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+      _markHardwareConfigDirty(st);
+    }
     return st;
   }
 
@@ -1219,6 +1340,8 @@ Status BME280::setMode(Mode mode) {
   _invalidateSampleCache();
   if (mode == Mode::SLEEP) {
     _measurementRequested = false;
+    _measurementDeadlineMs = 0;
+    _measurementStatusPolls = 0;
   }
   return Status::Ok();
 }
@@ -1246,7 +1369,9 @@ Status BME280::setOversamplingT(Oversampling osrs) {
                                          registerModeForConfig(_config.mode));
   Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
-    _markHardwareConfigDirty(st);
+    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+      _markHardwareConfigDirty(st);
+    }
     return st;
   }
   _config.osrsT = osrs;
@@ -1269,7 +1394,9 @@ Status BME280::setOversamplingP(Oversampling osrs) {
                                          registerModeForConfig(_config.mode));
   Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
-    _markHardwareConfigDirty(st);
+    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+      _markHardwareConfigDirty(st);
+    }
     return st;
   }
   _config.osrsP = osrs;
@@ -1291,7 +1418,9 @@ Status BME280::setOversamplingH(Oversampling osrs) {
   const uint8_t ctrlHum = buildCtrlHum(osrs);
   Status st = writeRegs(cmd::REG_CTRL_HUM, &ctrlHum, 1);
   if (!st.ok()) {
-    _markHardwareConfigDirty(st);
+    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+      _markHardwareConfigDirty(st);
+    }
     return st;
   }
 
@@ -1299,7 +1428,9 @@ Status BME280::setOversamplingH(Oversampling osrs) {
                                          registerModeForConfig(_config.mode));
   st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
-    _markHardwareConfigDirty(st);
+    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+      _markHardwareConfigDirty(st);
+    }
     return st;
   }
 
@@ -1467,6 +1598,8 @@ Status BME280::softReset() {
     _lastMeasurementStatus = Status::Ok();
     _hasSample = false;
     _measurementStartMs = 0;
+    _measurementDeadlineMs = 0;
+    _measurementStatusPolls = 0;
     _sampleTimestampMs = 0;
 
     const uint8_t resetValue = cmd::RESET_VALUE;
@@ -1740,6 +1873,9 @@ Status BME280::_updateHealth(const Status& st) {
     _lastOkMs = now;
     if (_totalSuccess < maxU32) {
       _totalSuccess++;
+    }
+    if (_jobKind == JobKind::RECOVERY && _jobStartedOffline && _jobActive()) {
+      return st;
     }
     _consecutiveFailures = 0;
 

@@ -7,18 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [1.7.0] - 2026-06-23
+
 ### Added
 - `Config::nvmReadyTimeoutMs` and `SettingsSnapshot::nvmReadyTimeoutMs` for explicit NVM-ready deadline visibility.
 - Chunked job APIs for integration owners that need bounded transfer budgets:
   `startInitJob()`, `startForcedMeasurementJob()`, `startApplyConfigJob()`,
   `startRecoveryJob()`, and `pollJob(nowMs, maxInstructions)`.
+- `SampleFreshness`, `sampleFreshness()`, `sampleFresh(nowMs, maxAgeMs)`, and
+  `SettingsSnapshot::sampleFreshness` so applications can distinguish fresh
+  cached samples from stale-but-readable samples after errors or dirty hardware
+  config.
+- Arduino and native ESP-IDF diagnostic CLI `job` commands for staged init,
+  forced measurement, config apply, recovery, single-poll, and status checks.
+- HIL runner `--include-job-api`, staged-job parser validators, and
+  release-gating exit flags `--require-pass` and `--fail-on-review`.
 - TunnelMonitor fit report with synchronous API classification and optional ENV absence-vs-fault mapping notes.
-- Native coverage for staged init/apply/forced/recovery jobs, NVM-ready single-read `BUSY`/wrap-safe timeout behavior, chip-ID transport error preservation, calibration-invalid begin failures, and I2C timeout propagation.
+- Native coverage for staged init/apply/forced/recovery jobs, forced-job status
+  lifecycle, sample freshness, NVM-ready single-read `BUSY`/wrap-safe timeout
+  behavior, chip-ID transport error preservation, calibration-invalid begin
+  failures, and I2C timeout propagation.
 
 ### Changed
 - Synchronous NVM readiness checks now perform one raw status read per call and return visible `BUSY`, `TIMEOUT`, or detailed transport errors instead of hiding a tight polling loop.
 - `begin()`, `probe()`, and staged init preserve chip-ID transport faults; only address NACK maps to `DEVICE_NOT_FOUND`.
 - Core time fallback is routed through private `PlatformTime` and remains inert; production timestamps and deadlines should come from `Config::nowMs`.
+- Staged recovery now verifies chip ID after reset, can complete from `OFFLINE`
+  without exposing an intermediate `READY` latch, and reasserts `OFFLINE` on
+  failed recovery that started offline.
+- Staged recovery now preserves the last cached raw/compensated sample after a
+  failed resync and invalidates it only after successful full recovery.
+- Staged forced-measurement jobs now expose the same observable
+  `lastMeasurementStatus()` lifecycle as `requestMeasurement()`.
 
 ## [1.6.0] - 2026-06-02
 
@@ -300,7 +322,8 @@ for all changes accumulated since `v1.5.0`.
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/janhavelka/BME280/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/janhavelka/BME280/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/janhavelka/BME280/compare/v1.3.0...v1.4.0

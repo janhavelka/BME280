@@ -1,4 +1,4 @@
-version: "1.6.0"
+version: "1.7.0"
 description: "Production-oriented BME280 environmental sensor driver"
 license: "MIT"
 targets:

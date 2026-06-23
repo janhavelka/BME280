@@ -47,6 +47,10 @@ constexpr int CLI_QUEUE_DEPTH = 4;
 constexpr uint32_t DEFAULT_STRESS_COUNT = 10U;
 constexpr uint32_t DEFAULT_STRESS_MIX_COUNT = 50U;
 constexpr uint32_t MAX_STRESS_COUNT = 100000U;
+constexpr uint8_t JOB_CLI_DEFAULT_BUDGET = 1U;
+constexpr uint8_t JOB_CLI_MAX_BUDGET = 8U;
+constexpr uint16_t JOB_CLI_MAX_POLLS = 512U;
+constexpr uint32_t JOB_CLI_POLL_DELAY_MS = 1U;
 
 #define LOG_COLOR_RESULT(ok) ((ok) ? LOG_COLOR_GREEN : LOG_COLOR_RED)
 #define LOG_PRINT(tagColor, tag, fmt, ...) \
@@ -86,6 +90,8 @@ struct StressStats {
   int target = 0;
   int attempts = 0;
   int success = 0;
+  uint32_t successBefore = 0;
+  uint32_t failBefore = 0;
   uint32_t errors = 0;
   bool hasSample = false;
   bool hasFailure = false;
@@ -110,6 +116,9 @@ uint32_t gPendingStartMs = 0;
 int gStressRemaining = 0;
 StressStats gStress;
 uint8_t gActiveAddress = BME280_DEFAULT_ADDR;
+uint8_t gLastJobInstructions = 0;
+
+void cancelPending();
 
 uint32_t nowMs(void*) {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000LL);
@@ -153,6 +162,28 @@ const char* stateToStr(BME280::DriverState state) {
     case BME280::DriverState::READY: return "READY";
     case BME280::DriverState::DEGRADED: return "DEGRADED";
     case BME280::DriverState::OFFLINE: return "OFFLINE";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* jobKindToStr(BME280::JobKind kind) {
+  switch (kind) {
+    case BME280::JobKind::NONE: return "NONE";
+    case BME280::JobKind::INIT: return "INIT";
+    case BME280::JobKind::FORCED_MEASUREMENT: return "FORCED_MEASUREMENT";
+    case BME280::JobKind::APPLY_CONFIG: return "APPLY_CONFIG";
+    case BME280::JobKind::RECOVERY: return "RECOVERY";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* jobStateToStr(BME280::JobState state) {
+  switch (state) {
+    case BME280::JobState::IDLE: return "IDLE";
+    case BME280::JobState::RUNNING: return "RUNNING";
+    case BME280::JobState::WAITING: return "WAITING";
+    case BME280::JobState::DONE: return "DONE";
+    case BME280::JobState::FAILED: return "FAILED";
     default: return "UNKNOWN";
   }
 }
@@ -274,6 +305,15 @@ BME280::Config makeDefaultConfig() {
 bool parseI2cAddress(const char* token, uint8_t& out) {
   uint32_t value = 0;
   if (!parseU32(token, value) || (value != 0x76U && value != 0x77U)) {
+    return false;
+  }
+  out = static_cast<uint8_t>(value);
+  return true;
+}
+
+bool parseJobBudget(const char* token, uint8_t& out) {
+  uint32_t value = 0;
+  if (!parseU32(token, value) || value < 1U || value > JOB_CLI_MAX_BUDGET) {
     return false;
   }
   out = static_cast<uint8_t>(value);
@@ -471,6 +511,116 @@ void printDriverHealth() {
       std::printf("  Error msg: %s\n", lastErr.msg);
     }
   }
+}
+
+void printJobUsage() {
+  LOGW("Usage: job status | job init|force|apply|recover|poll [1..8]");
+}
+
+void printJobStatus() {
+  const BME280::Status st = device.jobStatus();
+  std::printf("=== Job Status ===\n");
+  std::printf("Job kind: %s\n", jobKindToStr(device.jobKind()));
+  std::printf("Job state: %s\n", jobStateToStr(device.jobState()));
+  std::printf("Status: %s (code=%u, detail=%ld)\n",
+              errToStr(st.code),
+              static_cast<unsigned>(st.code),
+              static_cast<long>(st.detail));
+  if (st.msg != nullptr && st.msg[0] != '\0') {
+    std::printf("Message: %s\n", st.msg);
+  }
+  std::printf("Instructions: %u\n", static_cast<unsigned>(gLastJobInstructions));
+  std::printf("Driver: %s\n", stateToStr(device.state()));
+  std::printf("Hardware config dirty: %s\n", boolStr(device.hardwareConfigDirty()));
+  std::printf("Consecutive failures: %u\n", static_cast<unsigned>(device.consecutiveFailures()));
+}
+
+BME280::Status startJobByName(const char* action) {
+  if (std::strcmp(action, "init") == 0) {
+    return device.startInitJob(makeDefaultConfig());
+  }
+  if (std::strcmp(action, "force") == 0) {
+    return device.startForcedMeasurementJob();
+  }
+  if (std::strcmp(action, "apply") == 0) {
+    return device.startApplyConfigJob();
+  }
+  if (std::strcmp(action, "recover") == 0) {
+    return device.startRecoveryJob();
+  }
+  return BME280::Status::Error(BME280::Err::INVALID_PARAM, "Unknown job command");
+}
+
+void pollJobOnce(uint8_t budget) {
+  const BME280::JobPollResult result = device.pollJob(currentMs(), budget);
+  gLastJobInstructions = result.instructionsUsed;
+  printJobStatus();
+}
+
+void runJobToTerminal(const char* action, uint8_t budget) {
+  cancelPending();
+  gLastJobInstructions = 0;
+  const BME280::Status st = startJobByName(action);
+  if (!st.inProgress()) {
+    printStatus(st);
+    printJobStatus();
+    return;
+  }
+
+  BME280::JobPollResult result{};
+  for (uint16_t poll = 0; poll < JOB_CLI_MAX_POLLS; ++poll) {
+    result = device.pollJob(currentMs(), budget);
+    gLastJobInstructions = result.instructionsUsed;
+    if (result.state == BME280::JobState::DONE ||
+        result.state == BME280::JobState::FAILED) {
+      printJobStatus();
+      return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(JOB_CLI_POLL_DELAY_MS));
+  }
+
+  LOGW("Job poll limit reached");
+  printJobStatus();
+}
+
+void handleJobCommand(char*& cursor) {
+  char* action = nextToken(cursor);
+  if (action == nullptr) {
+    printJobUsage();
+    return;
+  }
+
+  uint8_t budget = JOB_CLI_DEFAULT_BUDGET;
+  char* budgetToken = nextToken(cursor);
+  if (budgetToken != nullptr && !parseJobBudget(budgetToken, budget)) {
+    printJobUsage();
+    return;
+  }
+  if (nextToken(cursor) != nullptr) {
+    printJobUsage();
+    return;
+  }
+
+  if (std::strcmp(action, "status") == 0) {
+    if (budgetToken != nullptr) {
+      printJobUsage();
+      return;
+    }
+    printJobStatus();
+    return;
+  }
+  if (std::strcmp(action, "poll") == 0) {
+    pollJobOnce(budget);
+    return;
+  }
+  if (std::strcmp(action, "init") == 0 ||
+      std::strcmp(action, "force") == 0 ||
+      std::strcmp(action, "apply") == 0 ||
+      std::strcmp(action, "recover") == 0) {
+    runJobToTerminal(action, budget);
+    return;
+  }
+  printJobUsage();
 }
 
 void printMeasurement(const BME280::Measurement& sample) {
@@ -780,6 +930,8 @@ void resetStressStats(int target) {
   gStress.active = true;
   gStress.startMs = currentMs();
   gStress.target = target;
+  gStress.successBefore = device.totalSuccess();
+  gStress.failBefore = device.totalFailures();
 }
 
 void noteStressError(const BME280::Status& st) {
@@ -816,14 +968,28 @@ void updateStressStats(const BME280::Measurement& sample) {
 
 void finishStressStats() {
   const uint32_t elapsed = currentMs() - gStress.startMs;
+  const uint32_t successDelta = device.totalSuccess() - gStress.successBefore;
+  const uint32_t failDelta = device.totalFailures() - gStress.failBefore;
   const float successRate =
       (gStress.attempts > 0) ? (100.0f * static_cast<float>(gStress.success) / gStress.attempts) : 0.0f;
   std::printf("=== Stress Summary ===\n");
+  std::printf("  Target: %d\n", gStress.target);
   std::printf("  Attempts: %d\n", gStress.attempts);
   std::printf("  Success: %s%d%s\n", nonZeroGoodColor(gStress.success), gStress.success, LOG_COLOR_RESET);
   std::printf("  Errors: %s%lu%s\n", zeroGoodColor(gStress.errors), static_cast<unsigned long>(gStress.errors), LOG_COLOR_RESET);
   std::printf("  Success rate: %s%.1f%%%s\n", successRateColor(successRate), successRate, LOG_COLOR_RESET);
-  std::printf("  Elapsed: %lu ms\n", static_cast<unsigned long>(elapsed));
+  std::printf("  Duration: %lu ms\n", static_cast<unsigned long>(elapsed));
+  if (elapsed > 0U) {
+    std::printf("  Rate: %.2f samples/s\n",
+                1000.0f * static_cast<float>(gStress.attempts) / static_cast<float>(elapsed));
+  }
+  std::printf("  Health delta: %ssuccess +%lu%s, %sfailures +%lu%s\n",
+              nonZeroGoodColor(successDelta),
+              static_cast<unsigned long>(successDelta),
+              LOG_COLOR_RESET,
+              zeroGoodColor(failDelta),
+              static_cast<unsigned long>(failDelta),
+              LOG_COLOR_RESET);
   if (gStress.hasSample && gStress.success > 0) {
     const double denom = static_cast<double>(gStress.success);
     std::printf("  Temp C: min=%.2f avg=%.2f max=%.2f\n",
@@ -881,6 +1047,9 @@ void handleMeasurementReady() {
 void runStressMix(int count) {
   int success = 0;
   int failures = 0;
+  const uint32_t successBefore = device.totalSuccess();
+  const uint32_t failBefore = device.totalFailures();
+  const uint32_t startMs = currentMs();
   LOGI("Starting mixed stress: %d cycles", count);
   for (int i = 0; i < count; ++i) {
     BME280::Status st;
@@ -919,12 +1088,34 @@ void runStressMix(int count) {
     }
     vTaskDelay(pdMS_TO_TICKS(1));
   }
-  std::printf("Stress mix result: ok=%s%d%s fail=%s%d%s\n",
-              nonZeroGoodColor(success),
+  const uint32_t elapsed = currentMs() - startMs;
+  const uint32_t successDelta = device.totalSuccess() - successBefore;
+  const uint32_t failDelta = device.totalFailures() - failBefore;
+  const int total = success + failures;
+  const float successPct =
+      (total > 0) ? (100.0f * static_cast<float>(success) / static_cast<float>(total)) : 0.0f;
+  std::printf("=== stress_mix summary ===\n");
+  std::printf("  Total: %sok=%d%s %sfail=%d%s (%s%.2f%%%s)\n",
+              nonZeroGoodColor(static_cast<uint32_t>(success)),
               success,
               LOG_COLOR_RESET,
               zeroGoodColor(static_cast<uint32_t>(failures)),
               failures,
+              LOG_COLOR_RESET,
+              successRateColor(successPct),
+              successPct,
+              LOG_COLOR_RESET);
+  std::printf("  Duration: %lu ms\n", static_cast<unsigned long>(elapsed));
+  if (elapsed > 0U) {
+    std::printf("  Rate: %.2f ops/s\n",
+                1000.0f * static_cast<float>(total) / static_cast<float>(elapsed));
+  }
+  std::printf("  Health delta: %ssuccess +%lu%s, %sfailures +%lu%s\n",
+              nonZeroGoodColor(successDelta),
+              static_cast<unsigned long>(successDelta),
+              LOG_COLOR_RESET,
+              zeroGoodColor(failDelta),
+              static_cast<unsigned long>(failDelta),
               LOG_COLOR_RESET);
 }
 
@@ -943,27 +1134,45 @@ void reportCheck(const char* label, bool pass, const char* detail = "") {
 void runSelfTest() {
   std::printf("=== BME280 selftest (safe command smoke check) ===\n");
   std::printf("  Plausibility ranges are loose and environment-dependent; this is not factory calibration.\n");
+  uint32_t pass = 0;
+  uint32_t fail = 0;
+  auto selfCheck = [&](const char* label, bool ok, const char* detail = "") {
+    reportCheck(label, ok, detail);
+    if (ok) {
+      ++pass;
+    } else {
+      ++fail;
+    }
+  };
+
   uint8_t id = 0;
   BME280::Status st = device.readChipId(id);
-  reportCheck("readChipId", st.ok(), st.ok() ? "" : errToStr(st.code));
-  reportCheck("chip ID is BME280", st.ok() && id == BME280::cmd::CHIP_ID_BME280);
+  selfCheck("readChipId", st.ok(), st.ok() ? "" : errToStr(st.code));
+  selfCheck("chip ID is BME280", st.ok() && id == BME280::cmd::CHIP_ID_BME280);
   BME280::Calibration calib;
   st = device.getCalibration(calib);
-  reportCheck("getCalibration", st.ok(), st.ok() ? "" : errToStr(st.code));
+  selfCheck("getCalibration", st.ok(), st.ok() ? "" : errToStr(st.code));
   BME280::Measurement sample;
   st = performMeasurementBlocking(sample);
-  reportCheck("measurement cycle", st.ok(), st.ok() ? "" : errToStr(st.code));
+  selfCheck("measurement cycle", st.ok(), st.ok() ? "" : errToStr(st.code));
   const bool plausible = st.ok() && sample.temperatureValid && sample.pressureValid && sample.humidityValid &&
                          sample.temperatureC > -60.0f && sample.temperatureC < 130.0f &&
                          sample.humidityPct >= 0.0f && sample.humidityPct <= 100.0f &&
                          sample.pressurePa > 20000.0f && sample.pressurePa < 130000.0f;
-  reportCheck("measurement in plausible range", plausible);
+  selfCheck("measurement in plausible range", plausible);
   bool measuring = false;
   st = device.isMeasuring(measuring);
-  reportCheck("isMeasuring", st.ok(), st.ok() ? "" : errToStr(st.code));
+  selfCheck("isMeasuring", st.ok(), st.ok() ? "" : errToStr(st.code));
   st = device.recover();
-  reportCheck("recover", st.ok(), st.ok() ? "" : errToStr(st.code));
-  reportCheck("isOnline", device.isOnline());
+  selfCheck("recover", st.ok(), st.ok() ? "" : errToStr(st.code));
+  selfCheck("isOnline", device.isOnline());
+  std::printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=0\n",
+              nonZeroGoodColor(pass),
+              static_cast<unsigned long>(pass),
+              LOG_COLOR_RESET,
+              zeroGoodColor(fail),
+              static_cast<unsigned long>(fail),
+              LOG_COLOR_RESET);
 }
 
 void printHelp() {
@@ -1000,6 +1209,7 @@ void printHelp() {
   printHelpItem("state", "Show compact one-line health summary");
   printHelpItem("probe", "Probe device (no health tracking)");
   printHelpItem("recover", "Manual recovery attempt");
+  printHelpItem("job status|init|force|apply|recover|poll [budget]", "Run staged job API diagnostics");
   printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   printHelpItem("stress [N]", "Run N measurement cycles");
   printHelpItem("stress_mix [N]", "Run N mixed-operation cycles");
@@ -1028,6 +1238,8 @@ void processCommand(char* line) {
     printVersionInfo();
   } else if (std::strcmp(head, "scan") == 0) {
     scanBus();
+  } else if (std::strcmp(head, "job") == 0) {
+    handleJobCommand(cursor);
   } else if (std::strcmp(head, "addr") == 0) {
     char* arg = nextToken(cursor);
     if (arg == nullptr) {

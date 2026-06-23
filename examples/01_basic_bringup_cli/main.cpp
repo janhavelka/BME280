@@ -72,8 +72,13 @@ uint32_t pendingStartMs = 0;
 int stressRemaining = 0;
 StressStats stressStats;
 uint8_t activeAddress = 0x76;
+uint8_t lastJobInstructions = 0;
 static constexpr uint32_t STRESS_PROGRESS_UPDATES = 10U;
 static constexpr size_t CLI_INPUT_MAX_LEN = 127U;
+static constexpr uint8_t JOB_CLI_DEFAULT_BUDGET = 1U;
+static constexpr uint8_t JOB_CLI_MAX_BUDGET = 8U;
+static constexpr uint16_t JOB_CLI_MAX_POLLS = 512U;
+static constexpr uint32_t JOB_CLI_POLL_DELAY_MS = 1U;
 
 void cancelPending();
 
@@ -129,6 +134,30 @@ const char* stateToStr(BME280::DriverState st) {
     case DriverState::DEGRADED: return "DEGRADED";
     case DriverState::OFFLINE:  return "OFFLINE";
     default:                    return "UNKNOWN";
+  }
+}
+
+const char* jobKindToStr(BME280::JobKind kind) {
+  using namespace BME280;
+  switch (kind) {
+    case JobKind::NONE: return "NONE";
+    case JobKind::INIT: return "INIT";
+    case JobKind::FORCED_MEASUREMENT: return "FORCED_MEASUREMENT";
+    case JobKind::APPLY_CONFIG: return "APPLY_CONFIG";
+    case JobKind::RECOVERY: return "RECOVERY";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* jobStateToStr(BME280::JobState state) {
+  using namespace BME280;
+  switch (state) {
+    case JobState::IDLE: return "IDLE";
+    case JobState::RUNNING: return "RUNNING";
+    case JobState::WAITING: return "WAITING";
+    case JobState::DONE: return "DONE";
+    case JobState::FAILED: return "FAILED";
+    default: return "UNKNOWN";
   }
 }
 
@@ -1387,6 +1416,125 @@ bool parseI2cAddress(const String& token, uint8_t& out) {
   return true;
 }
 
+bool parseJobBudget(const String& token, uint8_t& out) {
+  uint32_t value = 0;
+  if (!parseU32(token, value) || value < 1U || value > JOB_CLI_MAX_BUDGET) {
+    return false;
+  }
+  out = static_cast<uint8_t>(value);
+  return true;
+}
+
+void printJobUsage() {
+  LOGW("Usage: job status | job init|force|apply|recover|poll [1..8]");
+}
+
+void printJobStatus() {
+  const BME280::Status st = device.jobStatus();
+  Serial.println("=== Job Status ===");
+  Serial.printf("Job kind: %s\n", jobKindToStr(device.jobKind()));
+  Serial.printf("Job state: %s\n", jobStateToStr(device.jobState()));
+  Serial.printf("Status: %s (code=%u, detail=%ld)\n",
+                errToStr(st.code),
+                static_cast<unsigned>(st.code),
+                static_cast<long>(st.detail));
+  if (st.msg != nullptr && st.msg[0] != '\0') {
+    Serial.printf("Message: %s\n", st.msg);
+  }
+  Serial.printf("Instructions: %u\n", static_cast<unsigned>(lastJobInstructions));
+  Serial.printf("Driver: %s\n", stateToStr(device.state()));
+  Serial.printf("Hardware config dirty: %s\n", log_bool_str(device.hardwareConfigDirty()));
+  Serial.printf("Consecutive failures: %u\n", static_cast<unsigned>(device.consecutiveFailures()));
+}
+
+BME280::Status startJobByName(const String& action) {
+  if (action == "init") {
+    return device.startInitJob(makeDefaultConfig());
+  }
+  if (action == "force") {
+    return device.startForcedMeasurementJob();
+  }
+  if (action == "apply") {
+    return device.startApplyConfigJob();
+  }
+  if (action == "recover") {
+    return device.startRecoveryJob();
+  }
+  return BME280::Status::Error(BME280::Err::INVALID_PARAM, "Unknown job command");
+}
+
+void pollJobOnce(uint8_t budget) {
+  const BME280::JobPollResult result = device.pollJob(millis(), budget);
+  lastJobInstructions = result.instructionsUsed;
+  printJobStatus();
+}
+
+void runJobToTerminal(const String& action, uint8_t budget) {
+  cancelPending();
+  lastJobInstructions = 0;
+  const BME280::Status st = startJobByName(action);
+  if (!st.inProgress()) {
+    printStatus(st);
+    printJobStatus();
+    return;
+  }
+
+  BME280::JobPollResult result{};
+  for (uint16_t poll = 0; poll < JOB_CLI_MAX_POLLS; ++poll) {
+    result = device.pollJob(millis(), budget);
+    lastJobInstructions = result.instructionsUsed;
+    if (result.state == BME280::JobState::DONE ||
+        result.state == BME280::JobState::FAILED) {
+      printJobStatus();
+      return;
+    }
+    delay(JOB_CLI_POLL_DELAY_MS);
+  }
+
+  LOGW("Job poll limit reached");
+  printJobStatus();
+}
+
+void handleJobCommand(const String& cmd) {
+  String rest = cmd.substring(3);
+  rest.trim();
+  if (rest.length() == 0) {
+    printJobUsage();
+    return;
+  }
+
+  const int space = rest.indexOf(' ');
+  String action = (space < 0) ? rest : rest.substring(0, space);
+  String budgetToken = (space < 0) ? "" : rest.substring(space + 1);
+  action.trim();
+  budgetToken.trim();
+
+  uint8_t budget = JOB_CLI_DEFAULT_BUDGET;
+  if (budgetToken.length() > 0 && !parseJobBudget(budgetToken, budget)) {
+    printJobUsage();
+    return;
+  }
+
+  if (action == "status") {
+    if (budgetToken.length() > 0) {
+      printJobUsage();
+      return;
+    }
+    printJobStatus();
+    return;
+  }
+  if (action == "poll") {
+    pollJobOnce(budget);
+    return;
+  }
+  if (action == "init" || action == "force" ||
+      action == "apply" || action == "recover") {
+    runJobToTerminal(action, budget);
+    return;
+  }
+  printJobUsage();
+}
+
 void printActiveAddress() {
   Serial.printf("Active I2C address: 0x%02X (%s)\n",
                 activeAddress,
@@ -1431,6 +1579,7 @@ void printHelp() {
   cli::printHelpItem("state", "Show compact one-line health summary");
   cli::printHelpItem("probe", "Probe device (no health tracking)");
   cli::printHelpItem("recover", "Manual recovery attempt");
+  cli::printHelpItem("job status|init|force|apply|recover|poll [budget]", "Run staged job API diagnostics");
   cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   cli::printHelpItem("stress [N]", "Run N measurement cycles");
   cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles");
@@ -1469,6 +1618,11 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "scan") {
     bus_diag::scan();
+    return;
+  }
+
+  if (cmd == "job" || cmd.startsWith("job ")) {
+    handleJobCommand(cmd);
     return;
   }
 

@@ -111,6 +111,14 @@ struct CalibrationRaw {
   uint8_t h[cmd::REG_CALIB_H_LEN] = {};   ///< Raw 0xE1..0xE7 humidity block
 };
 
+/// Freshness classification for the latest cached sample.
+enum class SampleFreshness : uint8_t {
+  NONE,                    ///< No cached sample exists
+  FRESH,                   ///< Cached sample is clean and latest measurement status is OK
+  STALE_AFTER_ERROR,       ///< Cached sample exists but latest measurement status is not OK
+  STALE_AFTER_CONFIG_DIRTY ///< Cached sample exists but hardware config may be out of sync
+};
+
 /// Snapshot of driver configuration and runtime state without I2C access.
 struct SettingsSnapshot {
   bool initialized = false;                   ///< True after begin() succeeds
@@ -130,6 +138,7 @@ struct SettingsSnapshot {
   bool measurementReady = false;              ///< True when an unread cached measurement is ready
   Status lastMeasurementStatus = Status::Ok(); ///< Last request/tick status for measurement scheduling
   bool hasSample = false;                     ///< True when a compensated sample is cached
+  SampleFreshness sampleFreshness = SampleFreshness::NONE; ///< Freshness of the cached sample
   bool hardwareConfigDirty = false;           ///< True when hardware config may differ from cache
   Status hardwareConfigDirtyError = Status::Ok(); ///< First error that made config state uncertain
   uint32_t measurementStartMs = 0;            ///< Timestamp of last measurement trigger
@@ -382,6 +391,16 @@ public:
   uint32_t sampleAgeMs(uint32_t nowMs) const {
     return _hasSample ? (nowMs - _sampleTimestampMs) : 0;
   }
+
+  /// Classify the cached sample without touching I2C.
+  /// @return Freshness state for the latest cached raw/compensated sample
+  SampleFreshness sampleFreshness() const;
+
+  /// Check whether the cached sample is fresh and within an age budget.
+  /// @param nowMs Current monotonic timestamp in milliseconds
+  /// @param maxAgeMs Maximum acceptable cached-sample age in milliseconds
+  /// @return true only when sampleFreshness() is FRESH and age is within budget
+  bool sampleFresh(uint32_t nowMs, uint32_t maxAgeMs) const;
 
   /// Get measurement result (float).
   /// Returns MEASUREMENT_NOT_READY until an unread cached measurement is ready
@@ -681,6 +700,7 @@ private:
     FORCE_READ_DATA,
     FORCE_COMPENSATE,
     RECOVERY_WRITE_RESET,
+    RECOVERY_READ_CHIP_ID,
     COMPLETE
   };
 
@@ -733,6 +753,7 @@ private:
   Status _jobStatus = Status::Ok();
   uint32_t _jobDeadlineMs = 0;
   uint16_t _jobNvmPolls = 0;
+  uint16_t _jobWaitPolls = 0;
   bool _jobStartedOffline = false;
   bool _jobHardwareConfigTouched = false;
   Calibration _jobCalibration = {};
@@ -763,6 +784,8 @@ private:
   Status _lastMeasurementStatus = Status::Ok();
   bool _hasSample = false;
   uint32_t _measurementStartMs = 0;
+  uint32_t _measurementDeadlineMs = 0;
+  uint16_t _measurementStatusPolls = 0;
   uint32_t _sampleTimestampMs = 0;
   int32_t _tFine = 0;
   RawSample _rawSample;

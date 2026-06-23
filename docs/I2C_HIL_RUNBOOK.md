@@ -132,6 +132,30 @@ Run an opt-in normal-mode repeated-read soak using only existing CLI commands:
 python tools/run_i2c_hil.py --port <PORT> --baud 115200 --address 0x76 --out hil_logs --include-normal-soak --normal-soak-count 10 --normal-soak-interval-s 1.0
 ```
 
+Run parser checks without hardware:
+
+```bash
+python tools/run_i2c_hil.py --parser-self-test
+```
+
+Run additional safe coverage groups:
+
+```bash
+python tools/run_i2c_hil.py --port <PORT> --baud 115200 --address 0x76 --include-config-matrix --include-invalid-inputs --include-benchmarks
+```
+
+Run a bounded duration soak after the fixed plan:
+
+```bash
+python tools/run_i2c_hil.py --port <PORT> --baud 115200 --address 0x76 --soak-duration-s 28800 --soak-cycle-stress-count 50 --soak-cycle-mix-count 70
+```
+
+Serial timing can be adjusted without editing the runner using
+`--timeout-s`, `--boot-settle-s`, `--idle-timeout-s`,
+`--idle-after-match-s`, `--command-pacing-s`, `--reconnect-attempts`, and
+`--reconnect-delay-s`. Use `--verbose` to echo transcript chunks to the console
+while preserving the artifact files.
+
 Use `--address 0x77` when SDO is tied to VDDIO. The runner writes artifacts to a
 new directory under `hil_logs/`:
 
@@ -220,6 +244,7 @@ Default command groups:
 | `normal-mode` | Bounded normal-mode entry, repeated reads, and return to sleep |
 | `reset-recover` | Soft reset, post-reset `im_update`/status evidence, recover/resync, and dirty-state evidence |
 | `stress-health` | Safe selftest, short forced stress, and final driver health |
+| `job-api` | Opt-in staged init/apply/forced/recovery jobs and instruction-budget validation |
 
 The post-`force` `reg 0xF4` capture records `ctrl_meas`; for formal forced-mode
 sleep-return evidence, verify mode bits `[1:0]` are `00`. The following
@@ -237,6 +262,9 @@ Formal BME280 serial acceptance checks:
 - `stress` rows must parse `stress Errors=0`; sample plausibility still
   requires operator review.
 - `drv` should parse `Consecutive failures: 0` at the end of the run.
+- `job` rows added by `--include-job-api` must parse a terminal staged-job
+  state, keep `Instructions:` within the requested budget, and end staged
+  recovery with `Consecutive failures: 0`.
 
 ## Gated Work
 
@@ -248,6 +276,45 @@ The default run excludes raw writes, long soak, and physical fault injection.
   adds `normal on`, repeated `read` commands, `normal off`, `cfg`, and
   `status`. This remains operator-reviewed because serial output alone does not
   prove environmental accuracy.
+- `--include-config-matrix` adds a bounded smoke matrix for safe oversampling,
+  filter, and standby boundary values, restores the default example settings,
+  and captures `cfg`, timing, raw, and compensated evidence.
+- `--include-invalid-inputs` adds safe CLI validation checks for unknown
+  commands, invalid address/mode/config values, and malformed register commands.
+- `--include-benchmarks` or `--sample-rate-benchmark` adds forced-measurement
+  and mixed-operation sampling-rate benchmarks.
+- `--include-job-api` adds `job status`, `job poll 1`, staged init/apply/forced
+  measurement/recovery jobs with budgets `1` and `3`, and post-job raw/comp/cfg
+  evidence. This exercises the public chunked-job API and parser validators.
+- `--soak-duration-s N` runs a duration-based command mix after the fixed plan.
+  Each command remains individually timeout-bounded, and the loop stops early on
+  `FAIL` or `TIMEOUT`. `--soak-reset-interval N` controls periodic soft
+  reset/recover cycles; use `0` to disable them.
+- `--require-pass` exits `0` only for final verdict `PASS`; review/unknown
+  verdicts exit `3`.
+- `--fail-on-review` keeps evidence collection behavior but exits `3` when the
+  final verdict requires operator review or contains unknown serial evidence.
+
+## Portable Evidence Package
+
+Runner artifacts under `hil_logs/` are local development evidence unless they
+are packaged with a manifest and hashes. For a release evidence bundle, copy the
+run directories into a report folder and record SHA256 values for each
+`manifest.json`, `summary.json`, `results.csv`, and `serial_transcript.txt`:
+
+```powershell
+New-Item -ItemType Directory -Force docs\reports\hil-validation-COM28-20260622-artifacts
+Copy-Item -Recurse hil_logs\i2c_20260622_205926 docs\reports\hil-validation-COM28-20260622-artifacts\
+Copy-Item -Recurse hil_logs\i2c_20260622_210228 docs\reports\hil-validation-COM28-20260622-artifacts\
+Get-FileHash docs\reports\hil-validation-COM28-20260622-artifacts\*\manifest.json -Algorithm SHA256
+Get-FileHash docs\reports\hil-validation-COM28-20260622-artifacts\*\summary.json -Algorithm SHA256
+Get-FileHash docs\reports\hil-validation-COM28-20260622-artifacts\*\results.csv -Algorithm SHA256
+Get-FileHash docs\reports\hil-validation-COM28-20260622-artifacts\*\serial_transcript.txt -Algorithm SHA256
+```
+
+Do not commit large transcripts or zip files by default. Commit only a compact
+index with paths, hashes, runner commands, and final verdicts unless the release
+process explicitly requires bundled raw logs.
 - `--include-destructive --confirm-raw-write BME280_RAW_WRITE` adds a
   diagnostic `wreg 0xF4 0x00` raw write and follow-up `recover`, `cfg`, and
   `status` evidence. Raw writes can desynchronize cached driver settings and
@@ -273,6 +340,9 @@ for example with `normal off`, `cfg`, and `status`.
   transcript before using it as evidence.
 - `SERIAL_OK_OR_REVIEW` means serial output exists but did not contain all
   expected tokens.
+- `UNKNOWN` means a bounded but incomplete hardware state was observed, for
+  example soft-reset returning `Status: BUSY` while NVM copy is still in
+  progress. Review the following status/recover evidence before using it.
 - `FAIL` or `TIMEOUT` means the transcript contains a precise failure token or a
   command exceeded its deadline.
 - `SKIPPED_DRY_RUN` means no serial command was sent.

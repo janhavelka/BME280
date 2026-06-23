@@ -1,6 +1,6 @@
 # BME280 Hardware Validation Matrix
 
-Last updated: 2026-06-01
+Last updated: 2026-06-23
 
 This matrix is intentionally conservative. `NOT RUN` means no physical BME280
 hardware command was executed and recorded for that item in this repository.
@@ -95,9 +95,16 @@ Use `unknown` rather than guessing. Leave untested rows as `NOT RUN`.
 
 | Area | Target / condition | Status | Evidence |
 |------|--------------------|--------|----------|
+| ESP32-S2 Arduino serial HIL | COM28, PlatformIO Arduino `esp32s2dev`, address `0x76`, chip ID `0x60` | OPERATOR_REVIEW_REQUIRED | `docs/reports/hil-validation-COM28-20260622.md`; local `hil_logs/` artifacts from that run are development-local unless packaged with manifest and hashes |
+| ESP32-S2 ESP-IDF serial HIL | Native ESP-IDF CLI runtime behavior | NOT RUN | No `idf.py` hardware runtime artifact recorded |
+| ESP32-S3 Arduino serial HIL | PlatformIO Arduino on ESP32-S3 hardware | NOT RUN | Build-only evidence is not hardware validation |
+| ESP32-S3 ESP-IDF serial HIL | Native ESP-IDF on ESP32-S3 hardware | NOT RUN | No hardware runtime artifact recorded |
+| Address 0x77 | SDO tied to VDDIO, CSB tied to VDDIO | NOT RUN | Pending physical board test |
+| Calibrated accuracy | Reference temperature, pressure, and humidity instruments | NOT RUN | No controlled reference artifact recorded |
+| Fault injection | Protected absence/timeout/bus/data fault fixture | NOT RUN | No protected fault-injection bench artifact recorded |
+| Shared-bus contention | Another active device, lock timeout, scheduler evidence | NOT RUN | Pending application integration test |
 | Safe default serial run | Default runner groups complete without raw writes, long soak, or physical fault actions | NOT RUN | Pending `tools/run_i2c_hil.py` artifacts and manifest |
 | Address 0x76 | SDO tied to GND, CSB tied to VDDIO | NOT RUN | Pending physical board test |
-| Address 0x77 | SDO tied to VDDIO, CSB tied to VDDIO | NOT RUN | Pending physical board test |
 | Chip ID | Register `0xD0` reads `0x60` | NOT RUN | Pending `chipid` and `reg 0xD0` CLI capture |
 | Soft reset | Write `0xB6` to `0xE0`, wait for `im_update` clear | NOT RUN | Pending `reset` and post-reset `status` capture |
 | Recover/resync | Dirty-state evidence is recorded before/after recover | NOT RUN | Pending `status`, `recover`, `cfg`, and post-recover `status` capture |
@@ -113,6 +120,7 @@ Use `unknown` rather than guessing. Leave untested rows as `NOT RUN`.
 | Shared bus | External lock, timeout policy, scheduled `tick()` | NOT RUN | Pending application integration test |
 | Forced stress | Bounded `stress N` completes with `Errors: 0` and reviewed sample ranges | NOT RUN | Pending default `stress 10` or opt-in `--include-soak` transcript |
 | Long soak | Repeated normal-mode reads and/or bounded forced stress without hangs | NOT RUN | Pending soak transcript, manifest, and reference notes |
+| Staged job API | `--include-job-api` job status/init/apply/force/recover/poll evidence | NOT RUN | Pending post-1.7.0 HIL artifact |
 
 Minimum bring-up command evidence:
 
@@ -196,6 +204,18 @@ comparison against local temperature, humidity, and pressure references.
 Software-only checks are recorded in CI logs, validation logs, and maintained
 docs. They do not prove electrical wiring, timing margins, environmental
 accuracy, or sensor assembly handling.
+
+Production electrical gates are not satisfied until the artifact records VDD in
+`1.71..3.6 V`, VDDIO in `1.2..3.6 V`, SDO tied to GND for `0x76` or VDDIO for
+`0x77`, CSB tied high before POR, no SDA/SCL/SDO/CSB drive above VDDIO when
+VDDIO is off, bus capacitance `<= 400 pF`, verified rise time at the selected
+bus speed, and stable burst reads of `0xF7..0xFE`.
+
+Shared-bus production gates are not satisfied until evidence shows at least one
+other active bus client, an application-owned lock timeout mapping to
+`I2C_TIMEOUT`, `tick()` called inside the sample budget, no hidden BME280
+success while another client faults the bus, and no ISR directly calling public
+BME280 APIs.
 
 ## Evidence Policy
 

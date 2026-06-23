@@ -210,6 +210,13 @@ injected. In forced mode, the driver triggers one conversion and the device
 returns to sleep. In normal mode, the driver waits one estimated normal cycle
 before reading so the sample is fresh relative to the request.
 
+`hasSample()` means the latest successful raw/compensated sample is cached; it
+does not by itself prove freshness for the current request. Use
+`sampleFreshness()` or `sampleFresh(nowMs, maxAgeMs)` before publishing data.
+`STALE_AFTER_ERROR` means a later refresh failed or is still non-OK, and
+`STALE_AFTER_CONFIG_DIRTY` means the hardware configuration may differ from the
+driver cache.
+
 ## Shared Bus With Other Devices
 
 Every device adapter on the bus should use the same bus manager and finite
@@ -239,7 +246,8 @@ the bus. `probe()` remains a raw diagnostic and does not clear the latch.
 `recover()` is the explicit resync path. A successful `recover()` reloads
 calibration, reapplies cached configuration, clears dirty state, and invalidates
 cached raw and compensated samples. A failed `recover()` leaves pre-existing
-cached samples unchanged.
+cached samples unchanged; publish them only if your application explicitly
+accepts stale data and records `sampleFreshness()`.
 
 Raw register writes are diagnostics, not normal configuration APIs. Writes that
 overlap `ctrl_hum`, `ctrl_meas`, `config`, or `reset` mark

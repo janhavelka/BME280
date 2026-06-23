@@ -79,6 +79,7 @@ MANDATORY_COMMANDS = {
     "state",
     "probe",
     "recover",
+    "job",
     "verbose",
     "stress",
     "stress_mix",
@@ -155,6 +156,23 @@ def main() -> int:
     missing_commands = sorted(MANDATORY_COMMANDS - idf_commands)
     if missing_commands:
         fail(f"IDF CLI missing mandatory commands: {missing_commands}")
+
+    for token in (
+        "Selftest result:",
+        "=== Stress Summary ===",
+        "Duration:",
+        "Rate:",
+        "Health delta:",
+        "=== stress_mix summary ===",
+        "Total:",
+        "=== Job Status ===",
+        "Job kind:",
+        "Job state:",
+        "Instructions:",
+        "Driver:",
+    ):
+        if token not in idf:
+            fail(f"IDF CLI output contract missing token: {token}")
 
     manifest = read(ROOT / "idf_component.yml")
     for token in ("esp32s2", "esp32s3", "idf:"):

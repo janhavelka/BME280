@@ -81,6 +81,8 @@ The native IDF adapter uses the modern ESP-IDF I2C master driver:
   or reset. Synchronous checks perform one status-register transaction per call
   and return `BUSY`, `TIMEOUT`, or the detailed transport error; staged jobs
   poll NVM readiness through `pollJob()`.
+- The native example CLI exposes the same `job status/init/force/apply/recover/poll`
+  staged-job diagnostics as the Arduino CLI for HIL parity.
 - Health timestamps (`lastOkMs`, `lastErrorMs`) are sourced from `Config::nowMs`
   when supplied. The core fallback is intentionally inert and does not include
   Arduino or ESP-IDF headers.

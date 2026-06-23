@@ -150,6 +150,201 @@ class HilCalibClassificationTest(unittest.TestCase):
         self.assertEqual("Hello", run_i2c_hil.read_available(fake))
         self.assertEqual(0, fake.in_waiting)
 
+    def test_stress_mix_zero_fail_validator_passes_and_extracts_rate(self) -> None:
+        spec = run_i2c_hil.CommandSpec(
+            command="stress_mix 7",
+            purpose="mixed stress parser test",
+            expected=("stress_mix summary", "Total:", "Health delta:"),
+            validators=(run_i2c_hil.VALIDATOR_STRESS_MIX_ZERO_FAIL,),
+        )
+        output = (
+            "=== stress_mix summary ===\n"
+            "  Total: ok=7 fail=0 (100.00%)\n"
+            "  Duration: 140 ms\n"
+            "  Rate: 50.00 ops/s\n"
+            "  Health delta: success +7, failures +0\n"
+        )
+
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+        evidence = run_i2c_hil.extract_parsed_evidence(output)
+
+        self.assertEqual(run_i2c_hil.RESULT_PASS, result)
+        self.assertIn("stress_mix fail=0", reason)
+        self.assertEqual(7, evidence["stress_mix_ok"])
+        self.assertEqual(0, evidence["stress_mix_fail"])
+        self.assertEqual(50.0, evidence["rate"])
+        self.assertEqual("ops/s", evidence["rate_units"])
+
+    def test_stress_mix_nonzero_fail_validator_fails(self) -> None:
+        spec = run_i2c_hil.CommandSpec(
+            command="stress_mix 7",
+            purpose="mixed stress parser test",
+            expected=("stress_mix summary", "Total:", "Health delta:"),
+            validators=(run_i2c_hil.VALIDATOR_STRESS_MIX_ZERO_FAIL,),
+        )
+        output = (
+            "=== stress_mix summary ===\n"
+            "  Total: ok=6 fail=1 (85.71%)\n"
+            "  Health delta: success +6, failures +1\n"
+        )
+
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
+        self.assertIn("fail=1", reason)
+
+    def test_reset_busy_is_unknown_not_timeout_or_pass(self) -> None:
+        spec = next(item for item in run_i2c_hil.BASE_COMMANDS if item.command == "reset")
+        output = (
+            "  Status: BUSY (code=11, detail=10)\n"
+            "  Message: NVM update in progress\n"
+        )
+
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+
+        self.assertEqual(run_i2c_hil.RESULT_UNKNOWN, result)
+        self.assertIn("Status: BUSY", reason)
+
+    def test_parser_self_test_passes(self) -> None:
+        ok, failures = run_i2c_hil.parser_self_test()
+
+        self.assertTrue(ok)
+        self.assertEqual([], failures)
+
+    def test_timeout_s_alias_sets_default_timeout(self) -> None:
+        args = run_i2c_hil.parse_args(["--dry-run", "--timeout-s", "2.5"])
+
+        self.assertEqual(2.5, args.timeout)
+
+    def test_duration_soak_cycle_has_bounded_safe_mix(self) -> None:
+        args = run_i2c_hil.parse_args(["--dry-run", "--soak-duration-s", "10"])
+
+        commands = [spec.command for spec in run_i2c_hil.duration_soak_cycle_commands(args, 1)]
+
+        self.assertIn("stress 50", commands)
+        self.assertIn("stress_mix 70", commands)
+        self.assertIn("status", commands)
+        self.assertIn("drv", commands)
+        self.assertNotIn("wreg 0xF4 0x00", commands)
+
+    def test_include_job_api_adds_job_command_group(self) -> None:
+        args = run_i2c_hil.parse_args(["--dry-run", "--include-job-api"])
+        executable, _ = run_i2c_hil.build_command_sequence(args)
+        job_commands = [spec.command for spec in executable if spec.group == "job-api"]
+
+        self.assertEqual(
+            [
+                "job status",
+                "job poll 1",
+                "job init 1",
+                "job apply 1",
+                "job force 1",
+                "raw",
+                "comp",
+                "job recover 1",
+                "cfg",
+                "status",
+                "job force 3",
+                "drv",
+            ],
+            job_commands,
+        )
+
+    def test_job_done_or_failed_validator_passes_done(self) -> None:
+        spec = run_i2c_hil.CommandSpec(
+            command="job force 1",
+            purpose="job parser test",
+            expected=("Job Status", "Job state: DONE", "Status: OK"),
+            validators=(run_i2c_hil.VALIDATOR_JOB_DONE_OR_FAILED,),
+        )
+        output = (
+            "=== Job Status ===\n"
+            "Job kind: FORCED_MEASUREMENT\n"
+            "Job state: DONE\n"
+            "Status: OK (code=0, detail=0)\n"
+            "Instructions: 1\n"
+            "Driver: READY\n"
+            "Consecutive failures: 0\n"
+        )
+
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+
+        self.assertEqual(run_i2c_hil.RESULT_PASS, result)
+        self.assertIn("job state=DONE", reason)
+
+    def test_job_zero_consecutive_failures_validator_fails_nonzero(self) -> None:
+        spec = run_i2c_hil.CommandSpec(
+            command="job recover 1",
+            purpose="job parser test",
+            expected=("Job Status",),
+            validators=(run_i2c_hil.VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES,),
+        )
+        output = (
+            "=== Job Status ===\n"
+            "Job state: DONE\n"
+            "Status: OK (code=0, detail=0)\n"
+            "Instructions: 1\n"
+            "Driver: READY\n"
+            "Consecutive failures: 1\n"
+        )
+
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
+        self.assertIn("consecutive failures=1", reason)
+
+    def test_job_instruction_budget_respected_fails_over_budget(self) -> None:
+        spec = run_i2c_hil.CommandSpec(
+            command="job force 1",
+            purpose="job parser test",
+            expected=("Job Status",),
+            validators=(run_i2c_hil.VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,),
+        )
+        output = (
+            "=== Job Status ===\n"
+            "Job state: DONE\n"
+            "Status: OK (code=0, detail=0)\n"
+            "Instructions: 2\n"
+            "Driver: READY\n"
+            "Consecutive failures: 0\n"
+        )
+
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
+        self.assertIn("budget was 1", reason)
+
+    def test_require_pass_and_fail_on_review_exit_codes(self) -> None:
+        self.assertEqual(
+            0,
+            run_i2c_hil.exit_code_for_verdict(
+                "PASS",
+                run_i2c_hil.argparse.Namespace(require_pass=True, fail_on_review=False),
+            ),
+        )
+        self.assertEqual(
+            3,
+            run_i2c_hil.exit_code_for_verdict(
+                "OPERATOR_REVIEW_REQUIRED",
+                run_i2c_hil.argparse.Namespace(require_pass=True, fail_on_review=False),
+            ),
+        )
+        self.assertEqual(
+            3,
+            run_i2c_hil.exit_code_for_verdict(
+                "OPERATOR_REVIEW_REQUIRED",
+                run_i2c_hil.argparse.Namespace(require_pass=False, fail_on_review=True),
+            ),
+        )
+
+    def test_malformed_wreg_invalid_input_does_not_require_raw_write_confirmation(self) -> None:
+        args = run_i2c_hil.parse_args(["--dry-run", "--include-invalid-inputs"])
+        executable, _ = run_i2c_hil.build_command_sequence(args)
+
+        errors = run_i2c_hil.execution_safety_errors(args, executable)
+
+        self.assertEqual([], errors)
+
 
 if __name__ == "__main__":
     unittest.main()

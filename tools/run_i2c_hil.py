@@ -39,6 +39,8 @@ RESULT_SKIPPED_UNSAFE = "SKIPPED_UNSAFE"
 RESULT_SKIPPED_DRY_RUN = "SKIPPED_DRY_RUN"
 RESULT_TIMEOUT = "TIMEOUT"
 RESULT_NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+RESULT_UNKNOWN = "UNKNOWN"
+RESULT_NOT_RUN = "NOT_RUN"
 
 RAW_WRITE_CONFIRMATION = "BME280_RAW_WRITE"
 CLAIM_BOUNDARY = (
@@ -60,17 +62,27 @@ FAILURE_PATTERNS = (
 CTRL_MEAS_RE = re.compile(r"Reg\s+0xF4\s*=\s*0x([0-9A-Fa-f]{1,2})")
 STATUS_RE = re.compile(r"Status:\s*0x([0-9A-Fa-f]{1,2})\s*\(measuring=(\d),\s*im_update=(\d)\)")
 STRESS_ERRORS_RE = re.compile(r"\bErrors:\s*(\d+)\b")
+STRESS_DURATION_RE = re.compile(r"\bDuration:\s*(\d+)\s*ms\b")
+STRESS_RATE_RE = re.compile(r"\bRate:\s*([0-9]+(?:\.[0-9]+)?)\s*(samples|ops)/s\b")
+STRESS_MIX_TOTAL_RE = re.compile(r"\bTotal:\s*ok=(\d+)\s+fail=(\d+)\b")
 SELFTEST_RESULT_RE = re.compile(r"Selftest result:\s*pass=\s*(\d+)\s*fail=\s*(\d+)\s*skip=\s*(\d+)")
 CONSECUTIVE_FAILURES_RE = re.compile(r"Consecutive failures:\s*(\d+)")
 TOTAL_FAILURES_RE = re.compile(r"Total failures:\s*(\d+)")
 CHIP_ID_RE = re.compile(r"Chip ID:\s*0x([0-9A-Fa-f]{1,2})|Reg\s+0xD0\s*=\s*0x([0-9A-Fa-f]{1,2})")
+JOB_STATE_RE = re.compile(r"Job state:\s*([A-Z_]+)")
+JOB_INSTRUCTIONS_RE = re.compile(r"Instructions:\s*(\d+)")
 
 VALIDATOR_CTRL_MEAS_SLEEP = "ctrl_meas_sleep"
 VALIDATOR_STATUS_NOT_MEASURING = "status_not_measuring"
 VALIDATOR_STATUS_IM_UPDATE_CLEAR = "status_im_update_clear"
 VALIDATOR_STRESS_ZERO_ERRORS = "stress_zero_errors"
+VALIDATOR_STRESS_MIX_ZERO_FAIL = "stress_mix_zero_fail"
 VALIDATOR_SELFTEST_ZERO_FAIL = "selftest_zero_fail"
 VALIDATOR_DRIVER_ZERO_CONSECUTIVE = "driver_zero_consecutive_failures"
+VALIDATOR_JOB_DONE_OR_FAILED = "job_done_or_failed"
+VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES = "job_zero_consecutive_failures"
+VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED = "job_instruction_budget_respected"
+JOB_CLI_DEFAULT_BUDGET = 1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,6 +92,7 @@ class CommandSpec:
     group: str = "default"
     expected: tuple[str, ...] = ()
     expected_any: tuple[str, ...] = ()
+    unknowns: tuple[str, ...] = ()
     completion: tuple[str, ...] = ()
     validators: tuple[str, ...] = ()
     failures: tuple[str, ...] = ()
@@ -301,9 +314,15 @@ BASE_COMMANDS: tuple[CommandSpec, ...] = (
         command="reset",
         purpose="Run BME280 soft reset, NVM wait, calibration reload, and config reapply.",
         group="reset-recover",
-        expected=("Status: OK",),
+        expected_any=("Status: OK", "Status: BUSY"),
+        unknowns=("Status: BUSY",),
+        completion=("Status:",),
         timeout_s=8.0,
-        notes="Soft reset is volatile and expected to be safe for BME280.",
+        notes=(
+            "Soft reset is volatile and expected to be safe for BME280. "
+            "A bounded BUSY result means NVM copy was still in progress and "
+            "post-reset status/recover evidence must be reviewed."
+        ),
     ),
     CommandSpec(
         command="status",
@@ -454,6 +473,425 @@ def normal_soak_commands(count: int, interval_s: float) -> tuple[CommandSpec, ..
     )
 
 
+CONFIG_MATRIX_COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec(
+        command="mode sleep",
+        purpose="Enter sleep before safe configuration boundary changes.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="osrs t 1",
+        purpose="Set temperature oversampling to minimum enabled value.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="osrs p 1",
+        purpose="Set pressure oversampling to minimum enabled value.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="osrs h 1",
+        purpose="Set humidity oversampling to minimum enabled value.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="filter 0",
+        purpose="Set IIR filter boundary value OFF.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="standby 0",
+        purpose="Set standby boundary value 0.5 ms.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="cfg",
+        purpose="Capture register/cache settings after minimum boundary configuration.",
+        group="config-matrix",
+        expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
+        completion=("Hardware config dirty:",),
+        timeout_s=10.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="osrs t 5",
+        purpose="Set temperature oversampling to maximum BME280 value X16.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="osrs p 5",
+        purpose="Set pressure oversampling to maximum BME280 value X16.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="osrs h 5",
+        purpose="Set humidity oversampling to maximum BME280 value X16.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="filter 4",
+        purpose="Set IIR filter maximum value X16.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="standby 7",
+        purpose="Set standby boundary value 20 ms.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="timing",
+        purpose="Capture estimated measurement timing at maximum oversampling boundary.",
+        group="config-matrix",
+        expected=("Estimated measurement time", "Estimated normal cycle"),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="force",
+        purpose="Run one forced measurement at maximum oversampling boundary.",
+        group="config-matrix",
+        expected=("Temp:", "Pressure:", "Humidity:"),
+        timeout_s=15.0,
+        operator_check=True,
+        requires_opt_in="--include-config-matrix",
+        notes="Operator must judge environmental plausibility.",
+    ),
+    CommandSpec(
+        command="raw",
+        purpose="Capture raw cached ADC after maximum oversampling boundary measurement.",
+        group="config-matrix",
+        expected=("Raw ADC", "Valid channels: T=", "Cached sample age"),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="comp",
+        purpose="Capture fixed-point compensated sample after maximum oversampling boundary measurement.",
+        group="config-matrix",
+        expected=("Compensated", "Valid channels: T="),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="mode sleep",
+        purpose="Return to sleep before restoring default example configuration.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="osrs t 1",
+        purpose="Restore default temperature oversampling.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="osrs p 1",
+        purpose="Restore default pressure oversampling.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="osrs h 1",
+        purpose="Restore default humidity oversampling.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="filter 0",
+        purpose="Restore default filter setting.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="standby 2",
+        purpose="Restore default 125 ms standby setting.",
+        group="config-matrix",
+        expected=("Status: OK",),
+        timeout_s=5.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+    CommandSpec(
+        command="cfg",
+        purpose="Capture restored register/cache settings after boundary matrix.",
+        group="config-matrix",
+        expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
+        completion=("Hardware config dirty:",),
+        timeout_s=10.0,
+        requires_opt_in="--include-config-matrix",
+    ),
+)
+
+
+INVALID_INPUT_COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec(
+        command="not_a_command",
+        purpose="Verify unknown CLI command is visible and bounded.",
+        group="invalid-input",
+        expected=("Unknown command:",),
+        timeout_s=3.0,
+        requires_opt_in="--include-invalid-inputs",
+    ),
+    CommandSpec(
+        command="addr 0x75",
+        purpose="Verify invalid BME280 address is rejected by the example CLI.",
+        group="invalid-input",
+        expected=("Usage: addr 0x76|0x77",),
+        timeout_s=3.0,
+        requires_opt_in="--include-invalid-inputs",
+    ),
+    CommandSpec(
+        command="mode invalid",
+        purpose="Verify invalid mode token is rejected by the example CLI.",
+        group="invalid-input",
+        expected=("Invalid mode:",),
+        timeout_s=3.0,
+        requires_opt_in="--include-invalid-inputs",
+    ),
+    CommandSpec(
+        command="osrs t 6",
+        purpose="Verify oversampling upper-bound validation.",
+        group="invalid-input",
+        expected=("Invalid oversampling value",),
+        timeout_s=3.0,
+        requires_opt_in="--include-invalid-inputs",
+    ),
+    CommandSpec(
+        command="filter 5",
+        purpose="Verify filter upper-bound validation.",
+        group="invalid-input",
+        expected=("Invalid filter value",),
+        timeout_s=3.0,
+        requires_opt_in="--include-invalid-inputs",
+    ),
+    CommandSpec(
+        command="standby 8",
+        purpose="Verify standby upper-bound validation.",
+        group="invalid-input",
+        expected=("Invalid standby value",),
+        timeout_s=3.0,
+        requires_opt_in="--include-invalid-inputs",
+    ),
+    CommandSpec(
+        command="reg 0x100",
+        purpose="Verify register address upper-bound validation.",
+        group="invalid-input",
+        expected=("Usage: reg <addr>",),
+        timeout_s=3.0,
+        requires_opt_in="--include-invalid-inputs",
+    ),
+    CommandSpec(
+        command="wreg 0xF4",
+        purpose="Verify incomplete raw-write command is rejected without touching hardware.",
+        group="invalid-input",
+        expected=("Usage: wreg <addr> <val>",),
+        timeout_s=3.0,
+        requires_opt_in="--include-invalid-inputs",
+    ),
+)
+
+
+BENCHMARK_COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec(
+        command="stress 50",
+        purpose="Quick forced-measurement sampling benchmark.",
+        group="benchmark",
+        expected=("Stress Summary", "Errors:", "Rate:"),
+        completion=("Health delta:",),
+        validators=(VALIDATOR_STRESS_ZERO_ERRORS,),
+        timeout_s=60.0,
+        operator_check=True,
+        requires_opt_in="--include-benchmarks",
+    ),
+    CommandSpec(
+        command="stress 500",
+        purpose="Extended forced-measurement sampling benchmark.",
+        group="benchmark",
+        expected=("Stress Summary", "Errors:", "Rate:"),
+        completion=("Health delta:",),
+        validators=(VALIDATOR_STRESS_ZERO_ERRORS,),
+        timeout_s=300.0,
+        operator_check=True,
+        requires_opt_in="--include-benchmarks",
+    ),
+    CommandSpec(
+        command="stress_mix 140",
+        purpose="Mixed-operation benchmark covering reads, raw calibration, modes, filter, and standby.",
+        group="benchmark",
+        expected=("stress_mix summary", "Total:", "Health delta:"),
+        completion=("Health delta:",),
+        validators=(VALIDATOR_STRESS_MIX_ZERO_FAIL,),
+        timeout_s=180.0,
+        operator_check=True,
+        requires_opt_in="--include-benchmarks",
+    ),
+    CommandSpec(
+        command="drv",
+        purpose="Capture driver health after benchmark commands.",
+        group="benchmark",
+        expected=("Driver Health", "Total"),
+        validators=(VALIDATOR_DRIVER_ZERO_CONSECUTIVE,),
+        timeout_s=5.0,
+        requires_opt_in="--include-benchmarks",
+    ),
+)
+
+
+JOB_API_COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec(
+        command="job status",
+        purpose="Capture staged-job baseline status.",
+        group="job-api",
+        expected=("Job Status", "Job kind:", "Job state:", "Status:", "Instructions:", "Driver:"),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job poll 1",
+        purpose="Exercise one-instruction job poll command with no active job.",
+        group="job-api",
+        expected=("Job Status", "Job state:", "Instructions:", "Driver:"),
+        validators=(VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job init 1",
+        purpose="Run staged initialization with one I2C instruction per poll.",
+        group="job-api",
+        expected=("Job Status", "Job state: DONE", "Status: OK", "Driver: READY"),
+        validators=(VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
+        timeout_s=25.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job apply 1",
+        purpose="Run staged cached-config apply with one I2C instruction per poll.",
+        group="job-api",
+        expected=("Job Status", "Job state: DONE", "Status: OK"),
+        validators=(VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
+        timeout_s=25.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job force 1",
+        purpose="Run staged forced measurement with one I2C instruction per poll.",
+        group="job-api",
+        expected=("Job Status", "Job state: DONE", "Status: OK"),
+        validators=(VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
+        timeout_s=25.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="raw",
+        purpose="Capture raw sample produced by staged forced-measurement job.",
+        group="job-api",
+        expected=("Raw ADC", "Valid channels: T=", "Cached sample age"),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="comp",
+        purpose="Capture compensated sample produced by staged forced-measurement job.",
+        group="job-api",
+        expected=("Compensated", "Valid channels: T="),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job recover 1",
+        purpose="Run staged recovery with one I2C instruction per poll.",
+        group="job-api",
+        expected=("Job Status", "Job state: DONE", "Status: OK", "Driver: READY"),
+        validators=(
+            VALIDATOR_JOB_DONE_OR_FAILED,
+            VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES,
+            VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
+        ),
+        timeout_s=25.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="cfg",
+        purpose="Capture settings after staged recovery.",
+        group="job-api",
+        expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
+        completion=("Hardware config dirty:",),
+        timeout_s=10.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="status",
+        purpose="Capture status and dirty-state after staged recovery.",
+        group="job-api",
+        expected=("Status: 0x", "Driver:", "dirty=false"),
+        validators=(VALIDATOR_STATUS_NOT_MEASURING,),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job force 3",
+        purpose="Run staged forced measurement with multi-instruction poll budget.",
+        group="job-api",
+        expected=("Job Status", "Job state: DONE", "Status: OK"),
+        validators=(VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
+        timeout_s=25.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="drv",
+        purpose="Capture driver health after staged-job API checks.",
+        group="job-api",
+        expected=("Driver Health", "Total"),
+        validators=(VALIDATOR_DRIVER_ZERO_CONSECUTIVE,),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+)
+
+
 DESTRUCTIVE_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         command="wreg 0xF4 0x00",
@@ -546,6 +984,16 @@ def parse_nonnegative_float(value: str) -> float:
     return parsed
 
 
+def parse_nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value, 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed
+
+
 def load_command_file(path: pathlib.Path, *, timeout_s: float) -> list[CommandSpec]:
     commands: list[CommandSpec] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -564,14 +1012,24 @@ def load_command_file(path: pathlib.Path, *, timeout_s: float) -> list[CommandSp
     return commands
 
 
-def stress_count(command: str) -> int | None:
+def counted_stress_command(command: str) -> tuple[str, int] | None:
     parts = command.strip().split()
-    if len(parts) != 2 or parts[0].lower() != "stress":
+    if len(parts) != 2 or parts[0].lower() not in ("stress", "stress_mix"):
         return None
     try:
-        return int(parts[1], 10)
+        return parts[0].lower(), int(parts[1], 10)
     except ValueError:
         return None
+
+
+def job_command_budget(command: str) -> int:
+    parts = command.strip().split()
+    if len(parts) >= 3 and parts[0].lower() == "job":
+        try:
+            return int(parts[2], 10)
+        except ValueError:
+            return JOB_CLI_DEFAULT_BUDGET
+    return JOB_CLI_DEFAULT_BUDGET
 
 
 def custom_command_safety_errors(commands: list[CommandSpec], args: argparse.Namespace) -> list[str]:
@@ -582,8 +1040,8 @@ def custom_command_safety_errors(commands: list[CommandSpec], args: argparse.Nam
         command = spec.command.strip().lower()
         if command.startswith("wreg ") and not include_destructive:
             errors.append(f"`{spec.command}` requires --include-destructive")
-        count = stress_count(command)
-        if count is not None and count > 100 and not include_soak:
+        counted = counted_stress_command(command)
+        if counted is not None and counted[1] > 100 and not include_soak:
             errors.append(f"`{spec.command}` requires --include-soak for counts above 100")
     return errors
 
@@ -617,6 +1075,29 @@ def build_command_sequence(args: argparse.Namespace) -> tuple[list[CommandSpec],
             cmd.formatted(address=args.address)
             for cmd in normal_soak_commands(normal_soak_count, normal_soak_interval_s)
         )
+
+    if getattr(args, "include_config_matrix", False):
+        executable.extend(cmd.formatted(address=args.address) for cmd in CONFIG_MATRIX_COMMANDS)
+    else:
+        checklist.extend(cmd.formatted(address=args.address) for cmd in CONFIG_MATRIX_COMMANDS)
+
+    if getattr(args, "include_invalid_inputs", False):
+        executable.extend(cmd.formatted(address=args.address) for cmd in INVALID_INPUT_COMMANDS)
+    else:
+        checklist.extend(cmd.formatted(address=args.address) for cmd in INVALID_INPUT_COMMANDS)
+
+    include_benchmarks = getattr(args, "include_benchmarks", False) or getattr(
+        args, "sample_rate_benchmark", False
+    )
+    if include_benchmarks:
+        executable.extend(cmd.formatted(address=args.address) for cmd in BENCHMARK_COMMANDS)
+    else:
+        checklist.extend(cmd.formatted(address=args.address) for cmd in BENCHMARK_COMMANDS)
+
+    if getattr(args, "include_job_api", False):
+        executable.extend(cmd.formatted(address=args.address) for cmd in JOB_API_COMMANDS)
+    else:
+        checklist.extend(cmd.formatted(address=args.address) for cmd in JOB_API_COMMANDS)
 
     if args.include_destructive:
         executable.extend(cmd.formatted(address=args.address) for cmd in DESTRUCTIVE_COMMANDS)
@@ -714,6 +1195,14 @@ def extract_parsed_evidence(output: str) -> dict:
         evidence["im_update"] = int(match.group(3))
     if match := STRESS_ERRORS_RE.search(output):
         evidence["stress_errors"] = int(match.group(1))
+    if match := STRESS_DURATION_RE.search(output):
+        evidence["duration_ms"] = int(match.group(1))
+    if match := STRESS_RATE_RE.search(output):
+        evidence["rate"] = float(match.group(1))
+        evidence["rate_units"] = f"{match.group(2)}/s"
+    if match := STRESS_MIX_TOTAL_RE.search(output):
+        evidence["stress_mix_ok"] = int(match.group(1))
+        evidence["stress_mix_fail"] = int(match.group(2))
     if match := SELFTEST_RESULT_RE.search(output):
         evidence["selftest_pass"] = int(match.group(1))
         evidence["selftest_fail"] = int(match.group(2))
@@ -725,6 +1214,10 @@ def extract_parsed_evidence(output: str) -> dict:
     if match := CHIP_ID_RE.search(output):
         chip_id = match.group(1) or match.group(2)
         evidence["chip_id"] = f"0x{int(chip_id, 16):02X}"
+    if match := JOB_STATE_RE.search(output):
+        evidence["job_state"] = match.group(1)
+    if match := JOB_INSTRUCTIONS_RE.search(output):
+        evidence["job_instructions"] = int(match.group(1))
     return evidence
 
 
@@ -760,6 +1253,13 @@ def validate_parsed_output(spec: CommandSpec, output: str) -> tuple[str | None, 
             if errors != 0:
                 return RESULT_FAIL, f"stress reported {errors} error(s)."
             reasons.append("stress Errors=0")
+        elif validator == VALIDATOR_STRESS_MIX_ZERO_FAIL:
+            failures = evidence.get("stress_mix_fail")
+            if failures is None:
+                return RESULT_REVIEW, "stress_mix fail count was not parsed from serial output."
+            if failures != 0:
+                return RESULT_FAIL, f"stress_mix reported fail={failures}."
+            reasons.append("stress_mix fail=0")
         elif validator == VALIDATOR_SELFTEST_ZERO_FAIL:
             failures = evidence.get("selftest_fail")
             if failures is None:
@@ -774,6 +1274,28 @@ def validate_parsed_output(spec: CommandSpec, output: str) -> tuple[str | None, 
             if failures != 0:
                 return RESULT_FAIL, f"driver consecutive failures={failures}, expected 0."
             reasons.append("driver consecutive failures=0")
+        elif validator == VALIDATOR_JOB_DONE_OR_FAILED:
+            state = evidence.get("job_state")
+            if state is None:
+                return RESULT_REVIEW, "job state was not parsed from serial output."
+            if state not in ("DONE", "FAILED"):
+                return RESULT_FAIL, f"job state is {state}, expected DONE or FAILED."
+            reasons.append(f"job state={state}")
+        elif validator == VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES:
+            failures = evidence.get("consecutive_failures")
+            if failures is None:
+                return RESULT_REVIEW, "job consecutive failure count was not parsed from serial output."
+            if failures != 0:
+                return RESULT_FAIL, f"job consecutive failures={failures}, expected 0."
+            reasons.append("job consecutive failures=0")
+        elif validator == VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED:
+            instructions = evidence.get("job_instructions")
+            if instructions is None:
+                return RESULT_REVIEW, "job instruction count was not parsed from serial output."
+            budget = job_command_budget(spec.command)
+            if instructions > budget:
+                return RESULT_FAIL, f"job used {instructions} instruction(s), budget was {budget}."
+            reasons.append(f"job instructions {instructions}<={budget}")
         else:
             return RESULT_REVIEW, f"unknown runner validator: {validator}"
     if reasons:
@@ -785,6 +1307,9 @@ def classify_output(spec: CommandSpec, output: str, completion: str) -> tuple[st
     clean = strip_ansi(output)
     if completion == RESULT_TIMEOUT:
         return RESULT_TIMEOUT, "Command timed out before serial idle/completion."
+    for unknown in spec.unknowns:
+        if unknown and unknown in clean:
+            return RESULT_UNKNOWN, f"Matched command unknown/incomplete token: {unknown}"
     for failure in spec.failures:
         if failure and failure in clean:
             return RESULT_FAIL, f"Matched command failure token: {failure}"
@@ -829,6 +1354,21 @@ def import_serial():
     return serial
 
 
+def open_serial_with_retries(serial_module, args: argparse.Namespace):
+    attempts = 1 + int(getattr(args, "reconnect_attempts", 0))
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return serial_module.Serial(args.port, args.baud, timeout=0.1)
+        except Exception as exc:  # pyserial exposes several platform-specific exceptions
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            time.sleep(float(getattr(args, "reconnect_delay_s", 1.0)))
+    assert last_exc is not None
+    raise last_exc
+
+
 def read_available(ser) -> str:
     waiting = getattr(ser, "in_waiting", 0)
     if waiting:
@@ -841,11 +1381,19 @@ def read_available(ser) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def run_serial_command(ser, spec: CommandSpec, transcript, *, timeout_s: float) -> dict:
+def run_serial_command(
+    ser,
+    spec: CommandSpec,
+    transcript,
+    *,
+    timeout_s: float,
+    idle_after_output_s: float = 0.75,
+    idle_after_match_s: float = 0.25,
+    command_pacing_s: float = 0.0,
+    verbose: bool = False,
+) -> dict:
     start = time.monotonic()
     deadline = start + timeout_s
-    idle_after_output_s = 0.75
-    idle_after_match_s = 0.25
     last_rx = time.monotonic()
     saw_output = False
     matched_expected = False
@@ -855,11 +1403,21 @@ def run_serial_command(ser, spec: CommandSpec, transcript, *, timeout_s: float) 
     boundary = f"\n--- COMMAND {spec.command!r} @ {timestamp()} ---\n"
     transcript.write(boundary)
     transcript.flush()
+    if verbose:
+        print(boundary, end="")
 
     if spec.pre_delay_s > 0.0:
         transcript.write(f"PRE_DELAY {spec.pre_delay_s:.3f}s before command\n")
         transcript.flush()
+        if verbose:
+            print(f"PRE_DELAY {spec.pre_delay_s:.3f}s before command")
         time.sleep(spec.pre_delay_s)
+    if command_pacing_s > 0.0:
+        transcript.write(f"COMMAND_PACING {command_pacing_s:.3f}s before command\n")
+        transcript.flush()
+        if verbose:
+            print(f"COMMAND_PACING {command_pacing_s:.3f}s before command")
+        time.sleep(command_pacing_s)
 
     ser.write((spec.command + "\n").encode("utf-8"))
     ser.flush()
@@ -871,6 +1429,8 @@ def run_serial_command(ser, spec: CommandSpec, transcript, *, timeout_s: float) 
             chunks.append(chunk)
             transcript.write(chunk)
             transcript.flush()
+            if verbose:
+                print(chunk, end="", flush=True)
             last_rx = time.monotonic()
             clean = strip_ansi("".join(chunks))
             matched_expected = output_has_expected(spec, clean)
@@ -892,12 +1452,21 @@ def run_serial_command(ser, spec: CommandSpec, transcript, *, timeout_s: float) 
     elapsed = time.monotonic() - start
     result, reason = classify_output(spec, output, completion)
     clean_output = strip_ansi(output)
+    result_line = (
+        f"\n--- RESULT {result} completion={completion} "
+        f"elapsed_s={elapsed:.3f} reason={reason} ---\n"
+    )
+    transcript.write(result_line)
+    transcript.flush()
+    if verbose:
+        print(result_line, end="")
     return {
         "command": spec.command,
         "purpose": spec.purpose,
         "group": spec.group,
         "expected": list(spec.expected),
         "expected_any": list(spec.expected_any),
+        "unknowns": list(spec.unknowns),
         "validators": list(spec.validators),
         "serial_result": result,
         "operator_result": RESULT_OPERATOR if spec.operator_check else "",
@@ -927,6 +1496,7 @@ def dry_run_result(spec: CommandSpec) -> dict:
         "group": spec.group,
         "expected": list(spec.expected),
         "expected_any": list(spec.expected_any),
+        "unknowns": list(spec.unknowns),
         "validators": list(spec.validators),
         "serial_result": result,
         "operator_result": RESULT_OPERATOR if spec.operator_check else "",
@@ -943,15 +1513,425 @@ def dry_run_result(spec: CommandSpec) -> dict:
     }
 
 
+def session_error_result(message: str) -> dict:
+    return {
+        "command": "SERIAL_SESSION",
+        "purpose": "Open and maintain the serial HIL session.",
+        "group": "serial",
+        "expected": [],
+        "expected_any": [],
+        "unknowns": [],
+        "validators": [],
+        "serial_result": RESULT_FAIL,
+        "operator_result": "",
+        "completion": "EXCEPTION",
+        "elapsed_s": 0.0,
+        "pre_delay_s": 0.0,
+        "notes": "",
+        "classification_reason": message,
+        "destructive": False,
+        "requires_opt_in": "",
+        "recovery_command": "",
+        "parsed_evidence": {},
+        "output_excerpt": message[-1000:],
+    }
+
+
+def parser_self_test() -> tuple[bool, list[str]]:
+    checks: list[tuple[str, bool]] = []
+    checks.append(("chip id parser", extract_parsed_evidence("Chip ID: 0x60").get("chip_id") == "0x60"))
+    checks.append(
+        (
+            "ctrl_meas sleep validator",
+            classify_output(
+                CommandSpec(
+                    command="reg 0xF4",
+                    purpose="self-test",
+                    expected=("Reg 0xF4 = 0x",),
+                    validators=(VALIDATOR_CTRL_MEAS_SLEEP,),
+                ),
+                "Reg 0xF4 = 0x24 (36)\n",
+                "MATCHED_EXPECTED",
+            )[0]
+            == RESULT_PASS,
+        )
+    )
+    checks.append(
+        (
+            "stress parser",
+            extract_parsed_evidence("Errors: 0\nDuration: 1234 ms\nRate: 12.34 samples/s\n").get(
+                "stress_errors"
+            )
+            == 0,
+        )
+    )
+    checks.append(
+        (
+            "stress_mix validator",
+            classify_output(
+                CommandSpec(
+                    command="stress_mix 7",
+                    purpose="self-test",
+                    expected=("stress_mix summary", "Total:", "Health delta:"),
+                    validators=(VALIDATOR_STRESS_MIX_ZERO_FAIL,),
+                ),
+                "=== stress_mix summary ===\n  Total: ok=7 fail=0 (100.00%)\n  Health delta: success +7, failures +0\n",
+                "MATCHED_EXPECTED",
+            )[0]
+            == RESULT_PASS,
+        )
+    )
+    checks.append(
+        (
+            "job done validator",
+            classify_output(
+                CommandSpec(
+                    command="job force 1",
+                    purpose="self-test",
+                    expected=("Job Status", "Job state: DONE", "Status: OK"),
+                    validators=(VALIDATOR_JOB_DONE_OR_FAILED,),
+                ),
+                (
+                    "=== Job Status ===\n"
+                    "Job kind: FORCED_MEASUREMENT\n"
+                    "Job state: DONE\n"
+                    "Status: OK (code=0, detail=0)\n"
+                    "Instructions: 1\n"
+                    "Driver: READY\n"
+                    "Consecutive failures: 0\n"
+                ),
+                "MATCHED_EXPECTED",
+            )[0]
+            == RESULT_PASS,
+        )
+    )
+    checks.append(
+        (
+            "job consecutive validator",
+            classify_output(
+                CommandSpec(
+                    command="job recover 1",
+                    purpose="self-test",
+                    expected=("Job Status",),
+                    validators=(VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES,),
+                ),
+                (
+                    "=== Job Status ===\n"
+                    "Job state: DONE\n"
+                    "Status: OK (code=0, detail=0)\n"
+                    "Instructions: 1\n"
+                    "Driver: READY\n"
+                    "Consecutive failures: 2\n"
+                ),
+                "MATCHED_EXPECTED",
+            )[0]
+            == RESULT_FAIL,
+        )
+    )
+    checks.append(
+        (
+            "job instruction budget validator",
+            classify_output(
+                CommandSpec(
+                    command="job force 1",
+                    purpose="self-test",
+                    expected=("Job Status",),
+                    validators=(VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,),
+                ),
+                (
+                    "=== Job Status ===\n"
+                    "Job state: DONE\n"
+                    "Status: OK (code=0, detail=0)\n"
+                    "Instructions: 2\n"
+                    "Driver: READY\n"
+                    "Consecutive failures: 0\n"
+                ),
+                "MATCHED_EXPECTED",
+            )[0]
+            == RESULT_FAIL,
+        )
+    )
+    checks.append(
+        (
+            "require pass exit zero",
+            exit_code_for_verdict("PASS", argparse.Namespace(require_pass=True, fail_on_review=False)) == 0,
+        )
+    )
+    checks.append(
+        (
+            "require pass exit three",
+            exit_code_for_verdict("OPERATOR_REVIEW_REQUIRED", argparse.Namespace(require_pass=True, fail_on_review=False)) == 3,
+        )
+    )
+    checks.append(
+        (
+            "fail on review exit three",
+            exit_code_for_verdict("OPERATOR_REVIEW_REQUIRED", argparse.Namespace(require_pass=False, fail_on_review=True)) == 3,
+        )
+    )
+    failures = [name for name, ok in checks if not ok]
+    return not failures, failures
+
+
+def duration_soak_cycle_commands(args: argparse.Namespace, cycle_index: int) -> tuple[CommandSpec, ...]:
+    stress_count_value = getattr(args, "soak_cycle_stress_count", 50)
+    mix_count_value = getattr(args, "soak_cycle_mix_count", 70)
+    specs: list[CommandSpec] = [
+        CommandSpec(
+            command=f"stress {stress_count_value}",
+            purpose=f"Duration soak cycle {cycle_index}: forced measurement batch.",
+            group="soak-duration",
+            expected=("Stress Summary", "Errors:", "Rate:"),
+            completion=("Health delta:",),
+            validators=(VALIDATOR_STRESS_ZERO_ERRORS,),
+            timeout_s=max(30.0, min(300.0, 0.5 * float(stress_count_value) + 30.0)),
+            operator_check=True,
+            requires_opt_in="--soak-duration-s",
+        ),
+        CommandSpec(
+            command=f"stress_mix {mix_count_value}",
+            purpose=f"Duration soak cycle {cycle_index}: mixed safe operation batch.",
+            group="soak-duration",
+            expected=("stress_mix summary", "Total:", "Health delta:"),
+            completion=("Health delta:",),
+            validators=(VALIDATOR_STRESS_MIX_ZERO_FAIL,),
+            timeout_s=max(30.0, min(300.0, 0.4 * float(mix_count_value) + 30.0)),
+            operator_check=True,
+            requires_opt_in="--soak-duration-s",
+        ),
+        CommandSpec(
+            command="status",
+            purpose=f"Duration soak cycle {cycle_index}: status flags and dirty state.",
+            group="soak-duration",
+            expected=("Status: 0x", "Driver:"),
+            validators=(VALIDATOR_STATUS_NOT_MEASURING,),
+            timeout_s=5.0,
+            requires_opt_in="--soak-duration-s",
+        ),
+        CommandSpec(
+            command="drv",
+            purpose=f"Duration soak cycle {cycle_index}: driver health counters.",
+            group="soak-duration",
+            expected=("Driver Health", "Total"),
+            validators=(VALIDATOR_DRIVER_ZERO_CONSECUTIVE,),
+            timeout_s=5.0,
+            requires_opt_in="--soak-duration-s",
+        ),
+    ]
+    if cycle_index % 3 == 0:
+        specs.extend(
+            (
+                CommandSpec(
+                    command="probe",
+                    purpose=f"Duration soak cycle {cycle_index}: raw no-health-side-effect probe.",
+                    group="soak-duration",
+                    expected=("Status: OK",),
+                    timeout_s=5.0,
+                    requires_opt_in="--soak-duration-s",
+                ),
+                CommandSpec(
+                    command="chipid",
+                    purpose=f"Duration soak cycle {cycle_index}: identity recheck.",
+                    group="soak-duration",
+                    expected=("Chip ID: 0x60",),
+                    timeout_s=5.0,
+                    requires_opt_in="--soak-duration-s",
+                ),
+            )
+        )
+    if cycle_index % 5 == 0:
+        specs.extend(
+            (
+                CommandSpec(
+                    command="cfg",
+                    purpose=f"Duration soak cycle {cycle_index}: config snapshot.",
+                    group="soak-duration",
+                    expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
+                    completion=("Hardware config dirty:",),
+                    timeout_s=10.0,
+                    requires_opt_in="--soak-duration-s",
+                ),
+                CommandSpec(
+                    command="timing",
+                    purpose=f"Duration soak cycle {cycle_index}: timing snapshot.",
+                    group="soak-duration",
+                    expected=("Estimated measurement time", "Estimated normal cycle"),
+                    timeout_s=5.0,
+                    requires_opt_in="--soak-duration-s",
+                ),
+            )
+        )
+    if cycle_index % 7 == 0:
+        specs.extend(
+            (
+                CommandSpec(
+                    command="normal on",
+                    purpose=f"Duration soak cycle {cycle_index}: enter normal mode.",
+                    group="soak-duration",
+                    expected=("Status: OK",),
+                    timeout_s=5.0,
+                    requires_opt_in="--soak-duration-s",
+                    recovery_command="normal off",
+                ),
+                CommandSpec(
+                    command="read",
+                    purpose=f"Duration soak cycle {cycle_index}: normal-mode sample.",
+                    group="soak-duration",
+                    expected=("Temp:", "Pressure:", "Humidity:"),
+                    timeout_s=12.0,
+                    pre_delay_s=1.0,
+                    operator_check=True,
+                    requires_opt_in="--soak-duration-s",
+                ),
+                CommandSpec(
+                    command="normal off",
+                    purpose=f"Duration soak cycle {cycle_index}: return to sleep.",
+                    group="soak-duration",
+                    expected=("Status: OK",),
+                    timeout_s=5.0,
+                    requires_opt_in="--soak-duration-s",
+                ),
+            )
+        )
+    reset_interval = getattr(args, "soak_reset_interval", 20)
+    if reset_interval > 0 and cycle_index % reset_interval == 0:
+        specs.extend(
+            (
+                CommandSpec(
+                    command="reset",
+                    purpose=f"Duration soak cycle {cycle_index}: bounded soft reset.",
+                    group="soak-duration",
+                    expected_any=("Status: OK", "Status: BUSY"),
+                    unknowns=("Status: BUSY",),
+                    completion=("Status:",),
+                    timeout_s=8.0,
+                    requires_opt_in="--soak-duration-s",
+                ),
+                CommandSpec(
+                    command="recover",
+                    purpose=f"Duration soak cycle {cycle_index}: recovery/resync after reset.",
+                    group="soak-duration",
+                    expected=("Status: OK",),
+                    timeout_s=8.0,
+                    requires_opt_in="--soak-duration-s",
+                ),
+                CommandSpec(
+                    command="status",
+                    purpose=f"Duration soak cycle {cycle_index}: post-reset status.",
+                    group="soak-duration",
+                    expected=("Status: 0x", "Driver:", "dirty=false"),
+                    validators=(VALIDATOR_STATUS_NOT_MEASURING, VALIDATOR_STATUS_IM_UPDATE_CLEAR),
+                    timeout_s=5.0,
+                    requires_opt_in="--soak-duration-s",
+                ),
+            )
+        )
+    return tuple(specs)
+
+
+def run_duration_soak(ser, transcript, args: argparse.Namespace) -> tuple[list[dict], dict]:
+    requested_s = float(getattr(args, "soak_duration_s", 0.0))
+    if requested_s <= 0.0:
+        return [], {
+            "requested_duration_s": requested_s,
+            "executed": False,
+            "start": "",
+            "end": "",
+            "elapsed_s": 0.0,
+            "cycles": 0,
+            "stop_reason": "not requested",
+        }
+
+    start_wall = timestamp()
+    start = time.monotonic()
+    deadline = start + requested_s
+    cycle = 0
+    rows: list[dict] = []
+    stop_reason = "deadline reached"
+    transcript.write(f"\n--- DURATION SOAK START {start_wall} requested_s={requested_s:.3f} ---\n")
+    transcript.flush()
+    if getattr(args, "verbose", False):
+        print(f"\n--- DURATION SOAK START {start_wall} requested_s={requested_s:.3f} ---")
+
+    while time.monotonic() < deadline:
+        cycle += 1
+        for spec in duration_soak_cycle_commands(args, cycle):
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0.0:
+                break
+            if remaining_s < 1.0:
+                stop_reason = "deadline reached before next command"
+                break
+            timeout_s = min(spec.timeout_s if spec.timeout_s > 0 else args.timeout, remaining_s)
+            row = run_serial_command(
+                ser,
+                spec,
+                transcript,
+                timeout_s=timeout_s,
+                idle_after_output_s=args.idle_timeout_s,
+                idle_after_match_s=args.idle_after_match_s,
+                command_pacing_s=args.command_pacing_s,
+                verbose=args.verbose,
+            )
+            row["soak_cycle"] = cycle
+            rows.append(row)
+            if row["serial_result"] in (RESULT_FAIL, RESULT_TIMEOUT):
+                stop_reason = f"stopped after {row['serial_result']} from {spec.command}"
+                end_wall = timestamp()
+                elapsed = time.monotonic() - start
+                transcript.write(f"\n--- DURATION SOAK STOP {end_wall} reason={stop_reason} ---\n")
+                transcript.flush()
+                return rows, {
+                    "requested_duration_s": requested_s,
+                    "executed": True,
+                    "start": start_wall,
+                    "end": end_wall,
+                    "elapsed_s": round(elapsed, 3),
+                    "cycles": cycle,
+                    "stop_reason": stop_reason,
+                }
+        idle_s = float(getattr(args, "soak_cycle_idle_s", 0.0))
+        remaining_s = deadline - time.monotonic()
+        if idle_s > 0.0 and remaining_s > 0.0:
+            time.sleep(min(idle_s, remaining_s))
+
+    end_wall = timestamp()
+    elapsed = time.monotonic() - start
+    transcript.write(f"\n--- DURATION SOAK END {end_wall} elapsed_s={elapsed:.3f} ---\n")
+    transcript.flush()
+    if getattr(args, "verbose", False):
+        print(f"\n--- DURATION SOAK END {end_wall} elapsed_s={elapsed:.3f} ---")
+    return rows, {
+        "requested_duration_s": requested_s,
+        "executed": True,
+        "start": start_wall,
+        "end": end_wall,
+        "elapsed_s": round(elapsed, 3),
+        "cycles": cycle,
+        "stop_reason": stop_reason,
+    }
+
+
 def final_verdict(results: Iterable[dict], *, dry_run: bool) -> str:
     serial_results = [row["serial_result"] for row in results]
     if dry_run:
         return "INCOMPLETE"
     if any(result in (RESULT_FAIL, RESULT_TIMEOUT) for result in serial_results):
         return "FAIL"
-    if any(result in (RESULT_OPERATOR, RESULT_REVIEW, RESULT_SERIAL_REVIEW) for result in serial_results):
+    if any(result in (RESULT_OPERATOR, RESULT_REVIEW, RESULT_SERIAL_REVIEW, RESULT_UNKNOWN) for result in serial_results):
         return "OPERATOR_REVIEW_REQUIRED"
     return "PASS"
+
+
+def exit_code_for_verdict(verdict: str, args: argparse.Namespace) -> int:
+    if verdict == "FAIL":
+        return 1
+    review_verdicts = {"OPERATOR_REVIEW_REQUIRED", "INCOMPLETE"}
+    if verdict in review_verdicts and (getattr(args, "require_pass", False) or getattr(args, "fail_on_review", False)):
+        return 3
+    if getattr(args, "require_pass", False) and verdict != "PASS":
+        return 3
+    return 0
 
 
 def safe_cell(value: object) -> str:
@@ -963,6 +1943,9 @@ def artifact_path(summary: dict, key: str) -> str:
 
 
 def write_summary_md(path: pathlib.Path, summary: dict) -> None:
+    result_counts: dict[str, int] = {}
+    for row in summary["results"]:
+        result_counts[row["serial_result"]] = result_counts.get(row["serial_result"], 0) + 1
     lines = [
         "# I2C HIL Summary",
         "",
@@ -982,21 +1965,37 @@ def write_summary_md(path: pathlib.Path, summary: dict) -> None:
         f"BME280 module: `{summary['environment']['module']}`",
         f"Dry run: `{summary['dry_run']}`",
         f"Final verdict: `{summary['final_verdict']}`",
+        f"Result counts: `{json.dumps(result_counts, sort_keys=True)}`",
         "",
         f"Claim boundary: {summary['claim_boundary']}",
         "",
+        "## Duration Soak",
+        "",
+        f"Requested duration: `{summary.get('soak', {}).get('requested_duration_s', 0.0)}` s",
+        f"Executed: `{summary.get('soak', {}).get('executed', False)}`",
+        f"Start: `{summary.get('soak', {}).get('start', '')}`",
+        f"End: `{summary.get('soak', {}).get('end', '')}`",
+        f"Elapsed: `{summary.get('soak', {}).get('elapsed_s', 0.0)}` s",
+        f"Cycles: `{summary.get('soak', {}).get('cycles', 0)}`",
+        f"Stop reason: `{summary.get('soak', {}).get('stop_reason', '')}`",
+        "",
         "## Command Results",
         "",
-        "| Group | Command | Purpose | Expected/validators | Serial result | Operator result | Completion | Elapsed s | Notes |",
-        "| --- | --- | --- | --- | --- | --- | --- | ---: | --- |",
+        "| Group | Command | Purpose | Expected/validators | Serial result | Operator result | Completion | Elapsed s | Soak cycle | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- | ---: | ---: | --- |",
     ]
     for row in summary["results"]:
-        expected = ", ".join(row.get("expected", []) + row.get("expected_any", []) + row.get("validators", []))
+        expected = ", ".join(
+            row.get("expected", [])
+            + row.get("expected_any", [])
+            + row.get("unknowns", [])
+            + row.get("validators", [])
+        )
         lines.append(
             f"| `{safe_cell(row['group'])}` | `{safe_cell(row['command'])}` | {safe_cell(row['purpose'])} | "
             f"{safe_cell(expected)} | `{row['serial_result']}` | "
             f"`{row['operator_result']}` | `{row['completion']}` | "
-            f"{row['elapsed_s']:.3f} | {safe_cell(row['notes'])} |"
+            f"{row['elapsed_s']:.3f} | {row.get('soak_cycle', '')} | {safe_cell(row['notes'])} |"
         )
     lines.extend(
         [
@@ -1033,6 +2032,9 @@ def write_results_csv(path: pathlib.Path, results: list[dict]) -> None:
         "elapsed_s",
         "pre_delay_s",
         "classification_reason",
+        "soak_cycle",
+        "parsed_evidence",
+        "unknowns",
         "requires_opt_in",
         "destructive",
         "notes",
@@ -1077,14 +2079,35 @@ def environment_record(args: argparse.Namespace) -> dict[str, object]:
         "environment_ref": metadata_value(getattr(args, "environment_ref", "")),
         "operator_notes": metadata_value(getattr(args, "operator_notes", "")),
         "command_file": metadata_value(getattr(args, "commands", "")),
+        "timing": {
+            "timeout_s": getattr(args, "timeout", 8.0),
+            "idle_timeout_s": getattr(args, "idle_timeout_s", 0.75),
+            "idle_after_match_s": getattr(args, "idle_after_match_s", 0.25),
+            "boot_settle_s": getattr(args, "boot_settle_s", 1.5),
+            "command_pacing_s": getattr(args, "command_pacing_s", 0.0),
+            "reconnect_attempts": getattr(args, "reconnect_attempts", 0),
+            "reconnect_delay_s": getattr(args, "reconnect_delay_s", 1.0),
+        },
         "opt_in_flags": {
             "include_soak": getattr(args, "include_soak", False),
             "soak_count": getattr(args, "soak_count", 500),
             "include_normal_soak": getattr(args, "include_normal_soak", False),
             "normal_soak_count": getattr(args, "normal_soak_count", 5),
             "normal_soak_interval_s": getattr(args, "normal_soak_interval_s", 1.0),
+            "include_config_matrix": getattr(args, "include_config_matrix", False),
+            "include_invalid_inputs": getattr(args, "include_invalid_inputs", False),
+            "include_benchmarks": getattr(args, "include_benchmarks", False)
+            or getattr(args, "sample_rate_benchmark", False),
+            "include_job_api": getattr(args, "include_job_api", False),
+            "soak_duration_s": getattr(args, "soak_duration_s", 0.0),
+            "soak_cycle_stress_count": getattr(args, "soak_cycle_stress_count", 50),
+            "soak_cycle_mix_count": getattr(args, "soak_cycle_mix_count", 70),
+            "soak_cycle_idle_s": getattr(args, "soak_cycle_idle_s", 0.0),
+            "soak_reset_interval": getattr(args, "soak_reset_interval", 20),
             "include_destructive": getattr(args, "include_destructive", False),
             "include_fault_tests": getattr(args, "include_fault_tests", False),
+            "require_pass": getattr(args, "require_pass", False),
+            "fail_on_review": getattr(args, "fail_on_review", False),
         },
     }
 
@@ -1291,7 +2314,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--port", help="Serial port, for example COM5 or /dev/ttyUSB0.")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate.")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="Base output directory.")
-    parser.add_argument("--timeout", type=float, default=8.0, help="Default command timeout in seconds.")
+    parser.add_argument("--timeout", "--timeout-s", dest="timeout", type=float, default=8.0, help="Default command timeout in seconds.")
+    parser.add_argument("--idle-timeout-s", type=parse_nonnegative_float, default=0.75, help="Idle time after output for commands without expected tokens.")
+    parser.add_argument("--idle-after-match-s", type=parse_nonnegative_float, default=0.25, help="Idle time after expected/failure tokens before command completion.")
+    parser.add_argument("--boot-settle-s", type=parse_nonnegative_float, default=1.5, help="Initial serial settle/read window after opening the port.")
+    parser.add_argument("--command-pacing-s", type=parse_nonnegative_float, default=0.0, help="Bounded delay before each serial command.")
+    parser.add_argument("--reconnect-attempts", type=parse_nonnegative_int, default=0, help="Serial-open retry attempts after the initial attempt.")
+    parser.add_argument("--reconnect-delay-s", type=parse_nonnegative_float, default=1.0, help="Delay between serial-open retry attempts.")
+    parser.add_argument("--verbose", action="store_true", help="Echo transcript chunks to stdout while running.")
+    parser.add_argument("--parser-self-test", action="store_true", help="Run parser/classifier self-tests and exit.")
     parser.add_argument("--dry-run", action="store_true", help="Write planned artifacts without opening serial.")
     parser.add_argument("--commands", help="Optional newline-delimited command file.")
     parser.add_argument("--address", type=parse_address, default="0x76", help="BME280 I2C address: 0x76 or 0x77.")
@@ -1302,6 +2333,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--include-normal-soak", action="store_true", help="Include opt-in normal-mode repeated-read soak.")
     parser.add_argument("--normal-soak-count", type=parse_positive_int, default=5, help="Normal-mode repeated-read count.")
     parser.add_argument("--normal-soak-interval-s", type=parse_nonnegative_float, default=1.0, help="Delay between opt-in normal-mode soak reads.")
+    parser.add_argument("--include-config-matrix", action="store_true", help="Include safe configuration boundary matrix commands.")
+    parser.add_argument("--include-invalid-inputs", action="store_true", help="Include safe CLI invalid-input checks.")
+    parser.add_argument("--include-benchmarks", action="store_true", help="Include sample-rate benchmark commands.")
+    parser.add_argument("--sample-rate-benchmark", action="store_true", help="Alias for --include-benchmarks.")
+    parser.add_argument("--include-job-api", action="store_true", help="Include staged-job API CLI checks.")
+    parser.add_argument("--soak-duration-s", type=parse_nonnegative_float, default=0.0, help="Run a duration-based safe soak loop after the fixed plan.")
+    parser.add_argument("--soak-cycle-stress-count", type=parse_positive_int, default=50, help="Forced stress count per duration-soak cycle.")
+    parser.add_argument("--soak-cycle-mix-count", type=parse_positive_int, default=70, help="stress_mix count per duration-soak cycle.")
+    parser.add_argument("--soak-cycle-idle-s", type=parse_nonnegative_float, default=0.0, help="Idle delay between duration-soak cycles.")
+    parser.add_argument("--soak-reset-interval", type=parse_nonnegative_int, default=20, help="Duration-soak cycle interval for soft reset/recover; 0 disables.")
     parser.add_argument("--include-fault-tests", action="store_true", help="Mark manual fault-test checklist items as intentionally requested.")
     parser.add_argument("--operator", default="", help="Operator name for evidence metadata.")
     parser.add_argument("--board", default="", help="MCU board model for evidence metadata.")
@@ -1320,12 +2361,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--csb-state", default="", help="BME280 CSB strap state.")
     parser.add_argument("--environment-ref", default="", help="Environmental reference instruments or artifact path.")
     parser.add_argument("--operator-notes", default="", help="Short operator note copied into generated artifacts.")
+    parser.add_argument("--require-pass", action="store_true", help="Exit nonzero unless the final verdict is PASS.")
+    parser.add_argument("--fail-on-review", action="store_true", help="Exit 3 for review/unknown verdicts.")
     return parser.parse_args(argv)
 
 
 def execution_safety_errors(args: argparse.Namespace, executable: list[CommandSpec]) -> list[str]:
     errors: list[str] = []
-    has_raw_write = any(spec.destructive or spec.command.strip().lower().startswith("wreg ") for spec in executable)
+    def is_well_formed_raw_write(command: str) -> bool:
+        parts = command.strip().split()
+        return len(parts) == 3 and parts[0].lower() == "wreg"
+
+    has_raw_write = any(
+        spec.destructive or is_well_formed_raw_write(spec.command) for spec in executable
+    )
     if has_raw_write and not args.dry_run and args.confirm_raw_write != RAW_WRITE_CONFIRMATION:
         errors.append(f"raw-write execution requires --confirm-raw-write {RAW_WRITE_CONFIRMATION}")
     return errors
@@ -1334,6 +2383,13 @@ def execution_safety_errors(args: argparse.Namespace, executable: list[CommandSp
 def main(argv: list[str] | None = None) -> int:
     runner_argv = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(runner_argv)
+    if args.parser_self_test:
+        ok, failures = parser_self_test()
+        if ok:
+            print("HIL parser self-test PASSED")
+            return 0
+        print("HIL parser self-test FAILED: " + ", ".join(failures), file=sys.stderr)
+        return 1
     if not args.dry_run and not args.port:
         print("--port is required unless --dry-run is used.", file=sys.stderr)
         return 2
@@ -1368,6 +2424,15 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = log_dir / "manifest.json"
 
     results: list[dict] = []
+    soak_summary = {
+        "requested_duration_s": getattr(args, "soak_duration_s", 0.0),
+        "executed": False,
+        "start": "",
+        "end": "",
+        "elapsed_s": 0.0,
+        "cycles": 0,
+        "stop_reason": "not requested",
+    }
     with transcript_path.open("w", encoding="utf-8", newline="") as transcript:
         write_transcript_header(transcript, args, log_dir, runner_argv=runner_argv)
         if args.dry_run:
@@ -1375,18 +2440,59 @@ def main(argv: list[str] | None = None) -> int:
             for spec in executable:
                 transcript.write(f"DRY RUN COMMAND: [{spec.group}] {spec.command} -- {spec.purpose}\n")
                 results.append(dry_run_result(spec))
+            if args.soak_duration_s > 0.0:
+                transcript.write("DRY RUN: representative duration-soak cycle only.\n")
+                for spec in duration_soak_cycle_commands(args, 1):
+                    transcript.write(f"DRY RUN SOAK COMMAND: [{spec.group}] {spec.command} -- {spec.purpose}\n")
+                    results.append(dry_run_result(spec))
+                soak_summary = {
+                    "requested_duration_s": args.soak_duration_s,
+                    "executed": False,
+                    "start": "",
+                    "end": "",
+                    "elapsed_s": 0.0,
+                    "cycles": 1,
+                    "stop_reason": "dry run representative cycle only",
+                }
         else:
             serial = import_serial()
-            with serial.Serial(args.port, args.baud, timeout=0.1) as ser:
-                time.sleep(1.5)
-                boot = read_available(ser)
-                if boot:
-                    transcript.write("--- BOOT/INITIAL OUTPUT ---\n")
-                    transcript.write(boot)
-                    transcript.write("\n")
-                for spec in executable:
-                    timeout_s = spec.timeout_s if spec.timeout_s > 0 else args.timeout
-                    results.append(run_serial_command(ser, spec, transcript, timeout_s=timeout_s))
+            try:
+                with open_serial_with_retries(serial, args) as ser:
+                    time.sleep(args.boot_settle_s)
+                    boot = read_available(ser)
+                    if boot:
+                        transcript.write("--- BOOT/INITIAL OUTPUT ---\n")
+                        transcript.write(boot)
+                        transcript.write("\n")
+                        if args.verbose:
+                            print("--- BOOT/INITIAL OUTPUT ---")
+                            print(boot, end="")
+                    for spec in executable:
+                        timeout_s = spec.timeout_s if spec.timeout_s > 0 else args.timeout
+                        results.append(
+                            run_serial_command(
+                                ser,
+                                spec,
+                                transcript,
+                                timeout_s=timeout_s,
+                                idle_after_output_s=args.idle_timeout_s,
+                                idle_after_match_s=args.idle_after_match_s,
+                                command_pacing_s=args.command_pacing_s,
+                                verbose=args.verbose,
+                            )
+                        )
+                        if results[-1]["serial_result"] in (RESULT_FAIL, RESULT_TIMEOUT):
+                            transcript.write("Stopping fixed plan after hard failure.\n")
+                            break
+                    if not any(row["serial_result"] in (RESULT_FAIL, RESULT_TIMEOUT) for row in results):
+                        soak_rows, soak_summary = run_duration_soak(ser, transcript, args)
+                        results.extend(soak_rows)
+            except Exception as exc:
+                message = f"Serial session failed: {exc}"
+                transcript.write(message + "\n")
+                if args.verbose:
+                    print(message, file=sys.stderr)
+                results.append(session_error_result(message))
 
     summary = {
         "run_id": log_dir.name,
@@ -1405,6 +2511,7 @@ def main(argv: list[str] | None = None) -> int:
         "command_sequence": [spec.command for spec in executable],
         "manual_or_skipped": [dataclasses.asdict(item) for item in manual_items],
         "results": results,
+        "soak": soak_summary,
         "final_verdict": final_verdict(results, dry_run=args.dry_run),
         "artifacts": {
             "serial_transcript": os.fspath(transcript_path),
@@ -1453,7 +2560,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Manifest: {manifest_path}")
     if args.dry_run:
         print("Dry run only: no physical HIL validation was performed.")
-    return 0 if summary["final_verdict"] != "FAIL" else 1
+    return exit_code_for_verdict(summary["final_verdict"], args)
 
 
 if __name__ == "__main__":
