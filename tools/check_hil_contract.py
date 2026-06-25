@@ -248,6 +248,7 @@ def main() -> int:
         "REVIEW_REQUIRED",
         "SERIAL_OK_OR_REVIEW",
         "UNKNOWN",
+        "PASS_WITH_RESET_BUSY_RECOVERED",
         "FAIL",
         "TIMEOUT",
         "SKIPPED_DRY_RUN",

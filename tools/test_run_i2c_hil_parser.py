@@ -205,6 +205,77 @@ class HilCalibClassificationTest(unittest.TestCase):
         self.assertEqual(run_i2c_hil.RESULT_UNKNOWN, result)
         self.assertIn("Status: BUSY", reason)
 
+    def test_recovered_reset_busy_reclassifies_to_controlled_pass(self) -> None:
+        results = [
+            {
+                "command": "reset",
+                "group": "soak-duration",
+                "serial_result": run_i2c_hil.RESULT_UNKNOWN,
+                "classification_reason": "Matched command unknown/incomplete token: Status: BUSY",
+                "parsed_evidence": {},
+                "output_excerpt": "Status: BUSY (code=11, detail=10)\nMessage: NVM update in progress\n",
+            },
+            {
+                "command": "recover",
+                "group": "soak-duration",
+                "serial_result": run_i2c_hil.RESULT_PASS,
+                "parsed_evidence": {},
+                "output_excerpt": "Status: OK (code=0, detail=0)\n",
+            },
+            {
+                "command": "status",
+                "group": "soak-duration",
+                "serial_result": run_i2c_hil.RESULT_PASS,
+                "parsed_evidence": {"measuring": 0, "im_update": 0},
+                "output_excerpt": "Status: 0x00 (measuring=0, im_update=0)\nDriver: state=READY online=true dirty=false\n",
+            },
+        ]
+
+        count = run_i2c_hil.reclassify_recovered_reset_busy(results)
+
+        self.assertEqual(1, count)
+        self.assertEqual(run_i2c_hil.RESULT_RESET_BUSY_RECOVERED, results[0]["serial_result"])
+        self.assertIn("immediate follow-up", results[0]["classification_reason"])
+
+    def test_reset_busy_stays_unknown_without_clean_ready_status(self) -> None:
+        results = [
+            {
+                "command": "reset",
+                "group": "soak-duration",
+                "serial_result": run_i2c_hil.RESULT_UNKNOWN,
+                "classification_reason": "Matched command unknown/incomplete token: Status: BUSY",
+                "parsed_evidence": {},
+                "output_excerpt": "Status: BUSY (code=11, detail=10)\nMessage: NVM update in progress\n",
+            },
+            {
+                "command": "recover",
+                "group": "soak-duration",
+                "serial_result": run_i2c_hil.RESULT_PASS,
+                "parsed_evidence": {},
+                "output_excerpt": "Status: OK (code=0, detail=0)\n",
+            },
+            {
+                "command": "status",
+                "group": "soak-duration",
+                "serial_result": run_i2c_hil.RESULT_PASS,
+                "parsed_evidence": {"measuring": 0, "im_update": 1},
+                "output_excerpt": "Status: 0x01 (measuring=0, im_update=1)\nDriver: state=READY online=true dirty=false\n",
+            },
+        ]
+
+        count = run_i2c_hil.reclassify_recovered_reset_busy(results)
+
+        self.assertEqual(0, count)
+        self.assertEqual(run_i2c_hil.RESULT_UNKNOWN, results[0]["serial_result"])
+
+    def test_recovered_reset_busy_does_not_block_pass_verdict(self) -> None:
+        results = [
+            {"serial_result": run_i2c_hil.RESULT_PASS},
+            {"serial_result": run_i2c_hil.RESULT_RESET_BUSY_RECOVERED},
+        ]
+
+        self.assertEqual("PASS", run_i2c_hil.final_verdict(results, dry_run=False))
+
     def test_parser_self_test_passes(self) -> None:
         ok, failures = run_i2c_hil.parser_self_test()
 

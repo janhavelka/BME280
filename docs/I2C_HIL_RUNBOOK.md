@@ -258,6 +258,11 @@ Formal BME280 serial acceptance checks:
 - Post-`force` `status` should parse `measuring=0`.
 - Post-reset `status` should parse `im_update=0`; otherwise reset/NVM evidence
   remains incomplete or failed.
+- A synchronous `reset` that returns `Status: BUSY` with `NVM update in
+  progress` is Bosch-compatible transient reset behavior. The runner may
+  reclassify it as `PASS_WITH_RESET_BUSY_RECOVERED` only when the immediate
+  follow-up `recover` and `status` evidence proves `READY`, `dirty=false`,
+  `im_update=0`, and `measuring=0`.
 - `selftest` must parse `fail=0`; skipped rows still require operator review.
 - `stress` rows must parse `stress Errors=0`; sample plausibility still
   requires operator review.

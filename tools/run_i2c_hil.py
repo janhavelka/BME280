@@ -40,6 +40,7 @@ RESULT_SKIPPED_DRY_RUN = "SKIPPED_DRY_RUN"
 RESULT_TIMEOUT = "TIMEOUT"
 RESULT_NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
 RESULT_UNKNOWN = "UNKNOWN"
+RESULT_RESET_BUSY_RECOVERED = "PASS_WITH_RESET_BUSY_RECOVERED"
 RESULT_NOT_RUN = "NOT_RUN"
 
 RAW_WRITE_CONFIRMATION = "BME280_RAW_WRITE"
@@ -71,6 +72,8 @@ TOTAL_FAILURES_RE = re.compile(r"Total failures:\s*(\d+)")
 CHIP_ID_RE = re.compile(r"Chip ID:\s*0x([0-9A-Fa-f]{1,2})|Reg\s+0xD0\s*=\s*0x([0-9A-Fa-f]{1,2})")
 JOB_STATE_RE = re.compile(r"Job state:\s*([A-Z_]+)")
 JOB_INSTRUCTIONS_RE = re.compile(r"Instructions:\s*(\d+)")
+DRIVER_READY_RE = re.compile(r"(?:Driver:\s*state=READY\b|State:\s*READY\b)")
+DIRTY_FALSE_RE = re.compile(r"(?:dirty=false\b|Hardware config dirty:\s*(?:false|no)\b)", re.IGNORECASE)
 
 VALIDATOR_CTRL_MEAS_SLEEP = "ctrl_meas_sleep"
 VALIDATOR_STATUS_NOT_MEASURING = "status_not_measuring"
@@ -1333,6 +1336,89 @@ def classify_output(spec: CommandSpec, output: str, completion: str) -> tuple[st
     return RESULT_REVIEW, "No useful serial output captured."
 
 
+def row_output(row: dict) -> str:
+    return strip_ansi(str(row.get("output_excerpt", "")))
+
+
+def row_is_pass(row: dict, command: str | None = None) -> bool:
+    if command is not None and row.get("command") != command:
+        return False
+    return row.get("serial_result") == RESULT_PASS
+
+
+def row_is_reset_nvm_busy(row: dict) -> bool:
+    clean = row_output(row)
+    return (
+        row.get("command") == "reset"
+        and row.get("serial_result") == RESULT_UNKNOWN
+        and "Status: BUSY" in clean
+        and "NVM update in progress" in clean
+    )
+
+
+def row_proves_ready_clean_status(row: dict) -> bool:
+    if not row_is_pass(row, "status"):
+        return False
+    evidence = row.get("parsed_evidence", {})
+    if evidence.get("im_update") != 0 or evidence.get("measuring") != 0:
+        return False
+    clean = row_output(row)
+    return bool(DRIVER_READY_RE.search(clean) and DIRTY_FALSE_RE.search(clean))
+
+
+def row_proves_readable_config(row: dict) -> bool:
+    if not row_is_pass(row, "cfg"):
+        return False
+    clean = row_output(row)
+    return "ctrl_hum" in clean and "ctrl_meas" in clean and "config" in clean
+
+
+def row_proves_recover_ok(row: dict) -> bool:
+    if not row_is_pass(row, "recover"):
+        return False
+    return "Status: OK" in row_output(row)
+
+
+def reset_busy_recovery_proven(results: list[dict], index: int) -> bool:
+    row = results[index]
+    group = row.get("group")
+    if group == "reset-recover":
+        if index + 4 >= len(results):
+            return False
+        post_status, recover, cfg, final_status = results[index + 1:index + 5]
+        return (
+            row_is_pass(post_status, "status")
+            and post_status.get("parsed_evidence", {}).get("im_update") == 0
+            and row_proves_recover_ok(recover)
+            and row_proves_readable_config(cfg)
+            and row_proves_ready_clean_status(final_status)
+        )
+    if group == "soak-duration":
+        if index + 2 >= len(results):
+            return False
+        recover, status = results[index + 1:index + 3]
+        return row_proves_recover_ok(recover) and row_proves_ready_clean_status(status)
+    return False
+
+
+def reclassify_recovered_reset_busy(results: list[dict]) -> int:
+    count = 0
+    for index, row in enumerate(results):
+        if row_is_reset_nvm_busy(row) and reset_busy_recovery_proven(results, index):
+            row["serial_result"] = RESULT_RESET_BUSY_RECOVERED
+            row["classification_reason"] = (
+                "Reset returned BUSY while BME280 NVM copy was in progress; "
+                "immediate follow-up recovery/status evidence proved READY, "
+                "dirty=false, im_update=0, and measuring=0."
+            )
+            row["parsed_evidence"] = {
+                **row.get("parsed_evidence", {}),
+                "reset_busy_recovered": True,
+            }
+            count += 1
+    return count
+
+
 def output_has_expected(spec: CommandSpec, output: str) -> bool:
     return completion_tokens_match(spec, output)
 
@@ -1855,12 +1941,15 @@ def run_duration_soak(ser, transcript, args: argparse.Namespace) -> tuple[list[d
 
     while time.monotonic() < deadline:
         cycle += 1
+        stop_for_deadline = False
         for spec in duration_soak_cycle_commands(args, cycle):
             remaining_s = deadline - time.monotonic()
             if remaining_s <= 0.0:
+                stop_for_deadline = True
                 break
             if remaining_s < 1.0:
                 stop_reason = "deadline reached before next command"
+                stop_for_deadline = True
                 break
             timeout_s = min(spec.timeout_s if spec.timeout_s > 0 else args.timeout, remaining_s)
             row = run_serial_command(
@@ -1890,6 +1979,8 @@ def run_duration_soak(ser, transcript, args: argparse.Namespace) -> tuple[list[d
                     "cycles": cycle,
                     "stop_reason": stop_reason,
                 }
+        if stop_for_deadline:
+            break
         idle_s = float(getattr(args, "soak_cycle_idle_s", 0.0))
         remaining_s = deadline - time.monotonic()
         if idle_s > 0.0 and remaining_s > 0.0:
@@ -1966,6 +2057,7 @@ def write_summary_md(path: pathlib.Path, summary: dict) -> None:
         f"Dry run: `{summary['dry_run']}`",
         f"Final verdict: `{summary['final_verdict']}`",
         f"Result counts: `{json.dumps(result_counts, sort_keys=True)}`",
+        f"Recovered reset BUSY rows: `{summary.get('reset_busy_recovered_count', 0)}`",
         "",
         f"Claim boundary: {summary['claim_boundary']}",
         "",
@@ -2494,6 +2586,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(message, file=sys.stderr)
                 results.append(session_error_result(message))
 
+    reset_busy_recovered_count = reclassify_recovered_reset_busy(results)
     summary = {
         "run_id": log_dir.name,
         "datetime": timestamp(),
@@ -2512,6 +2605,7 @@ def main(argv: list[str] | None = None) -> int:
         "manual_or_skipped": [dataclasses.asdict(item) for item in manual_items],
         "results": results,
         "soak": soak_summary,
+        "reset_busy_recovered_count": reset_busy_recovered_count,
         "final_verdict": final_verdict(results, dry_run=args.dry_run),
         "artifacts": {
             "serial_transcript": os.fspath(transcript_path),
