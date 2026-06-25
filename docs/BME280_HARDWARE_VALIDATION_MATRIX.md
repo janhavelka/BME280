@@ -1,6 +1,6 @@
 # BME280 Hardware Validation Matrix
 
-Last updated: 2026-06-23
+Last updated: 2026-06-25
 
 This matrix is intentionally conservative. `NOT RUN` means no physical BME280
 hardware command was executed and recorded for that item in this repository.
@@ -95,7 +95,7 @@ Use `unknown` rather than guessing. Leave untested rows as `NOT RUN`.
 
 | Area | Target / condition | Status | Evidence |
 |------|--------------------|--------|----------|
-| ESP32-S2 Arduino serial HIL | COM28, PlatformIO Arduino `esp32s2dev`, address `0x76`, chip ID `0x60` | OPERATOR_REVIEW_REQUIRED | `docs/reports/hil-validation-COM28-20260622.md`; local `hil_logs/` artifacts from that run are development-local unless packaged with manifest and hashes |
+| ESP32-S2 Arduino serial HIL | COM28, PlatformIO Arduino `esp32s2dev`, address `0x76`, chip ID `0x60` | OPERATOR_REVIEW_REQUIRED | Compact ledger: `docs/reports/esp32s2-com28-hil-summary.md`. Local `hil_logs/` artifacts were development-local unless packaged with manifest and hashes. Latest classifier HIL had 0 UNKNOWN, 0 FAIL, 0 TIMEOUT. |
 | ESP32-S2 ESP-IDF serial HIL | Native ESP-IDF CLI runtime behavior | NOT RUN | No `idf.py` hardware runtime artifact recorded |
 | ESP32-S3 Arduino serial HIL | PlatformIO Arduino on ESP32-S3 hardware | NOT RUN | Build-only evidence is not hardware validation |
 | ESP32-S3 ESP-IDF serial HIL | Native ESP-IDF on ESP32-S3 hardware | NOT RUN | No hardware runtime artifact recorded |
@@ -103,24 +103,24 @@ Use `unknown` rather than guessing. Leave untested rows as `NOT RUN`.
 | Calibrated accuracy | Reference temperature, pressure, and humidity instruments | NOT RUN | No controlled reference artifact recorded |
 | Fault injection | Protected absence/timeout/bus/data fault fixture | NOT RUN | No protected fault-injection bench artifact recorded |
 | Shared-bus contention | Another active device, lock timeout, scheduler evidence | NOT RUN | Pending application integration test |
-| Safe default serial run | Default runner groups complete without raw writes, long soak, or physical fault actions | NOT RUN | Pending `tools/run_i2c_hil.py` artifacts and manifest |
-| Address 0x76 | SDO tied to GND, CSB tied to VDDIO | NOT RUN | Pending physical board test |
-| Chip ID | Register `0xD0` reads `0x60` | NOT RUN | Pending `chipid` and `reg 0xD0` CLI capture |
-| Soft reset | Write `0xB6` to `0xE0`, wait for `im_update` clear | NOT RUN | Pending `reset` and post-reset `status` capture |
-| Recover/resync | Dirty-state evidence is recorded before/after recover | NOT RUN | Pending `status`, `recover`, `cfg`, and post-recover `status` capture |
-| Forced mode | Forced measurement produces a sample | NOT RUN | Pending `force` and follow-up `read` capture |
-| Forced sleep return | `ctrl_meas[1:0]` returns to sleep after forced conversion | NOT RUN | Pending post-force `reg 0xF4` and post-force `status` capture |
-| Normal mode | `tick()` polling captures fresh samples across cycles | NOT RUN | Pending repeated `normal on` / `read` / `normal off` captures |
-| Normal-mode soak | Opt-in repeated normal-mode reads with timestamps and references | NOT RUN | Pending `--include-normal-soak` artifact package |
+| Safe default serial run | Default runner groups complete without raw writes, long soak, or physical fault actions | OPERATOR_REVIEW_REQUIRED | COM28 summary records default/extended serial HIL with no FAIL or TIMEOUT; raw artifacts were not committed |
+| Address 0x76 | SDO tied to GND, CSB tied to VDDIO | OPERATOR_REVIEW_REQUIRED | COM28 HIL ran at `0x76`; SDO/CSB were inferred from working I2C mode, not independently photographed or probed |
+| Chip ID | Register `0xD0` reads `0x60` | PASS | COM28 summary records chip ID `0x60` |
+| Soft reset | Write `0xB6` to `0xE0`, wait for `im_update` clear | PASS_WITH_RESET_BUSY_RECOVERED | Reset BUSY/NVM observations are accepted only with immediate recovery evidence; classifier HIL recorded recovered reset rows and 0 UNKNOWN |
+| Recover/resync | Dirty-state evidence is recorded before/after recover | PASS | COM28 classifier HIL required `READY`, `dirty=false`, and `Consecutive failures: 0` after reset/recover |
+| Forced mode | Forced measurement produces a sample | OPERATOR_REVIEW_REQUIRED | COM28 serial HIL exercised forced samples; environmental plausibility remains operator-reviewed |
+| Forced sleep return | `ctrl_meas[1:0]` returns to sleep after forced conversion | OPERATOR_REVIEW_REQUIRED | COM28 serial HIL captured post-force state; raw artifact package not committed |
+| Normal mode | `tick()` polling captures fresh samples across cycles | OPERATOR_REVIEW_REQUIRED | COM28 serial HIL exercised normal-mode CLI paths; raw artifact package not committed |
+| Normal-mode soak | Opt-in repeated normal-mode reads with timestamps and references | OPERATOR_REVIEW_REQUIRED | COM28 20-hour comprehensive soak recorded 0 FAIL and 0 TIMEOUT; calibrated references were not recorded |
 | Burst read coherency | Single `0xF7..0xFE` transaction | NOT RUN | Pending logic-analyzer or adapter trace |
-| Calibration | `0x88..0xA1` and `0xE1..0xE7` parsed plausibly | NOT RUN | Pending `calib` CLI capture |
-| Compensation | Temperature/pressure/humidity plausible for environment | NOT RUN | Pending controlled environment reading |
+| Calibration | `0x88..0xA1` and `0xE1..0xE7` parsed plausibly | OPERATOR_REVIEW_REQUIRED | COM28 serial HIL exercised calibration CLI output; raw artifact package not committed |
+| Compensation | Temperature/pressure/humidity plausible for environment | OPERATOR_REVIEW_REQUIRED | COM28 serial HIL exercised compensated output; no calibrated reference artifact recorded |
 | Humidity handling | Non-condensing operation after assembly handling | NOT RUN | Pending production hardware procedure |
 | Fault mapping | Address NACK, timeout, bus/data errors, recovery | NOT RUN | Pending protected fault-injection bench |
 | Shared bus | External lock, timeout policy, scheduled `tick()` | NOT RUN | Pending application integration test |
-| Forced stress | Bounded `stress N` completes with `Errors: 0` and reviewed sample ranges | NOT RUN | Pending default `stress 10` or opt-in `--include-soak` transcript |
-| Long soak | Repeated normal-mode reads and/or bounded forced stress without hangs | NOT RUN | Pending soak transcript, manifest, and reference notes |
-| Staged job API | `--include-job-api` job status/init/apply/force/recover/poll evidence | NOT RUN | Pending post-1.7.0 HIL artifact |
+| Forced stress | Bounded `stress N` completes with `Errors: 0` and reviewed sample ranges | OPERATOR_REVIEW_REQUIRED | COM28 20-hour comprehensive soak recorded no FAIL or TIMEOUT; sample ranges remain operator-reviewed |
+| Long soak | Repeated normal-mode reads and/or bounded forced stress without hangs | OPERATOR_REVIEW_REQUIRED | COM28 20-hour comprehensive soak: 83313 PASS, 51701 OPERATOR_CHECK_REQUIRED, 1206 reset/NVM UNKNOWN, 0 FAIL, 0 TIMEOUT |
+| Staged job API | `--include-job-api` job status/init/apply/force/recover/poll evidence | PASS | COM28 reset-classifier HIL included staged job coverage: 0 UNKNOWN, 0 FAIL, 0 TIMEOUT |
 
 Minimum bring-up command evidence:
 

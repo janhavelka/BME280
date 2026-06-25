@@ -304,17 +304,19 @@ The default run excludes raw writes, long soak, and physical fault injection.
 
 Runner artifacts under `hil_logs/` are local development evidence unless they
 are packaged with a manifest and hashes. For a release evidence bundle, copy the
-run directories into a report folder and record SHA256 values for each
-`manifest.json`, `summary.json`, `results.csv`, and `serial_transcript.txt`:
+selected run directories into a dated report folder and record SHA256 values for
+each `manifest.json`, `summary.json`, `results.csv`, and
+`serial_transcript.txt`:
 
 ```powershell
-New-Item -ItemType Directory -Force docs\reports\hil-validation-COM28-20260622-artifacts
-Copy-Item -Recurse hil_logs\i2c_20260622_205926 docs\reports\hil-validation-COM28-20260622-artifacts\
-Copy-Item -Recurse hil_logs\i2c_20260622_210228 docs\reports\hil-validation-COM28-20260622-artifacts\
-Get-FileHash docs\reports\hil-validation-COM28-20260622-artifacts\*\manifest.json -Algorithm SHA256
-Get-FileHash docs\reports\hil-validation-COM28-20260622-artifacts\*\summary.json -Algorithm SHA256
-Get-FileHash docs\reports\hil-validation-COM28-20260622-artifacts\*\results.csv -Algorithm SHA256
-Get-FileHash docs\reports\hil-validation-COM28-20260622-artifacts\*\serial_transcript.txt -Algorithm SHA256
+$artifactDir = "docs\reports\hil-validation-COM28-YYYYMMDD-artifacts"
+New-Item -ItemType Directory -Force $artifactDir
+Copy-Item -Recurse hil_logs\<run-id-1> $artifactDir\
+Copy-Item -Recurse hil_logs\<run-id-2> $artifactDir\
+Get-FileHash "$artifactDir\*\manifest.json" -Algorithm SHA256
+Get-FileHash "$artifactDir\*\summary.json" -Algorithm SHA256
+Get-FileHash "$artifactDir\*\results.csv" -Algorithm SHA256
+Get-FileHash "$artifactDir\*\serial_transcript.txt" -Algorithm SHA256
 ```
 
 Do not commit large transcripts or zip files by default. Commit only a compact
