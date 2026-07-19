@@ -67,6 +67,23 @@ This table is a baseline disposition, not a completion claim. Final status must
 be recorded only after the corresponding code, tests, documentation, and
 release checks have completed.
 
+### Implementation progress
+
+The first core-state chunk resolves H-01, H-02, H-10, and the scoped S-03
+humidity check. Raw decoding and compensation now use candidate storage and
+commit one `SampleEnvelope` only after complete validation. Typed configuration
+and calibration state, configuration generations, sample sequences, and
+zero-I2C device-state invalidation prevent uncertain settings or coefficients
+from being used for a new measurement. A successful staged resynchronization
+preserves the prior sample only as generation-stale diagnostic evidence.
+
+The focused native regressions cover last-good preservation after raw-sentinel
+and pressure-divisor failures, zero-I2C `RESYNC_REQUIRED` admission, generation
+and sequence provenance, invalidation/reload behavior, and erased humidity
+calibration with humidity-enabled and humidity-skipped configurations. The
+native suite passed 142/142 after this chunk. Remaining findings stay open
+until their later implementation chunks and final full validation.
+
 TunnelMonitor source changes are not authorized by its current architecture
 authority. `docs/guidelines/dependency_policy.md:32-41,114`,
 `docs/guidelines/i2c_peripherals.md:477-486`, and

@@ -116,7 +116,31 @@ enum class SampleFreshness : uint8_t {
   NONE,                    ///< No cached sample exists
   FRESH,                   ///< Cached sample is clean and latest measurement status is OK
   STALE_AFTER_ERROR,       ///< Cached sample exists but latest measurement status is not OK
-  STALE_AFTER_CONFIG_DIRTY ///< Cached sample exists but hardware config may be out of sync
+  STALE_AFTER_CONFIG_DIRTY, ///< Cached sample exists but hardware config may be out of sync
+  STALE_AFTER_CONFIG_CHANGE ///< Cached sample belongs to an older configuration generation
+};
+
+/// Synchronization state between cached settings and device registers.
+enum class ConfigSyncState : uint8_t {
+  SYNCHRONIZED,       ///< Cached settings are fully applied to the device
+  UPDATE_IN_PROGRESS, ///< A multi-step settings update is active
+  RESYNC_REQUIRED     ///< Device settings may differ from the cached settings
+};
+
+/// Validity of the cached device-specific compensation coefficients.
+enum class CalibrationState : uint8_t {
+  INVALID, ///< Calibration must be reloaded before measurement
+  VALID    ///< Calibration is valid for the configured measurement channels
+};
+
+/// Atomically committed sample and its provenance.
+struct SampleEnvelope {
+  RawSample rawSample = {};                  ///< Coherent raw ADC sample
+  CompensatedSample compensatedSample = {}; ///< Values compensated from rawSample
+  int32_t tFine = 0;                         ///< Temperature intermediate for this sample
+  uint32_t timestampMs = 0;                  ///< Caller time when the sample was committed
+  uint32_t sampleSequence = 0;               ///< Nonzero sequence of the committed sample
+  uint32_t configGeneration = 0;             ///< Settings generation used for compensation
 };
 
 /// Snapshot of driver configuration and runtime state without I2C access.
@@ -139,13 +163,19 @@ struct SettingsSnapshot {
   Status lastMeasurementStatus = Status::Ok(); ///< Last request/tick status for measurement scheduling
   bool hasSample = false;                     ///< True when a compensated sample is cached
   SampleFreshness sampleFreshness = SampleFreshness::NONE; ///< Freshness of the cached sample
+  ConfigSyncState configSyncState = ConfigSyncState::RESYNC_REQUIRED; ///< Cached/device config relation
+  CalibrationState calibrationState = CalibrationState::INVALID; ///< Cached calibration validity
   bool hardwareConfigDirty = false;           ///< True when hardware config may differ from cache
   Status hardwareConfigDirtyError = Status::Ok(); ///< First error that made config state uncertain
+  uint32_t configGeneration = 0;               ///< Current synchronized config generation
+  uint32_t sampleSequence = 0;                 ///< Sequence of the latest committed sample
+  uint32_t sampleConfigGeneration = 0;         ///< Settings generation tagged on the sample
   uint32_t measurementStartMs = 0;            ///< Timestamp of last measurement trigger
   uint32_t sampleTimestampMs = 0;             ///< Timestamp of the last cached sample
   int32_t tFine = 0;                          ///< Last t_fine intermediate value
   RawSample rawSample = {};                   ///< Last raw ADC sample
   CompensatedSample compSample = {};          ///< Last compensated sample
+  SampleEnvelope sample = {};                 ///< Atomic sample/provenance snapshot
   Calibration calibration = {};               ///< Cached compensation coefficients
 };
 
@@ -235,7 +265,8 @@ public:
   Status startInitJob(const Config& config);
 
   /// Start a staged forced-mode measurement job.
-  /// @return IN_PROGRESS when accepted, error otherwise
+  /// @return IN_PROGRESS when accepted, RESYNC_REQUIRED when cached device
+  ///         state is not valid for measurement, or another error
   Status startForcedMeasurementJob();
 
   /// Start a staged re-apply of the cached configuration.
@@ -295,11 +326,24 @@ public:
   /// registers different from the cached settings. Cleared only by a complete
   /// successful config resync in begin(), recover(), or softReset().
   /// @return true when hardware register state needs a full resync
-  bool hardwareConfigDirty() const { return _hardwareConfigDirty; }
+  bool hardwareConfigDirty() const {
+    return _configSyncState == ConfigSyncState::UPDATE_IN_PROGRESS ||
+           (_configSyncState == ConfigSyncState::RESYNC_REQUIRED &&
+            !_hardwareConfigDirtyError.ok());
+  }
 
   /// First transport/status error that made hardware config state uncertain.
   /// @return Root-cause status for hardwareConfigDirty(), or Status::Ok()
   Status hardwareConfigDirtyError() const { return _hardwareConfigDirtyError; }
+
+  /// Current synchronization state between cached settings and hardware.
+  ConfigSyncState configSyncState() const { return _configSyncState; }
+
+  /// Current cached-calibration validity.
+  CalibrationState calibrationState() const { return _calibrationState; }
+
+  /// Current cached-settings generation. Zero means no apply has completed.
+  uint32_t configGeneration() const { return _configGeneration; }
 
   /// Last measurement scheduler/capture status recorded by requestMeasurement()
   /// or tick(). This is Status::Ok() after a sample is captured, IN_PROGRESS
@@ -369,7 +413,8 @@ public:
   /// Returns IN_PROGRESS if a request is accepted or an already-running forced
   /// conversion can be tracked, BUSY if a driver request is already pending or
   /// the driver is OFFLINE, INVALID_CONFIG if Config::nowMs is missing, or
-  /// INVALID_PARAM in sleep mode.
+  /// INVALID_PARAM in sleep mode. Returns RESYNC_REQUIRED without I2C when
+  /// cached configuration or calibration is not synchronized with the device.
   /// @return Scheduling status
   Status requestMeasurement();
 
@@ -384,6 +429,9 @@ public:
   /// Timestamp of the last cached sample, or 0 if none exists.
   /// @return Last cached sample timestamp in milliseconds
   uint32_t sampleTimestampMs() const { return _sampleTimestampMs; }
+
+  /// Sequence number of the latest committed sample, or zero before capture.
+  uint32_t sampleSequence() const { return _hasSample ? _sampleSequence : 0; }
 
   /// Age of the cached sample in milliseconds.
   /// @param nowMs Current monotonic timestamp in milliseconds
@@ -426,10 +474,23 @@ public:
   /// matching validity flag before using a channel.
   Status getCompensatedSample(CompensatedSample& out) const;
 
+  /// Get the atomically committed sample and its provenance.
+  /// @param[out] out Last committed sample envelope
+  /// @return Status::Ok() on success, MEASUREMENT_NOT_READY before capture
+  Status getSampleEnvelope(SampleEnvelope& out) const;
+
   /// Get cached calibration coefficients.
   /// @param[out] out Cached coefficients read during begin(), recover(), or softReset()
-  /// @return Status::Ok() on success, NOT_INITIALIZED before begin()
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), or
+  ///         RESYNC_REQUIRED after device-state invalidation
   Status getCalibration(Calibration& out) const;
+
+  /// Invalidate cached device-specific state without accessing I2C.
+  /// Preserves the last sample for explicitly stale diagnostics. A later
+  /// initialization or resynchronization must reload calibration and fully
+  /// apply settings before another measurement can start.
+  /// @return Status::Ok(), or BUSY while a staged job is active
+  Status invalidateDeviceState();
 
   /// Read raw calibration registers from the device.
   /// @param[out] out Raw register blocks
@@ -716,15 +777,21 @@ private:
   Status _readCalibrationTp();
   Status _readCalibrationH();
   Status _validateCalibrationValues(uint16_t digT1, uint16_t digP1) const;
-  void _commitCalibration(const Calibration& calibration);
+  void _commitCalibration(const Calibration& calibration,
+                          bool humidityCalibrationValid);
   Status _applyConfig();
   Status _ensureConfigWriteReady();
   Status _waitForNvmReady(bool tracked);
   Status _readCalibration();
   Status _validateCalibration();
-  Status _readRawData();
-  Status _compensate();
+  Status _readRawData(RawSample& out);
+  Status _compensate(const RawSample& raw, CompensatedSample& compensated,
+                     int32_t& tFine) const;
+  void _commitSample(const RawSample& raw,
+                     const CompensatedSample& compensated,
+                     int32_t tFine, uint32_t timestampMs);
   void _invalidateSampleCache();
+  void _advanceConfigGeneration();
   uint32_t _nowMs() const;
   
   // =========================================================================
@@ -743,8 +810,11 @@ private:
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
   bool _allowOfflineI2c = false;
-  bool _hardwareConfigDirty = false;
+  ConfigSyncState _configSyncState = ConfigSyncState::RESYNC_REQUIRED;
+  CalibrationState _calibrationState = CalibrationState::INVALID;
+  bool _humidityCalibrationValid = false;
   Status _hardwareConfigDirtyError = Status::Ok();
+  uint32_t _configGeneration = 0;
 
   // Staged job state
   JobKind _jobKind = JobKind::NONE;
@@ -757,6 +827,12 @@ private:
   bool _jobStartedOffline = false;
   bool _jobHardwareConfigTouched = false;
   Calibration _jobCalibration = {};
+  bool _jobHumidityCalibrationValid = false;
+  ConfigSyncState _jobPriorConfigSyncState = ConfigSyncState::RESYNC_REQUIRED;
+  Status _jobPriorHardwareConfigDirtyError = Status::Ok();
+  RawSample _jobRawSample = {};
+  CompensatedSample _jobCompSample = {};
+  int32_t _jobTFine = 0;
 
   // Calibration data
   uint16_t _digT1 = 0;
@@ -787,6 +863,9 @@ private:
   uint32_t _measurementDeadlineMs = 0;
   uint16_t _measurementStatusPolls = 0;
   uint32_t _sampleTimestampMs = 0;
+  uint32_t _sampleSequence = 0;
+  uint32_t _sampleConfigGeneration = 0;
+  bool _sampleGenerationStale = false;
   int32_t _tFine = 0;
   RawSample _rawSample;
   CompensatedSample _compSample;
