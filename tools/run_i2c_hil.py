@@ -1515,6 +1515,82 @@ def row_is_pass(row: dict, command: str | None = None) -> bool:
     return row.get("serial_result") == RESULT_PASS
 
 
+def reclassify_job_api_correlation(results: list[dict]) -> int:
+    """Require one identity and one exact terminal across the cancel fixture."""
+    commands = (
+        "job start init",
+        "job poll 1",
+        "job cancel deadline",
+        "job poll 0",
+        "job poll 0",
+    )
+    terminal_fields = (
+        "job_id",
+        "job_kind",
+        "job_phase",
+        "job_state",
+        "job_terminal",
+        "job_status",
+        "job_status_code",
+        "job_status_detail",
+        "job_conversion_state",
+        "job_phase_deadline_active",
+        "job_phase_deadline_ms",
+        "job_callbacks",
+        "job_instructions",
+    )
+    failures = 0
+    for index in range(0, len(results) - len(commands) + 1):
+        rows = results[index:index + len(commands)]
+        if tuple(row.get("command") for row in rows) != commands:
+            continue
+        if any(row.get("group") != "job-api" for row in rows):
+            continue
+        if any(not row_is_pass(row) for row in rows):
+            continue
+
+        evidence = [row.get("parsed_evidence", {}) for row in rows]
+        active_ids = [item.get("job_id") for item in evidence[:4]]
+        active_kinds = [item.get("job_kind") for item in evidence[:4]]
+        failure_reason = ""
+        failure_index = 3
+        if active_ids[0] in (None, 0) or len(set(active_ids)) != 1:
+            failure_reason = (
+                "Job API correlation failed: start, poll, cancel, and terminal "
+                f"retrieval IDs differ ({active_ids})."
+            )
+        elif len(set(active_kinds)) != 1:
+            failure_reason = (
+                "Job API correlation failed: active result kinds differ "
+                f"({active_kinds})."
+            )
+        else:
+            cancel_evidence = evidence[2]
+            retrieval_evidence = evidence[3]
+            mismatched = [
+                field for field in terminal_fields
+                if cancel_evidence.get(field) != retrieval_evidence.get(field)
+            ]
+            if mismatched:
+                failure_reason = (
+                    "Job API correlation failed: retained terminal differs from "
+                    f"the cancellation result in {', '.join(mismatched)}."
+                )
+        if not failure_reason and evidence[4].get("job_id") != 0:
+            failure_reason = (
+                "Job API correlation failed: the second zero-budget retrieval "
+                "did not return the empty job identity."
+            )
+            failure_index = 4
+
+        if failure_reason:
+            row = rows[failure_index]
+            row["serial_result"] = RESULT_FAIL
+            row["classification_reason"] = failure_reason
+            failures += 1
+    return failures
+
+
 def row_is_reset_nvm_busy(row: dict) -> bool:
     clean = row_output(row)
     return (
@@ -2763,6 +2839,7 @@ def main(argv: list[str] | None = None) -> int:
                 results.append(session_error_result(message))
 
     reset_busy_recovered_count = reclassify_recovered_reset_busy(results)
+    job_api_correlation_failures = reclassify_job_api_correlation(results)
     summary = {
         "run_id": log_dir.name,
         "datetime": timestamp(),
@@ -2771,6 +2848,7 @@ def main(argv: list[str] | None = None) -> int:
         "branch": git_value(["branch", "--show-current"]),
         "commit": git_value(["rev-parse", "HEAD"]),
         "worktree": worktree_state(),
+        "job_api_correlation_failures": job_api_correlation_failures,
         "port": args.port or "DRY_RUN",
         "baud": args.baud,
         "address": args.address,

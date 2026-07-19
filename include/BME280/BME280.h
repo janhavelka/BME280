@@ -1012,19 +1012,24 @@ private:
   Status _readCalibrationTp();
   Status _readCalibrationH();
   Status _validateCalibrationValues(uint16_t digT1, uint16_t digP1) const;
+  Status _readCalibrationCandidate(Calibration& calibration,
+                                   bool& humidityCalibrationValid,
+                                   bool& calibrationEvidenceChanged);
+  bool _calibrationTpMatchesCommitted(const Calibration& calibration) const;
+  bool _calibrationMatchesCommitted(
+      const Calibration& calibration, bool humidityCalibrationValid) const;
   void _commitCalibration(const Calibration& calibration,
                           bool humidityCalibrationValid);
   Status _applyConfig();
   Status _ensureConfigWriteReady();
   Status _waitForNvmReady(bool tracked);
-  Status _readCalibration();
-  Status _validateCalibration();
   Status _readRawData(RawSample& out);
   Status _compensate(const RawSample& raw, CompensatedSample& compensated,
                      int32_t& tFine) const;
   void _commitSample(const RawSample& raw,
                      const CompensatedSample& compensated,
                      int32_t tFine, uint32_t timestampMs);
+  void _cancelMeasurementTrackingForStateChange();
   void _invalidateSampleCache();
   void _advanceConfigGeneration();
   uint32_t _nowMs() const;
@@ -1072,6 +1077,8 @@ private:
   SensorSettings _jobPriorSettings = {};
   Calibration _jobCalibration = {};
   bool _jobHumidityCalibrationValid = false;
+  bool _jobCalibrationChanged = false;
+  bool _jobDeviceIdentityMismatch = false;
   ConfigSyncState _jobPriorConfigSyncState = ConfigSyncState::RESYNC_REQUIRED;
   Status _jobPriorHardwareConfigDirtyError = Status::Ok();
   RawSample _jobRawSample = {};

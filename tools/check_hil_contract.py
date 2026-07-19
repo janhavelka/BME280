@@ -183,6 +183,7 @@ def main() -> int:
     assert_contains(runner_text, "VALIDATOR_JOB_CANCEL_TIMED_OUT", RUNNER)
     assert_contains(runner_text, "VALIDATOR_JOB_TIMED_OUT_RETRIEVAL", RUNNER)
     assert_contains(runner_text, "VALIDATOR_JOB_IDLE_NO_RESULT", RUNNER)
+    assert_contains(runner_text, "reclassify_job_api_correlation", RUNNER)
 
     destructive_args = runner_args(include_destructive=True)
     destructive_sequence = [spec.command for spec in runner.build_command_sequence(destructive_args)[0]]
