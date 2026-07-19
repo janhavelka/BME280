@@ -91,6 +91,19 @@ suite passed 142/142 and both ESP32-S3 and ESP32-S2 PlatformIO builds passed.
 This is build evidence only; it does not add local ESP-IDF or hardware-runtime
 evidence.
 
+The ownership and lifecycle chunk resolves H-03, H-05, and H-06. A staged job
+now has exclusive hardware access: every synchronous public operation that can
+reach the transport returns `BUSY` without a callback while a job is running or
+waiting. Health states and counters remain observable, but `OFFLINE` no longer
+overrides an explicit owner-directed transaction or recovery policy. `end()` is
+now an idempotent, zero-I2C unbind that cancels local work and clears callbacks,
+cached device state, samples, and health history; putting the sensor to sleep is
+an explicit fallible hardware operation, not hidden teardown behavior. Native
+regressions cover the hardware-API admission matrix, passive OFFLINE history,
+zero-I2C repeated teardown, and transport rebinding. The native suite passed
+143/143, and the core-timing, CLI, HIL-contract, and ESP-IDF-example guards also
+passed after this chunk.
+
 TunnelMonitor source changes are not authorized by its current architecture
 authority. `docs/guidelines/dependency_policy.md:32-41,114`,
 `docs/guidelines/i2c_peripherals.md:477-486`, and

@@ -21,7 +21,7 @@ enum class DriverState : uint8_t {
   UNINIT,    ///< begin() not called or end() called
   READY,     ///< Operational, consecutiveFailures == 0
   DEGRADED,  ///< 1 <= consecutiveFailures < offlineThreshold
-  OFFLINE    ///< consecutiveFailures >= offlineThreshold
+  OFFLINE    ///< Diagnostic: consecutiveFailures >= offlineThreshold; does not block I2C
 };
 
 /// Active staged job type.
@@ -242,7 +242,9 @@ public:
   /// SettingsSnapshot::lastMeasurementStatus because tick() itself is void.
   void tick(uint32_t nowMs);
   
-  /// Shutdown the driver, put the sensor to sleep best-effort, and clear runtime state
+  /// Unbind the driver and clear all cached state without performing I2C.
+  /// This operation is idempotent and may be used during teardown even when a
+  /// staged job is active.
   void end();
 
   /// Check if begin() completed successfully and end() has not been called
@@ -365,6 +367,8 @@ public:
   DriverState driverState() const { return state(); }
   
   /// Check if driver is ready for operations
+  /// This is an observational health classification; OFFLINE does not block an
+  /// explicit owner-directed operation.
   /// @return true for READY or DEGRADED, false for UNINIT or OFFLINE
   bool isOnline() const { 
     return _driverState == DriverState::READY || 
@@ -411,8 +415,8 @@ public:
   /// In NORMAL mode: waits one estimated normal cycle before reading, so the
   /// sample is fresh relative to the request.
   /// Returns IN_PROGRESS if a request is accepted or an already-running forced
-  /// conversion can be tracked, BUSY if a driver request is already pending or
-  /// the driver is OFFLINE, INVALID_CONFIG if Config::nowMs is missing, or
+  /// conversion can be tracked, BUSY if a driver request is already pending,
+  /// INVALID_CONFIG if Config::nowMs is missing, or
   /// INVALID_PARAM in sleep mode. Returns RESYNC_REQUIRED without I2C when
   /// cached configuration or calibration is not synchronized with the device.
   /// @return Scheduling status
@@ -630,8 +634,8 @@ public:
   /// @param[out] buf Destination buffer; must not be null
   /// @param len Number of bytes to read; must be nonzero
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
-  ///         INVALID_PARAM for null/zero buffers, BUSY while OFFLINE, or the
-  ///         original tracked transport status.
+  ///         INVALID_PARAM for null/zero buffers, BUSY while a staged job owns
+  ///         hardware access, or the original tracked transport status.
   Status readRegisters(uint8_t startReg, uint8_t* buf, size_t len);
 
   /// Write a contiguous register block through tracked I2C.
@@ -640,8 +644,8 @@ public:
   /// @param len Number of bytes to write; must be nonzero and fit the internal
   ///            bounded stack payload
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
-  ///         INVALID_PARAM for null/zero/oversized writes, BUSY while OFFLINE,
-  ///         or the original tracked transport status.
+  ///         INVALID_PARAM for null/zero/oversized writes, BUSY while a staged
+  ///         job owns hardware access, or the original tracked transport status.
   /// @note Diagnostic writes that overlap ctrl_hum (0xF2), ctrl_meas (0xF4),
   ///       config (0xF5), or reset (0xE0) mark hardwareConfigDirty() on
   ///       success. Transport failures that may have partially reached those
@@ -654,14 +658,14 @@ public:
   /// @param reg Register address to read
   /// @param[out] value Register value
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), BUSY while
-  ///         OFFLINE, or the original tracked transport status.
+  ///         a staged job owns hardware access, or the original transport status.
   Status readRegister(uint8_t reg, uint8_t& value);
 
   /// Write a single register through tracked I2C.
   /// @param reg Register address to write
   /// @param value Value to write
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), BUSY while
-  ///         OFFLINE, or the original tracked transport status.
+  ///         a staged job owns hardware access, or the original transport status.
   /// @note Diagnostic writes to ctrl_hum (0xF2), ctrl_meas (0xF4), config
   ///       (0xF5), or reset (0xE0) mark hardwareConfigDirty() on success.
   ///       Transport failures that may have partially reached those registers
@@ -706,9 +710,6 @@ private:
   /// Tracked I2C write (updates health)
   Status _i2cWriteTracked(const uint8_t* buf, size_t len);
 
-  /// Return BUSY when normal operations try I2C while OFFLINE.
-  Status _offlineStatus() const;
-  
   // =========================================================================
   // Register Access
   // =========================================================================
@@ -732,7 +733,6 @@ private:
 
   /// Record non-transport semantic failures that make recovery unsuccessful.
   Status _recordFailure(const Status& st);
-  void _reassertOfflineLatch();
   void _markHardwareConfigDirty(const Status& st);
   void _clearHardwareConfigDirty();
 
@@ -765,9 +765,10 @@ private:
     COMPLETE
   };
 
-  void _resetRuntime();
+  void _resetRuntime(bool preserveHistory = true);
   Status _prepareBeginConfig(const Config& config);
   bool _jobActive() const;
+  Status _hardwareOperationAdmission() const;
   void _clearJob();
   Status _startJob(JobKind kind, JobPhase phase);
   JobPollResult _jobResult(uint8_t instructionsUsed) const;
@@ -809,7 +810,6 @@ private:
   uint8_t _consecutiveFailures = 0;
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
-  bool _allowOfflineI2c = false;
   ConfigSyncState _configSyncState = ConfigSyncState::RESYNC_REQUIRED;
   CalibrationState _calibrationState = CalibrationState::INVALID;
   bool _humidityCalibrationValid = false;
@@ -824,7 +824,6 @@ private:
   uint32_t _jobDeadlineMs = 0;
   uint16_t _jobNvmPolls = 0;
   uint16_t _jobWaitPolls = 0;
-  bool _jobStartedOffline = false;
   bool _jobHardwareConfigTouched = false;
   Calibration _jobCalibration = {};
   bool _jobHumidityCalibrationValid = false;

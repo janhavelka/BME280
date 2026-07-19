@@ -19,24 +19,6 @@ static constexpr uint16_t MEASURING_READY_MAX_POLLS = 255;
 static constexpr uint32_t MEASUREMENT_MARGIN_US = 1000;
 static constexpr int64_t HUMIDITY_MAX_X4096 = 419430400;
 
-class ScopedOfflineI2cAllowance {
-public:
-  explicit ScopedOfflineI2cAllowance(bool& flag, bool allow) : _flag(flag), _old(flag) {
-    _flag = allow;
-  }
-
-  ~ScopedOfflineI2cAllowance() {
-    _flag = _old;
-  }
-
-  ScopedOfflineI2cAllowance(const ScopedOfflineI2cAllowance&) = delete;
-  ScopedOfflineI2cAllowance& operator=(const ScopedOfflineI2cAllowance&) = delete;
-
-private:
-  bool& _flag;
-  bool _old;
-};
-
 static bool deadlineReached(uint32_t nowMs, uint32_t deadlineMs) {
   return static_cast<int32_t>(nowMs - deadlineMs) >= 0;
 }
@@ -228,16 +210,22 @@ static bool humidityCalibrationBlockValid(const uint8_t* data, size_t len) {
 
 }  // namespace
 
-void BME280::_resetRuntime() {
-  const bool priorHardwareConfigDirty = hardwareConfigDirty();
-  const Status priorHardwareConfigDirtyError = _hardwareConfigDirtyError;
-  const uint32_t priorConfigGeneration = _configGeneration;
-  const uint32_t priorSampleSequence = _sampleSequence;
+void BME280::_resetRuntime(bool preserveHistory) {
+  const bool priorHardwareConfigDirty =
+      preserveHistory && hardwareConfigDirty();
+  const Status priorHardwareConfigDirtyError = preserveHistory
+      ? _hardwareConfigDirtyError
+      : Status::Ok();
+  const uint32_t priorConfigGeneration = preserveHistory
+      ? _configGeneration
+      : 0;
+  const uint32_t priorSampleSequence = preserveHistory
+      ? _sampleSequence
+      : 0;
 
   _config = Config{};
   _initialized = false;
   _driverState = DriverState::UNINIT;
-  _allowOfflineI2c = false;
 
   _lastOkMs = 0;
   _lastErrorMs = 0;
@@ -330,6 +318,10 @@ Status BME280::_prepareBeginConfig(const Config& config) {
 }
 
 Status BME280::begin(const Config& config) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   Status st = _prepareBeginConfig(config);
   if (!st.ok()) {
     return st;
@@ -376,12 +368,6 @@ void BME280::tick(uint32_t nowMs) {
     return;
   }
 
-  if (_driverState == DriverState::OFFLINE) {
-    _measurementRequested = false;
-    _lastMeasurementStatus = Status::Error(Err::BUSY, "Driver is offline; call recover()");
-    return;
-  }
-
   if (_config.mode == Mode::SLEEP) {
     _measurementRequested = false;
     _lastMeasurementStatus = Status::Error(Err::INVALID_PARAM, "Device is in sleep mode");
@@ -402,11 +388,6 @@ void BME280::tick(uint32_t nowMs) {
   Status st = isMeasuring(measuring);
   if (!st.ok()) {
     _lastMeasurementStatus = st;
-    if (_driverState == DriverState::OFFLINE) {
-      _measurementRequested = false;
-      _measurementDeadlineMs = 0;
-      _measurementStatusPolls = 0;
-    }
     return;
   }
   if (measuring) {
@@ -431,11 +412,6 @@ void BME280::tick(uint32_t nowMs) {
   st = _readRawData(candidateRaw);
   if (!st.ok()) {
     _lastMeasurementStatus = st;
-    if (_driverState == DriverState::OFFLINE) {
-      _measurementRequested = false;
-      _measurementDeadlineMs = 0;
-      _measurementStatusPolls = 0;
-    }
     return;
   }
 
@@ -456,35 +432,14 @@ void BME280::tick(uint32_t nowMs) {
 }
 
 void BME280::end() {
-  if (_initialized) {
-    // Best-effort: put device to sleep to save power.
-    // Uses raw I2C to avoid health tracking during shutdown.
-    const uint8_t payload[2] = {
-      cmd::REG_CTRL_MEAS,
-      buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP)
-    };
-    (void)_i2cWriteRaw(payload, sizeof(payload));
-  }
-
-  _initialized = false;
-  _driverState = DriverState::UNINIT;
-  _measurementRequested = false;
-  _measurementReady = false;
-  _lastMeasurementStatus = Status::Ok();
-  _hasSample = false;
-  _measurementStartMs = 0;
-  _measurementDeadlineMs = 0;
-  _measurementStatusPolls = 0;
-  _sampleTimestampMs = 0;
-  _sampleConfigGeneration = 0;
-  _sampleGenerationStale = false;
-  _tFine = 0;
-  _rawSample = RawSample{};
-  _compSample = CompensatedSample{};
-  _clearJob();
+  _resetRuntime(false);
 }
 
 Status BME280::probe() {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -502,12 +457,14 @@ Status BME280::probe() {
 }
 
 Status BME280::recover() {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  const bool startedOffline = (_driverState == DriverState::OFFLINE);
-  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
   Status result = [&]() -> Status {
     uint8_t chipId = 0;
     Status st = readRegister(cmd::REG_CHIP_ID, chipId);
@@ -548,9 +505,6 @@ Status BME280::recover() {
   }();
   if (result.ok()) {
     _invalidateSampleCache();
-  }
-  if (startedOffline && !result.ok() && !result.inProgress()) {
-    _reassertOfflineLatch();
   }
   return result;
 }
@@ -641,6 +595,13 @@ bool BME280::_jobActive() const {
          (_jobState == JobState::RUNNING || _jobState == JobState::WAITING);
 }
 
+Status BME280::_hardwareOperationAdmission() const {
+  if (_jobActive()) {
+    return Status::Error(Err::BUSY, "Staged job owns hardware access");
+  }
+  return Status::Ok();
+}
+
 void BME280::_clearJob() {
   _jobKind = JobKind::NONE;
   _jobState = JobState::IDLE;
@@ -649,7 +610,6 @@ void BME280::_clearJob() {
   _jobDeadlineMs = 0;
   _jobNvmPolls = 0;
   _jobWaitPolls = 0;
-  _jobStartedOffline = false;
   _jobHardwareConfigTouched = false;
   _jobCalibration = Calibration{};
   _jobHumidityCalibrationValid = false;
@@ -674,7 +634,6 @@ Status BME280::_startJob(JobKind kind, JobPhase phase) {
   _jobDeadlineMs = 0;
   _jobNvmPolls = 0;
   _jobWaitPolls = 0;
-  _jobStartedOffline = false;
   _jobHardwareConfigTouched = false;
   _jobCalibration = Calibration{};
   _jobHumidityCalibrationValid = false;
@@ -719,10 +678,6 @@ JobPollResult BME280::_failJob(const Status& st, uint8_t instructionsUsed) {
   _jobState = JobState::FAILED;
   _jobStatus = finalStatus;
   _jobPhase = JobPhase::NONE;
-  if (_jobKind == JobKind::RECOVERY && _jobStartedOffline &&
-      !finalStatus.ok() && !finalStatus.inProgress()) {
-    _reassertOfflineLatch();
-  }
   return _jobResult(instructionsUsed);
 }
 
@@ -732,7 +687,6 @@ JobPollResult BME280::_completeJob(uint8_t instructionsUsed) {
   _jobPhase = JobPhase::COMPLETE;
   _jobNvmPolls = 0;
   _jobWaitPolls = 0;
-  _jobStartedOffline = false;
   _jobHardwareConfigTouched = false;
   return _jobResult(instructionsUsed);
 }
@@ -763,6 +717,9 @@ Status BME280::startInitJob(const Config& config) {
 }
 
 Status BME280::startForcedMeasurementJob() {
+  if (_jobActive()) {
+    return Status::Error(Err::BUSY, "Job already running");
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -772,9 +729,6 @@ Status BME280::startForcedMeasurementJob() {
                                     "Device state requires resynchronization");
     _lastMeasurementStatus = st;
     return st;
-  }
-  if (_driverState == DriverState::OFFLINE) {
-    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
   }
   if (_config.mode != Mode::FORCED) {
     return Status::Error(Err::INVALID_PARAM, "Device is not in forced mode");
@@ -793,11 +747,11 @@ Status BME280::startForcedMeasurementJob() {
 }
 
 Status BME280::startApplyConfigJob() {
+  if (_jobActive()) {
+    return Status::Error(Err::BUSY, "Job already running");
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
-  }
-  if (_driverState == DriverState::OFFLINE) {
-    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
   }
   Status st = _startJob(JobKind::APPLY_CONFIG, JobPhase::APPLY_WAIT_IDLE);
   if (st.inProgress()) {
@@ -810,15 +764,16 @@ Status BME280::startApplyConfigJob() {
 }
 
 Status BME280::startRecoveryJob() {
+  if (_jobActive()) {
+    return Status::Error(Err::BUSY, "Job already running");
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  const bool startedOffline = (_driverState == DriverState::OFFLINE);
   Status st = _startJob(JobKind::RECOVERY, JobPhase::RECOVERY_WRITE_RESET);
   if (st.inProgress()) {
     _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
-    _jobStartedOffline = startedOffline;
     _measurementRequested = false;
     _measurementReady = false;
     _measurementStartMs = 0;
@@ -838,10 +793,6 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
   }
 
   uint8_t instructionsUsed = 0;
-  const bool recoveryJobActive = (_jobKind == JobKind::RECOVERY);
-  ScopedOfflineI2cAllowance recoveryOfflineI2c(_allowOfflineI2c,
-                                               recoveryJobActive);
-
   for (uint8_t guard = 0; guard < 32; ++guard) {
     _jobState = JobState::RUNNING;
     _jobStatus = Status::Error(Err::IN_PROGRESS, "Job in progress");
@@ -890,7 +841,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
 
         uint8_t status = 0;
         const Status st = (_jobKind == JobKind::RECOVERY)
-            ? readRegister(cmd::REG_STATUS, status)
+            ? readRegs(cmd::REG_STATUS, &status, 1)
             : _readRegisterRaw(cmd::REG_STATUS, status);
         ++instructionsUsed;
         ++_jobNvmPolls;
@@ -1190,7 +1141,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           return _jobResult(instructionsUsed);
         }
         uint8_t chipId = 0;
-        const Status st = readRegister(cmd::REG_CHIP_ID, chipId);
+        const Status st = readRegs(cmd::REG_CHIP_ID, &chipId, 1);
         ++instructionsUsed;
         if (!st.ok()) {
           return _failJob(st, instructionsUsed);
@@ -1230,6 +1181,10 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
 }
 
 Status BME280::requestMeasurement() {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     Status st = Status::Error(Err::NOT_INITIALIZED, "begin() not called");
     _lastMeasurementStatus = st;
@@ -1239,11 +1194,6 @@ Status BME280::requestMeasurement() {
       _calibrationState != CalibrationState::VALID) {
     Status st = Status::Error(Err::RESYNC_REQUIRED,
                               "Device state requires resynchronization");
-    _lastMeasurementStatus = st;
-    return st;
-  }
-  if (_driverState == DriverState::OFFLINE) {
-    Status st = Status::Error(Err::BUSY, "Driver is offline; call recover()");
     _lastMeasurementStatus = st;
     return st;
   }
@@ -1426,6 +1376,10 @@ Status BME280::invalidateDeviceState() {
 }
 
 Status BME280::readCalibrationRaw(CalibrationRaw& out) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1444,6 +1398,10 @@ Status BME280::readCalibrationRaw(CalibrationRaw& out) {
 }
 
 Status BME280::setMode(Mode mode) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1485,6 +1443,10 @@ Status BME280::getMode(Mode& out) const {
 }
 
 Status BME280::setOversamplingT(Oversampling osrs) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1511,6 +1473,10 @@ Status BME280::setOversamplingT(Oversampling osrs) {
 }
 
 Status BME280::setOversamplingP(Oversampling osrs) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1537,6 +1503,10 @@ Status BME280::setOversamplingP(Oversampling osrs) {
 }
 
 Status BME280::setOversamplingH(Oversampling osrs) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1577,6 +1547,10 @@ Status BME280::setOversamplingH(Oversampling osrs) {
 }
 
 Status BME280::setFilter(Filter filter) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1631,6 +1605,10 @@ Status BME280::setFilter(Filter filter) {
 }
 
 Status BME280::setStandby(Standby standby) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1725,12 +1703,14 @@ Status BME280::getStandby(Standby& out) const {
 }
 
 Status BME280::softReset() {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  const bool startedOffline = (_driverState == DriverState::OFFLINE);
-  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
   Status result = [&]() -> Status {
     _invalidateSampleCache();
 
@@ -1769,13 +1749,14 @@ Status BME280::softReset() {
     }
     return Status::Ok();
   }();
-  if (startedOffline && !result.ok() && !result.inProgress()) {
-    _reassertOfflineLatch();
-  }
   return result;
 }
 
 Status BME280::readChipId(uint8_t& id) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1783,6 +1764,10 @@ Status BME280::readChipId(uint8_t& id) {
 }
 
 Status BME280::readStatus(uint8_t& status) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1790,6 +1775,10 @@ Status BME280::readStatus(uint8_t& status) {
 }
 
 Status BME280::readCtrlHum(uint8_t& value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1797,6 +1786,10 @@ Status BME280::readCtrlHum(uint8_t& value) {
 }
 
 Status BME280::readCtrlMeas(uint8_t& value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1804,6 +1797,10 @@ Status BME280::readCtrlMeas(uint8_t& value) {
 }
 
 Status BME280::readConfig(uint8_t& value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1811,6 +1808,10 @@ Status BME280::readConfig(uint8_t& value) {
 }
 
 Status BME280::isMeasuring(bool& measuring) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1891,10 +1892,6 @@ Status BME280::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
   if (txBuf == nullptr || txLen == 0 || (rxLen > 0 && rxBuf == nullptr)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
-  if (!_allowOfflineI2c && _initialized && _driverState == DriverState::OFFLINE) {
-    return _offlineStatus();
-  }
-
   Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
     return st;
@@ -1906,19 +1903,11 @@ Status BME280::_i2cWriteTracked(const uint8_t* buf, size_t len) {
   if (buf == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
-  if (!_allowOfflineI2c && _initialized && _driverState == DriverState::OFFLINE) {
-    return _offlineStatus();
-  }
-
   Status st = _i2cWriteRaw(buf, len);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
     return st;
   }
   return _updateHealth(st);
-}
-
-Status BME280::_offlineStatus() const {
-  return Status::Error(Err::BUSY, "Driver is offline; call recover()");
 }
 
 Status BME280::readRegs(uint8_t startReg, uint8_t* buf, size_t len) {
@@ -1946,6 +1935,10 @@ Status BME280::writeRegs(uint8_t startReg, const uint8_t* buf, size_t len) {
 }
 
 Status BME280::readRegisters(uint8_t startReg, uint8_t* buf, size_t len) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1953,6 +1946,10 @@ Status BME280::readRegisters(uint8_t startReg, uint8_t* buf, size_t len) {
 }
 
 Status BME280::writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1971,6 +1968,10 @@ Status BME280::writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len) 
 }
 
 Status BME280::readRegister(uint8_t reg, uint8_t& value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1978,6 +1979,10 @@ Status BME280::readRegister(uint8_t reg, uint8_t& value) {
 }
 
 Status BME280::writeRegister(uint8_t reg, uint8_t value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -2005,9 +2010,6 @@ Status BME280::_updateHealth(const Status& st) {
     _lastOkMs = now;
     if (_totalSuccess < maxU32) {
       _totalSuccess++;
-    }
-    if (_jobKind == JobKind::RECOVERY && _jobStartedOffline && _jobActive()) {
-      return st;
     }
     _consecutiveFailures = 0;
 
@@ -2065,14 +2067,6 @@ Status BME280::_recordFailure(const Status& st) {
   }
 
   return st;
-}
-
-void BME280::_reassertOfflineLatch() {
-  _driverState = DriverState::OFFLINE;
-  const uint8_t threshold = _config.offlineThreshold == 0 ? 1 : _config.offlineThreshold;
-  if (_consecutiveFailures < threshold) {
-    _consecutiveFailures = threshold;
-  }
 }
 
 void BME280::_markHardwareConfigDirty(const Status& st) {
