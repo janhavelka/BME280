@@ -84,6 +84,13 @@ calibration with humidity-enabled and humidity-skipped configurations. The
 native suite passed 142/142 after this chunk. Remaining findings stay open
 until their later implementation chunks and final full validation.
 
+S-04 is also resolved in build policy: PlatformIO Core is pinned to 6.1.19 in
+CI, the ESP32 platform is pinned to the qualified pioarduino 54.03.20 release,
+and the native platform is pinned to 1.2.1. With those pins active, the native
+suite passed 142/142 and both ESP32-S3 and ESP32-S2 PlatformIO builds passed.
+This is build evidence only; it does not add local ESP-IDF or hardware-runtime
+evidence.
+
 TunnelMonitor source changes are not authorized by its current architecture
 authority. `docs/guidelines/dependency_policy.md:32-41,114`,
 `docs/guidelines/i2c_peripherals.md:477-486`, and
