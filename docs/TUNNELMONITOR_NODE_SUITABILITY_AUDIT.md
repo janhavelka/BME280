@@ -25,6 +25,58 @@ new immutable revision, then replace the direct BME280 protocol in `I2cTask`
 with one narrow owner-private adapter. Do not rewrite the Bosch protocol in the
 firmware, and do not hide the current gaps in adapter checks.
 
+## Implementation re-audit baseline - 2026-07-19
+
+This implementation pass started from the following exact repository state:
+
+| Repository | Starting revision and worktree |
+| --- | --- |
+| BME280 | `0aabd587e088117142f2b7e7c3b7b90ee4a778a3`; clean working tree; branch `hardening/tunnelmonitor-suitability-reaudit` created for this work |
+| TunnelMonitor-node | `602114ea6c723e31c41f0eb7cd8ac2b56a46d40e`; branch `prompt-44b-sequence`; preserved modified `.vscode/extensions.json` and untracked `docs/reports/i2c_library_latest_branch_audit_revalidation_20260718.md` |
+
+After the repository fetch, the TunnelMonitor remote branch advanced beyond
+the audited revision to `3317b5f`. The local checkout was intentionally left at
+`602114ea` so this pass continued against the requested immutable baseline and
+did not disturb its dirty working tree.
+
+The lead ran these software baseline checks before implementation:
+
+| Check | Baseline result |
+| --- | --- |
+| Native suite | PASS, 136/136 |
+| Core timing, CLI, HIL contract, and ESP-IDF example guards | PASS |
+| Release metadata | PASS, version `1.7.0` |
+| HIL parser | PASS |
+| PlatformIO ESP32-S3 build | PASS, 22,584 bytes RAM and 394,318 bytes flash |
+| PlatformIO ESP32-S2 build | PASS, 37,000 bytes RAM and 383,705 bytes flash |
+| Doxygen | PASS with Doxygen 1.15 |
+| Local ESP-IDF build | NOT RUN; `idf.py` was unavailable |
+| New physical HIL | NOT RUN |
+
+The source re-audit retained the following pre-implementation dispositions:
+
+| Findings | 2026-07-19 disposition |
+| --- | --- |
+| H-01 through H-11 | Confirmed; pending implementation and focused regression tests |
+| S-01 | Confirmed; configuration/conversion timing remains coupled to the transport timeout; pending implementation |
+| S-02 | Confirmed; cooperative operation and health timestamps still use two time inputs; pending implementation |
+| S-03 | Partially confirmed; retain the deliberately narrow coefficient checks and add the scoped erased humidity-block check |
+| S-04 | Confirmed; PlatformIO core and build-platform resolution remain broadly specified; pending exact pinning |
+
+This table is a baseline disposition, not a completion claim. Final status must
+be recorded only after the corresponding code, tests, documentation, and
+release checks have completed.
+
+TunnelMonitor source changes are not authorized by its current architecture
+authority. `docs/guidelines/dependency_policy.md:32-41,114`,
+`docs/guidelines/i2c_peripherals.md:477-486`, and
+`docs/guidelines/decisions.md:107` in TunnelMonitor-node still defer the BME280
+library and retain direct owner-private ENV protocol as the implemented
+baseline. A later scoped TunnelMonitor decision must authorize the integration
+and select an exact immutable BME280 release before firmware source,
+configuration, dependency, or test changes are made. This does not block the
+general-purpose library hardening in this repository.
+
 ## Audit basis
 
 The audit used these exact revisions:
