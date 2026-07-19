@@ -120,7 +120,12 @@ Expected callback behavior:
 - `addr` is a 7-bit BME280 address, `0x76` or `0x77`.
 - `i2cWrite()` maps to `i2c_master_transmit()`.
 - `i2cWriteRead()` maps to `i2c_master_transmit_receive()` for register reads.
-- The callback completes synchronously before returning.
+- The callback makes exactly one physical attempt and completes synchronously
+  before returning. It performs no retry or bus recovery.
+- A write-read is one combined pointer-write/repeated-START/read transaction;
+  no STOP is inserted between its phases.
+- `TransportResult::OK` reports exact write/read byte counts. Short counts are
+  reported by the core as `Err::I2C_SHORT_TRANSFER`.
 - `timeoutMs` is clamped or rejected before passing it to ESP-IDF so it cannot
   become an accidental infinite wait.
 - Transport callbacks must not recursively call into the same `BME280::BME280`
@@ -128,8 +133,11 @@ Expected callback behavior:
 
 Simple ESP-IDF transfer APIs do not always reveal whether a NACK happened during
 address or data phase. Preserve precise errors when the adapter can prove them;
-otherwise return `I2C_ERROR` or `I2C_BUS` with the raw `esp_err_t` value in
-`Status::detail`.
+otherwise return `TransportErr::OTHER` with the raw `esp_err_t` value in
+`TransportResult::detail`. In particular, the example maps
+`ESP_ERR_INVALID_RESPONSE` to `OTHER`, not to address absence, because this API
+does not identify the failed phase. The core maps terminal transport results to
+canonical driver `Status` values and never stores adapter-owned text.
 
 ## Cooperative Bounds
 

@@ -8,27 +8,85 @@
 
 namespace BME280 {
 
+/// Terminal outcome of one physical transport attempt.
+enum class TransportErr : uint8_t {
+  OK,           ///< Requested physical transaction completed
+  NACK_ADDRESS, ///< Address phase was not acknowledged
+  NACK_DATA,    ///< A data byte was not acknowledged
+  TIMEOUT,      ///< Transport attempt exceeded its bounded timeout
+  BUS,          ///< Arbitration, electrical, or controller bus error
+  OTHER         ///< Other terminal transport failure
+};
+
+/// Return the library-owned canonical string for a transport outcome.
+/// @param err Transport outcome to describe
+/// @return Static storage string; invalid enum values return "UNKNOWN_TRANSPORT_ERROR"
+constexpr const char* toString(TransportErr err) {
+  switch (err) {
+    case TransportErr::OK: return "OK";
+    case TransportErr::NACK_ADDRESS: return "NACK_ADDRESS";
+    case TransportErr::NACK_DATA: return "NACK_DATA";
+    case TransportErr::TIMEOUT: return "TIMEOUT";
+    case TransportErr::BUS: return "BUS";
+    case TransportErr::OTHER: return "OTHER";
+    default: return "UNKNOWN_TRANSPORT_ERROR";
+  }
+}
+
+/// Fixed-memory result from exactly one physical transport attempt.
+struct TransportResult {
+  TransportErr code = TransportErr::OK; ///< Terminal transport outcome
+  int32_t detail = 0;                   ///< Adapter-owned numeric diagnostic
+  size_t writeCount = 0;                ///< Bytes physically written
+  size_t readCount = 0;                 ///< Bytes physically read
+
+  /// @return true only for a terminal TransportErr::OK result
+  constexpr bool ok() const { return code == TransportErr::OK; }
+
+  /// Construct a completed transfer result.
+  /// @param written Number of bytes physically written
+  /// @param read Number of bytes physically read
+  static constexpr TransportResult Complete(size_t written, size_t read = 0) {
+    return TransportResult{TransportErr::OK, 0, written, read};
+  }
+
+  /// Construct a terminal transport error result.
+  /// @param error Terminal transport error
+  /// @param detailCode Adapter-owned numeric diagnostic
+  /// @param written Number of bytes physically written before failure
+  /// @param read Number of bytes physically read before failure
+  static constexpr TransportResult Error(TransportErr error,
+                                         int32_t detailCode = 0,
+                                         size_t written = 0,
+                                         size_t read = 0) {
+    return TransportResult{error, detailCode, written, read};
+  }
+};
+
 /// I2C write callback signature.
 ///
 /// The application owns bus handles, locking, pins, and timeout policy. This
-/// callback is invoked synchronously from task-context driver APIs and must
-/// return within the supplied timeout. It must not recursively call into the
-/// same BME280 driver instance.
+/// callback must perform exactly one physical attempt, must not retry or recover
+/// the bus, and must return a terminal TransportResult within the supplied
+/// timeout. It must not recursively call into the same driver instance.
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
 /// @param timeoutMs Maximum time to wait for completion
 /// @param user     User context pointer passed through from Config
-/// @return Status indicating success or failure
-using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
-                              uint32_t timeoutMs, void* user);
+/// @return Terminal result with writeCount equal to len on success
+using I2cWriteFn = TransportResult (*)(uint8_t addr, const uint8_t* data,
+                                       size_t len, uint32_t timeoutMs,
+                                       void* user);
 
 /// I2C write-then-read callback signature.
 ///
 /// The application owns bus handles, locking, pins, and timeout policy. This
-/// callback is invoked synchronously from task-context driver APIs and must
-/// return within the supplied timeout. It must not recursively call into the
-/// same BME280 driver instance.
+/// callback must perform exactly one combined physical register-pointer
+/// transaction: write txData, issue a repeated START without a STOP, then read
+/// rxData. It must not retry, recover the bus, insert a STOP between pointer and
+/// read phases, or recursively call into the same driver instance. It must
+/// return a terminal TransportResult within the supplied timeout.
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
@@ -36,10 +94,11 @@ using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
 /// @param rxLen    Number of bytes to read
 /// @param timeoutMs Maximum time to wait for completion
 /// @param user     User context pointer passed through from Config
-/// @return Status indicating success or failure
-using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t txLen,
-                                  uint8_t* rxData, size_t rxLen, uint32_t timeoutMs,
-                                  void* user);
+/// @return Terminal result with exact txLen/rxLen counts on success
+using I2cWriteReadFn = TransportResult (*)(uint8_t addr,
+                                           const uint8_t* txData, size_t txLen,
+                                           uint8_t* rxData, size_t rxLen,
+                                           uint32_t timeoutMs, void* user);
 
 /// Millisecond timestamp callback.
 ///

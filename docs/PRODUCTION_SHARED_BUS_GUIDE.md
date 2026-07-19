@@ -65,7 +65,9 @@ sensor work into the same call path.
 
 ## Transport Boundary
 
-The transport callbacks should be small, synchronous, bounded, and non-recursive:
+The transport callbacks are terminal adapters for exactly one physical attempt.
+They must be small, synchronous, bounded, non-recursive, and must not retry or
+recover the bus:
 
 ```cpp
 struct BusContext {
@@ -74,52 +76,53 @@ struct BusContext {
   uint32_t maxTimeoutMs;
 };
 
-BME280::Status bmeWrite(uint8_t addr,
-                        const uint8_t* data,
-                        size_t len,
-                        uint32_t timeoutMs,
-                        void* user) {
+BME280::TransportResult bmeWrite(uint8_t addr,
+                                 const uint8_t* data,
+                                 size_t len,
+                                 uint32_t timeoutMs,
+                                 void* user) {
   auto* ctx = static_cast<BusContext*>(user);
   if (ctx == nullptr || data == nullptr || len == 0) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM,
-                                 "Invalid I2C write");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -1);
   }
 
   const uint32_t boundedTimeout = clampTimeout(timeoutMs, ctx->maxTimeoutMs);
   LockGuard lock(*ctx->busMutex, boundedTimeout);
   if (!lock.locked()) {
-    return BME280::Status::Error(BME280::Err::I2C_TIMEOUT,
-                                 "I2C bus lock timeout");
+    return BME280::TransportResult::Error(BME280::TransportErr::TIMEOUT,
+                                          BUS_LOCK_TIMEOUT);
   }
 
+  // Exactly one mutating transfer; never replay this call in the adapter.
   I2cResult result = i2cTransmit(ctx->bus, addr, data, len, boundedTimeout);
-  return mapI2cResult(result);
+  return mapI2cResult(result, len, 0);
 }
 
-BME280::Status bmeWriteRead(uint8_t addr,
-                            const uint8_t* txData,
-                            size_t txLen,
-                            uint8_t* rxData,
-                            size_t rxLen,
-                            uint32_t timeoutMs,
-                            void* user) {
+BME280::TransportResult bmeWriteRead(uint8_t addr,
+                                     const uint8_t* txData,
+                                     size_t txLen,
+                                     uint8_t* rxData,
+                                     size_t rxLen,
+                                     uint32_t timeoutMs,
+                                     void* user) {
   auto* ctx = static_cast<BusContext*>(user);
   if (ctx == nullptr || txData == nullptr || rxData == nullptr ||
       txLen == 0 || rxLen == 0) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM,
-                                 "Invalid I2C write-read");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -2);
   }
 
   const uint32_t boundedTimeout = clampTimeout(timeoutMs, ctx->maxTimeoutMs);
   LockGuard lock(*ctx->busMutex, boundedTimeout);
   if (!lock.locked()) {
-    return BME280::Status::Error(BME280::Err::I2C_TIMEOUT,
-                                 "I2C bus lock timeout");
+    return BME280::TransportResult::Error(BME280::TransportErr::TIMEOUT,
+                                          BUS_LOCK_TIMEOUT);
   }
 
+  // One combined pointer-write/repeated-START/read transaction, with no STOP
+  // between phases and no adapter retry.
   I2cResult result = i2cTransmitReceive(ctx->bus, addr, txData, txLen,
                                         rxData, rxLen, boundedTimeout);
-  return mapI2cResult(result);
+  return mapI2cResult(result, txLen, rxLen);
 }
 ```
 
@@ -127,15 +130,19 @@ The callback may lock the shared bus for the actual I2C transaction, but it does
 not make the BME280 driver instance thread-safe by itself. Serialize public
 driver calls with a driver mutex or by routing them through one owner task.
 
-Preserve precise transport errors when possible:
+Return `TransportResult::Complete()` only with the exact physical byte counts.
+An `OK` result with shorter counts becomes `Err::I2C_SHORT_TRANSFER` in the
+core. Preserve precise terminal transport errors when the platform proves them:
 
-- definite address NACK: `DEVICE_NOT_FOUND` or `I2C_NACK_ADDR` according to the
-  adapter context;
-- data NACK: `I2C_NACK_DATA`;
-- transfer timeout: `I2C_TIMEOUT`;
-- bus/arbitration fault: `I2C_BUS`;
-- generic platform failure: `I2C_ERROR` or `I2C_BUS` with the raw code in
-  `Status::detail`.
+- definite address NACK: `TransportErr::NACK_ADDRESS`;
+- definite data NACK: `TransportErr::NACK_DATA`;
+- transfer timeout: `TransportErr::TIMEOUT`;
+- bus/arbitration fault: `TransportErr::BUS`;
+- phase-ambiguous NACK or another platform failure: `TransportErr::OTHER`.
+
+The driver maps those results to canonical `Status` codes and retains the
+adapter numeric diagnostic in `Status::detail`. Only a definite address NACK
+can become optional `DEVICE_NOT_FOUND` at an identity/presence boundary.
 
 ## Cooperative Driver Initialization
 

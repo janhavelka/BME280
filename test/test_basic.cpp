@@ -35,8 +35,10 @@ struct FakeBus {
   int writeErrorRemaining = 0;
   uint32_t failWriteOnCall = 0;
   uint32_t failWriteAfterEffectOnCall = 0;
-  Status readError = Status::Error(Err::I2C_ERROR, "forced read error", -1);
-  Status writeError = Status::Error(Err::I2C_ERROR, "forced write error", -2);
+  TransportResult readError =
+      TransportResult::Error(TransportErr::OTHER, -1);
+  TransportResult writeError =
+      TransportResult::Error(TransportErr::OTHER, -2);
   uint8_t lastWriteReg = 0;
   uint8_t lastWriteValue = 0;
   uint8_t writeRegLog[64] = {};
@@ -46,7 +48,9 @@ struct FakeBus {
   uint8_t failReadReg = 0;
   uint32_t failReadRegRemaining = 0;
   uint8_t lastReadReg = 0;
+  size_t lastReadTxLen = 0;
   size_t lastReadLen = 0;
+  size_t lastWriteLen = 0;
   uint32_t lastReadTimeoutMs = 0;
   uint32_t lastWriteTimeoutMs = 0;
 
@@ -74,16 +78,17 @@ struct FakeBus {
   }
 };
 
-Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeoutMs,
-                 void* user) {
+TransportResult fakeWrite(uint8_t addr, const uint8_t* data, size_t len,
+                          uint32_t timeoutMs, void* user) {
   FakeBus* bus = static_cast<FakeBus*>(user);
   bus->writeCalls++;
   bus->lastWriteTimeoutMs = timeoutMs;
+  bus->lastWriteLen = len;
   if (addr != bus->deviceAddress) {
-    return Status::Error(Err::I2C_NACK_ADDR, "fake address nack", addr);
+    return TransportResult::Error(TransportErr::NACK_ADDRESS, addr);
   }
   if (data == nullptr || len == 0) {
-    return Status::Error(Err::INVALID_PARAM, "invalid fake write args");
+    return TransportResult::Error(TransportErr::OTHER, -3);
   }
   if (bus->failWriteOnCall != 0 && bus->writeCalls == bus->failWriteOnCall) {
     bus->failWriteOnCall = 0;
@@ -114,19 +119,21 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeout
   if (failAfterEffect) {
     return bus->writeError;
   }
-  return Status::Ok();
+  return TransportResult::Complete(len);
 }
 
-Status fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen, uint8_t* rxData,
-                     size_t rxLen, uint32_t timeoutMs, void* user) {
+TransportResult fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
+                              uint8_t* rxData, size_t rxLen,
+                              uint32_t timeoutMs, void* user) {
   FakeBus* bus = static_cast<FakeBus*>(user);
   bus->readCalls++;
   bus->lastReadTimeoutMs = timeoutMs;
+  bus->lastReadTxLen = txLen;
   if (addr != bus->deviceAddress) {
-    return Status::Error(Err::I2C_NACK_ADDR, "fake address nack", addr);
+    return TransportResult::Error(TransportErr::NACK_ADDRESS, addr);
   }
   if (txData == nullptr || txLen == 0 || (rxLen > 0 && rxData == nullptr)) {
-    return Status::Error(Err::INVALID_PARAM, "invalid fake write-read args");
+    return TransportResult::Error(TransportErr::OTHER, -4);
   }
   if (bus->readErrorRemaining > 0) {
     bus->readErrorRemaining--;
@@ -188,8 +195,17 @@ Status fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen, uint8_t*
     }
   }
 
-  return Status::Ok();
+  return TransportResult::Complete(txLen, rxLen);
 }
+
+static_assert(std::is_same<I2cWriteFn, decltype(&fakeWrite)>::value,
+              "write callback must return TransportResult");
+static_assert(std::is_same<I2cWriteReadFn, decltype(&fakeWriteRead)>::value,
+              "write-read callback must return TransportResult");
+static_assert(!std::is_constructible<TransportResult, Status>::value,
+              "driver Status must not be accepted as a transport result");
+static_assert(!std::is_convertible<Status, TransportResult>::value,
+              "driver Status must not convert to a transport result");
 
 uint32_t fakeNowMs(void* user) {
   return static_cast<FakeBus*>(user)->nowMs;
@@ -525,6 +541,255 @@ void test_status_in_progress() {
   TEST_ASSERT_TRUE(st.inProgress());
 }
 
+void test_transport_result_contract_is_terminal_only() {
+  const TransportResult writeDone = TransportResult::Complete(2);
+  TEST_ASSERT_TRUE(writeDone.ok());
+  TEST_ASSERT_EQUAL_UINT32(2u, static_cast<uint32_t>(writeDone.writeCount));
+  TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(writeDone.readCount));
+
+  const TransportResult combinedDone = TransportResult::Complete(1, 8);
+  TEST_ASSERT_TRUE(combinedDone.ok());
+  TEST_ASSERT_EQUAL_UINT32(1u,
+                           static_cast<uint32_t>(combinedDone.writeCount));
+  TEST_ASSERT_EQUAL_UINT32(8u,
+                           static_cast<uint32_t>(combinedDone.readCount));
+
+  const TransportResult timeout =
+      TransportResult::Error(TransportErr::TIMEOUT, -180, 1, 3);
+  TEST_ASSERT_FALSE(timeout.ok());
+  TEST_ASSERT_EQUAL_STRING("TIMEOUT", toString(timeout.code));
+  TEST_ASSERT_EQUAL_INT32(-180, timeout.detail);
+}
+
+void test_status_copy_assignment_and_persistent_fields_use_canonical_messages() {
+  char borrowed[] = "borrowed message";
+  Status source{Err::I2C_BUS, -181, borrowed};
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_BUS), source.msg);
+
+  source.msg = borrowed;
+  Status copied(source);
+  Status assigned;
+  assigned = source;
+  borrowed[0] = 'X';
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_BUS), copied.msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_BUS), assigned.msg);
+  TEST_ASSERT_EQUAL_STRING("I2C_BUS", copied.msg);
+  TEST_ASSERT_EQUAL_STRING("I2C_BUS", assigned.msg);
+
+  FakeBus configBus;
+  BME280::BME280 configDev;
+  TEST_ASSERT_TRUE(configDev.begin(makeConfig(configBus)).ok());
+  configBus.writeError =
+      TransportResult{TransportErr::OK, -182, 1, 0};
+  configBus.failWriteAfterEffectOnCall = configBus.writeCalls + 1u;
+  Status returned = configDev.writeRegister(cmd::REG_CONFIG, 0xA0);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(returned.code));
+  char returnedBorrowed[] = "returned borrowed";
+  returned.msg = returnedBorrowed;
+  SettingsSnapshot configSnapshot{};
+  TEST_ASSERT_TRUE(configDev.getSettings(configSnapshot).ok());
+  returnedBorrowed[0] = 'X';
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_SHORT_TRANSFER),
+                        configDev.lastError().msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_SHORT_TRANSFER),
+                        configDev.hardwareConfigDirtyError().msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_SHORT_TRANSFER),
+                        configSnapshot.hardwareConfigDirtyError.msg);
+
+  FakeBus jobBus;
+  BME280::BME280 jobDev;
+  TEST_ASSERT_TRUE(jobDev.begin(makeConfig(jobBus)).ok());
+  Status started = jobDev.startForcedMeasurementJob();
+  TEST_ASSERT_TRUE(started.inProgress());
+  char jobBorrowed[] = "job borrowed";
+  started.msg = jobBorrowed;
+  const JobPollResult polled = jobDev.pollJob(jobBus.nowMs, 0);
+  SettingsSnapshot jobSnapshot{};
+  TEST_ASSERT_TRUE(jobDev.getSettings(jobSnapshot).ok());
+  jobBorrowed[0] = 'X';
+  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS), jobDev.jobStatus().msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS), polled.status.msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS),
+                        jobDev.lastMeasurementStatus().msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS),
+                        jobSnapshot.lastMeasurementStatus.msg);
+}
+
+void test_successful_transport_callbacks_report_exact_counts_once() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t writesBefore = bus.writeCalls;
+  Status st = dev.writeRegister(0xA0, 0x5A);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(writesBefore + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(2u, static_cast<uint32_t>(bus.lastWriteLen));
+
+  const uint32_t readsBefore = bus.readCalls;
+  uint8_t values[2] = {};
+  st = dev.readRegisters(0xA0, values, sizeof(values));
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 1u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(bus.lastReadTxLen));
+  TEST_ASSERT_EQUAL_UINT32(2u, static_cast<uint32_t>(bus.lastReadLen));
+  TEST_ASSERT_EQUAL_HEX8(0x5A, values[0]);
+}
+
+void test_short_ok_counts_map_to_short_transfer_without_retry() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  uint32_t callsBefore = bus.writeCalls;
+  bus.failWriteOnCall = callsBefore + 1u;
+  bus.writeError = TransportResult{TransportErr::OK, -183, 1, 0};
+  Status st = dev.writeRegister(0xA0, 0x5A);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-183, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 1u, bus.writeCalls);
+
+  uint8_t value = 0xA5;
+  callsBefore = bus.readCalls;
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = 0xA0;
+  bus.readError = TransportResult{TransportErr::OK, -184, 0, 1};
+  st = dev.readRegister(0xA0, value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-184, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 1u, bus.readCalls);
+  TEST_ASSERT_EQUAL_HEX8(0xA5, value);
+
+  uint8_t values[2] = {0xA5, 0x5A};
+  callsBefore = bus.readCalls;
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = 0xA0;
+  bus.readError = TransportResult{TransportErr::OK, -185, 1, 1};
+  st = dev.readRegisters(0xA0, values, sizeof(values));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-185, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 1u, bus.readCalls);
+  TEST_ASSERT_EQUAL_HEX8(0xA5, values[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x5A, values[1]);
+}
+
+void test_every_transport_error_maps_detail_and_nack_remap_is_presence_only() {
+  struct MappingCase {
+    TransportErr transport;
+    Err driver;
+  };
+  const MappingCase cases[] = {
+      {TransportErr::NACK_ADDRESS, Err::I2C_NACK_ADDR},
+      {TransportErr::NACK_DATA, Err::I2C_NACK_DATA},
+      {TransportErr::TIMEOUT, Err::I2C_TIMEOUT},
+      {TransportErr::BUS, Err::I2C_BUS},
+      {TransportErr::OTHER, Err::I2C_ERROR},
+  };
+
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    const int32_t detail = static_cast<int32_t>(-190 -
+        static_cast<int32_t>(i));
+    const uint32_t readsBefore = bus.readCalls;
+    bus.failReadRegEnabled = true;
+    bus.failReadReg = 0xA0;
+    bus.readError = TransportResult::Error(cases[i].transport, detail);
+    uint8_t value = 0;
+    const Status st = dev.readRegister(0xA0, value);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(cases[i].driver),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(detail, st.detail);
+    TEST_ASSERT_EQUAL_UINT32(readsBefore + 1u, bus.readCalls);
+  }
+
+  FakeBus presenceBus;
+  BME280::BME280 presenceDev;
+  TEST_ASSERT_TRUE(presenceDev.begin(makeConfig(presenceBus)).ok());
+  const uint32_t readsBefore = presenceBus.readCalls;
+  presenceBus.readErrorRemaining = 1;
+  presenceBus.readError =
+      TransportResult::Error(TransportErr::NACK_ADDRESS, -199);
+  const Status presence = presenceDev.probe();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+                          static_cast<uint8_t>(presence.code));
+  TEST_ASSERT_EQUAL_INT32(-199, presence.detail);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 1u, presenceBus.readCalls);
+}
+
+void test_mutating_short_transfer_marks_dirty_or_trigger_ambiguous() {
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    bus.writeError = TransportResult{TransportErr::OK, -200, 1, 0};
+    bus.failWriteAfterEffectOnCall = writesBefore + 1u;
+    const Status st = dev.writeRegister(cmd::REG_CONFIG, 0xA0);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(-200, st.detail);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore + 1u, bus.writeCalls);
+    TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                            static_cast<uint8_t>(
+                                dev.hardwareConfigDirtyError().code));
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    bus.writeError = TransportResult{TransportErr::OK, -201, 1, 0};
+    bus.failWriteAfterEffectOnCall = writesBefore + 1u;
+    const Status st = dev.requestMeasurement();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(-201, st.detail);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore + 1u, bus.writeCalls);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR),
+        static_cast<uint8_t>(dev.conversionState()));
+  }
+}
+
+void test_partial_raw_read_preserves_committed_sample() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+  SampleEnvelope before{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+
+  setRawSample(bus, 415148, 520000, 31000);
+  TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = cmd::REG_DATA_START;
+  bus.readError = TransportResult{
+      TransportErr::OK, -202, 1, cmd::DATA_LEN - 1u};
+  const uint32_t readsBefore = bus.readCalls;
+  bus.nowMs += dev.estimateMeasurementTimeMs();
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 2u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(
+                              dev.lastMeasurementStatus().code));
+  TEST_ASSERT_EQUAL_INT32(-202, dev.lastMeasurementStatus().detail);
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+
+  SampleEnvelope after{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+  assertSampleEnvelopeEqual(before, after);
+}
+
 void test_config_defaults() {
   Config cfg;
   TEST_ASSERT_NULL(cfg.i2cWrite);
@@ -828,7 +1093,7 @@ void test_begin_starts_new_health_session_and_resets_counters() {
 
   bus.nowMs = 1234;
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "tracked status timeout", -70);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -70);
   uint8_t status = 0;
   Status st = dev.readStatus(status);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
@@ -1124,7 +1389,7 @@ void test_soft_reset_job_failure_after_reset_marks_dirty() {
 
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "recovery nvm timeout", -93);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -93);
 
   Status st = dev.startSoftResetJob();
   TEST_ASSERT_TRUE(st.inProgress());
@@ -1160,8 +1425,7 @@ void test_missing_now_ms_fallback_is_framework_neutral() {
   TEST_ASSERT_FALSE(dev.lastOkTimeValid());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT,
-                                "no-hook tracked failure", -175);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -175);
   uint8_t status = 0;
   st = dev.readStatus(status);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
@@ -1212,7 +1476,7 @@ void test_probe_transport_fault_is_preserved_and_does_not_update_health() {
   const DriverState beforeState = dev.state();
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced probe error", -7);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -7);
   Status st = dev.probe();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                           static_cast<uint8_t>(st.code));
@@ -1233,7 +1497,7 @@ void test_probe_address_nack_maps_to_device_not_found_without_health_update() {
   const DriverState beforeState = dev.state();
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "forced probe nack", 2);
+  bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, 2);
   Status st = dev.probe();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
                           static_cast<uint8_t>(st.code));
@@ -1250,7 +1514,7 @@ void test_probe_address_nack_maps_to_device_not_found() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "forced address nack", -17);
+  bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, -17);
   Status st = dev.probe();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
                           static_cast<uint8_t>(st.code));
@@ -1267,13 +1531,24 @@ void test_probe_preserves_non_address_transport_errors_without_health_update() {
   const uint32_t beforeSuccess = dev.totalSuccess();
   const DriverState beforeState = dev.state();
 
-  const Err errors[] = {Err::I2C_TIMEOUT, Err::I2C_BUS, Err::I2C_NACK_DATA, Err::I2C_ERROR};
-  for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+  struct MappingCase {
+    TransportErr transport;
+    Err driver;
+  };
+  const MappingCase cases[] = {
+      {TransportErr::TIMEOUT, Err::I2C_TIMEOUT},
+      {TransportErr::BUS, Err::I2C_BUS},
+      {TransportErr::NACK_DATA, Err::I2C_NACK_DATA},
+      {TransportErr::OTHER, Err::I2C_ERROR},
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     bus.readErrorRemaining = 1;
-    bus.readError = Status::Error(errors[i], "forced probe transport error",
-                                  static_cast<int32_t>(-60 - static_cast<int32_t>(i)));
+    bus.readError = TransportResult::Error(
+        cases[i].transport,
+        static_cast<int32_t>(-60 - static_cast<int32_t>(i)));
     Status st = dev.probe();
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(errors[i]), static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(cases[i].driver),
+                            static_cast<uint8_t>(st.code));
     TEST_ASSERT_EQUAL_INT32(static_cast<int32_t>(-60 - static_cast<int32_t>(i)), st.detail);
     TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
     TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
@@ -1355,7 +1630,7 @@ void test_begin_rejects_wrong_chip_id() {
 void test_begin_address_nack_maps_to_device_not_found() {
   FakeBus bus;
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "chip id address nack", -22);
+  bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, -22);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -1371,7 +1646,7 @@ void test_begin_address_nack_after_chip_id_maps_to_device_not_found() {
     FakeBus bus;
     bus.failReadReg = cmd::REG_STATUS;
     bus.failReadRegRemaining = 1;
-    bus.readError = Status::Error(Err::I2C_NACK_ADDR, "nvm address nack", -23);
+    bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, -23);
     BME280::BME280 dev;
 
     Status st = dev.begin(makeConfig(bus));
@@ -1385,7 +1660,7 @@ void test_begin_address_nack_after_chip_id_maps_to_device_not_found() {
     FakeBus bus;
     bus.failReadRegEnabled = true;
     bus.failReadReg = cmd::REG_CALIB_TP_START;
-    bus.readError = Status::Error(Err::I2C_NACK_ADDR, "calibration address nack", -24);
+    bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, -24);
     BME280::BME280 dev;
 
     Status st = dev.begin(makeConfig(bus));
@@ -1398,7 +1673,7 @@ void test_begin_address_nack_after_chip_id_maps_to_device_not_found() {
   {
     FakeBus bus;
     bus.failWriteOnCall = 1;
-    bus.writeError = Status::Error(Err::I2C_NACK_ADDR, "config address nack", -25);
+    bus.writeError = TransportResult::Error(TransportErr::NACK_ADDRESS, -25);
     BME280::BME280 dev;
 
     Status st = dev.begin(makeConfig(bus));
@@ -1412,7 +1687,7 @@ void test_begin_address_nack_after_chip_id_maps_to_device_not_found() {
 void test_begin_preserves_timeout_transport_error() {
   FakeBus bus;
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "chip id timeout", -21);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -21);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -1423,16 +1698,26 @@ void test_begin_preserves_timeout_transport_error() {
 }
 
 void test_begin_preserves_chip_id_bus_and_data_errors() {
-  const Err errors[] = {Err::I2C_BUS, Err::I2C_NACK_DATA, Err::I2C_ERROR};
-  for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+  struct MappingCase {
+    TransportErr transport;
+    Err driver;
+  };
+  const MappingCase cases[] = {
+      {TransportErr::BUS, Err::I2C_BUS},
+      {TransportErr::NACK_DATA, Err::I2C_NACK_DATA},
+      {TransportErr::OTHER, Err::I2C_ERROR},
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     FakeBus bus;
     bus.readErrorRemaining = 1;
-    bus.readError = Status::Error(errors[i], "chip id transport error",
-                                  static_cast<int32_t>(-70 - static_cast<int32_t>(i)));
+    bus.readError = TransportResult::Error(
+        cases[i].transport,
+        static_cast<int32_t>(-70 - static_cast<int32_t>(i)));
     BME280::BME280 dev;
 
     Status st = dev.begin(makeConfig(bus));
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(errors[i]), static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(cases[i].driver),
+                            static_cast<uint8_t>(st.code));
     TEST_ASSERT_EQUAL_INT32(static_cast<int32_t>(-70 - static_cast<int32_t>(i)), st.detail);
     TEST_ASSERT_FALSE(dev.isInitialized());
   }
@@ -1444,7 +1729,7 @@ void test_recover_failure_updates_health_once() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced recover error", -8);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -8);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
@@ -1462,7 +1747,7 @@ void test_recover_success_returns_ready() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced recover error", -9);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -9);
   (void)dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
@@ -1502,7 +1787,7 @@ void test_recover_preserves_transport_error_code() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "forced recover nack", 7);
+  bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, 7);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
                           static_cast<uint8_t>(st.code));
@@ -1624,7 +1909,7 @@ void test_config_change_failure_at_sleep_step_marks_dirty() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "sleep write timeout", -41);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -41);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1638,7 +1923,7 @@ void test_config_change_failure_at_config_step_marks_dirty_after_restore() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 2u;
-  bus.writeError = Status::Error(Err::I2C_NACK_DATA, "config write nack", -42);
+  bus.writeError = TransportResult::Error(TransportErr::NACK_DATA, -42);
   Status st = dev.setStandby(Standby::MS_250);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
@@ -1655,7 +1940,7 @@ void test_humidity_ctrl_hum_failure_marks_dirty_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "ctrl_hum bus error", -43);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -43);
   Status st = dev.setOversamplingH(Oversampling::X4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -1669,7 +1954,7 @@ void test_recover_apply_config_first_write_failure_marks_dirty() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "apply sleep timeout", -44);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -44);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1703,7 +1988,7 @@ void test_partial_config_restore_failure_marks_hardware_dirty() {
 
   const uint32_t failCall = bus.writeCalls + 3u;  // sleep write, config write, restore write
   bus.failWriteOnCall = failCall;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "restore failed", -31);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -31);
 
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
@@ -1726,7 +2011,7 @@ void test_dirty_state_clears_after_successful_recover_resync() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 3u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "restore bus error", -32);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -32);
   Status st = dev.setStandby(Standby::MS_250);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS), static_cast<uint8_t>(st.code));
   TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
@@ -1807,7 +2092,7 @@ void test_diagnostic_config_write_failure_preserves_error_and_marks_dirty() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "diagnostic write timeout", -52);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -52);
   Status st = dev.writeRegister(cmd::REG_CONFIG, 0xA0);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1847,7 +2132,7 @@ void test_recover_preserves_cached_sample_until_successful_resync_then_invalidat
   TEST_ASSERT_TRUE(dev.getCompensatedSample(compBefore).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 3u;  // sleep write, config write, restore write
-  bus.writeError = Status::Error(Err::I2C_BUS, "make dirty before recover", -35);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -35);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -1856,7 +2141,7 @@ void test_recover_preserves_cached_sample_until_successful_resync_then_invalidat
   TEST_ASSERT_TRUE(dev.hasSample());
 
   bus.failWriteOnCall = bus.writeCalls + 2u;  // recover sleep write succeeds, config write fails
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "recover resync timeout", -36);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -36);
   st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1908,7 +2193,7 @@ void test_resync_job_failure_preserves_cached_sample_until_successful_resync() {
 
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "recovery nvm timeout", -126);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -126);
   TEST_ASSERT_TRUE(dev.startResyncJob().inProgress());
   JobPollResult result = pollWithBudget(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
@@ -1943,7 +2228,7 @@ void test_invalid_begin_does_not_clear_existing_dirty_state() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 3u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "restore bus error", -34);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -34);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS), static_cast<uint8_t>(st.code));
   TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
@@ -1963,7 +2248,7 @@ void test_apply_config_partial_failure_marks_dirty_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 2u;  // ctrl_meas sleep succeeds, config write fails
-  bus.writeError = Status::Error(Err::I2C_NACK_DATA, "config write nack", -33);
+  bus.writeError = TransportResult::Error(TransportErr::NACK_DATA, -33);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
@@ -1979,7 +2264,7 @@ void test_soft_reset_write_timeout_marks_dirty_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "reset write timeout", -80);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -80);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1996,7 +2281,7 @@ void test_soft_reset_write_address_nack_preserves_error_without_dirty_state() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_NACK_ADDR, "reset address nack", -91);
+  bus.writeError = TransportResult::Error(TransportErr::NACK_ADDRESS, -91);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
                           static_cast<uint8_t>(st.code));
@@ -2028,7 +2313,7 @@ void test_begin_nvm_transport_error_preserved() {
   FakeBus bus;
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 300;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "nvm status timeout", -81);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -81);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -2043,7 +2328,7 @@ void test_begin_calibration_read_failure_preserves_transport_error() {
   FakeBus bus;
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CALIB_TP_START;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "begin calibration nack", -89);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -89);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -2056,7 +2341,7 @@ void test_begin_calibration_read_failure_preserves_transport_error() {
 void test_begin_apply_config_failure_marks_dirty_and_stays_uninitialized() {
   FakeBus bus;
   bus.failWriteOnCall = 1;
-  bus.writeError = Status::Error(Err::I2C_BUS, "begin apply bus error", -90);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -90);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -2074,7 +2359,7 @@ void test_soft_reset_nvm_transport_error_preserved_and_marks_dirty() {
 
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 300;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "nvm status data nack", -82);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -82);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
@@ -2094,7 +2379,7 @@ void test_soft_reset_nvm_status_transport_error_preserves_detail() {
   bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "first nvm status timeout", -92);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -92);
 
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
@@ -2118,7 +2403,7 @@ void test_soft_reset_calibration_read_failure_marks_dirty() {
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CALIB_H_START;
-  bus.readError = Status::Error(Err::I2C_BUS, "reset calibration bus error", -83);
+  bus.readError = TransportResult::Error(TransportErr::BUS, -83);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -2159,7 +2444,7 @@ void test_soft_reset_apply_config_failure_marks_dirty_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 2u;  // reset write succeeds, apply sleep write fails
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "reset apply timeout", -84);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -84);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -2173,7 +2458,7 @@ void test_soft_reset_success_reloads_calibration_and_clears_dirty() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 3u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "make dirty before reset", -85);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -85);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -2239,7 +2524,7 @@ void test_recover_nvm_transport_error_updates_health_and_preserves_error() {
 
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 300;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "recover nvm timeout", -86);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -86);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -2291,62 +2576,73 @@ void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
   const uint8_t byte = 0x55;
 
   Wire._setEndTransmissionResult(2);
-  Status st = transport::wireWrite(0x76, &byte, 1, 123, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+  TransportResult st = transport::wireWrite(0x76, &byte, 1, 123, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::NACK_ADDRESS),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(2, st.detail);
   TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
 
   Wire._setEndTransmissionResult(3);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::NACK_DATA),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(3, st.detail);
   TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
 
   Wire._setEndTransmissionResult(4);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::BUS),
                           static_cast<uint8_t>(st.code));
 
   Wire._setEndTransmissionResult(5);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::TIMEOUT),
                           static_cast<uint8_t>(st.code));
 
   Wire._setEndTransmissionResult(1);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(1, st.detail);
 }
 
 void test_example_transport_validates_params_and_handles_write_read() {
   const uint8_t tx = 0x00;
   uint8_t rx = 0;
 
-  Status st = transport::wireWrite(0x76, nullptr, 1, 50, nullptr);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+  TransportResult st = transport::wireWrite(0x76, nullptr, 1, 50, nullptr);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-1, st.detail);
 
   st = transport::wireWrite(0x76, &tx, 0, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-2, st.detail);
 
   st = transport::wireWriteRead(0x76, nullptr, 1, &rx, 1, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-2, st.detail);
 
   st = transport::wireWriteRead(0x76, &tx, 1, nullptr, 1, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-2, st.detail);
 
   Wire._setEndTransmissionResult(0);
   Wire._setRequestFromResult(1);
   st = transport::wireWriteRead(0x76, &tx, 1, &rx, 1, 50, &Wire);
   TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(st.writeCount));
+  TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(st.readCount));
 
   Wire._setRequestFromResult(0);
   st = transport::wireWriteRead(0x76, &tx, 1, &rx, 1, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OK),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(st.writeCount));
+  TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(st.readCount));
 }
 
 void test_recover_reaches_offline_when_threshold_is_one() {
@@ -2357,7 +2653,7 @@ void test_recover_reaches_offline_when_threshold_is_one() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced timeout", -10);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -10);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
@@ -2373,7 +2669,7 @@ void test_offline_history_does_not_block_public_register_read() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -11);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -11);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
@@ -2402,7 +2698,7 @@ void test_offline_history_does_not_block_typed_config_setters() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -111);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -111);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
@@ -2438,7 +2734,7 @@ void test_probe_works_while_offline_without_clearing_latch() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -87);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -87);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
@@ -2459,7 +2755,7 @@ void test_successful_recover_from_offline_clears_latch_and_allows_i2c() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -88);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -88);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
@@ -2486,14 +2782,14 @@ void test_failed_recover_from_offline_reports_current_health_observation() {
 
   for (uint8_t i = 0; i < cfg.offlineThreshold; ++i) {
     bus.readErrorRemaining = 1;
-    bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -12);
+    bus.readError = TransportResult::Error(TransportErr::OTHER, -12);
     (void)dev.recover();
   }
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
 
   bus.writeErrorRemaining = 1;
-  bus.writeError = Status::Error(Err::I2C_ERROR, "recover apply failed", -13);
+  bus.writeError = TransportResult::Error(TransportErr::OTHER, -13);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                           static_cast<uint8_t>(st.code));
@@ -2522,7 +2818,7 @@ void test_recovery_job_from_offline_clears_latch_and_allows_i2c() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "force staged offline", -120);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -120);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
@@ -2549,14 +2845,14 @@ void test_recovery_job_from_offline_failure_reasserts_offline_latch() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "force staged offline", -121);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -121);
   (void)dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CHIP_ID;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "recovery chip timeout", -122);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -122);
   Status st = dev.startRecoveryJob();
   TEST_ASSERT_TRUE(st.inProgress());
   const JobPollResult result = pollUntilTerminal(dev, bus, 4);
@@ -2578,7 +2874,7 @@ void test_recovery_job_from_offline_updates_health_before_job_completion() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "force staged offline", -125);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -125);
   (void)dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
@@ -2620,7 +2916,7 @@ void test_offline_history_does_not_block_staged_measurement_job() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "force staged offline", -123);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -123);
   (void)dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
@@ -2716,7 +3012,7 @@ void test_sample_freshness_stale_after_failed_refresh() {
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_STATUS;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "refresh status timeout", -70);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -70);
   Status st = dev.requestMeasurement();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -2735,7 +3031,7 @@ void test_sample_freshness_stale_when_hardware_config_dirty() {
 
   captureForcedSample(dev, bus);
   bus.failWriteOnCall = bus.writeCalls + 3u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "restore bus error", -71);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -71);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -2832,7 +3128,7 @@ void test_tick_raw_read_failure_records_measurement_status() {
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_DATA_START;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "forced raw burst nack", -55);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -55);
   bus.nowMs += dev.estimateMeasurementTimeMs();
   dev.tick(bus.nowMs);
 
@@ -3054,7 +3350,7 @@ void test_read_calibration_raw_uses_register_bytes_and_preserves_error() {
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CALIB_H_START;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "forced h calib nack", -31);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -31);
   Status st = dev.readCalibrationRaw(raw);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
@@ -3189,7 +3485,8 @@ void test_forced_measurement_job_budget_and_raw_fixed_outputs() {
   TEST_ASSERT_NOT_EQUAL(0u, jobId);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
                           static_cast<uint8_t>(dev.lastMeasurementStatus().code));
-  TEST_ASSERT_EQUAL_STRING("Measurement job started", dev.lastMeasurementStatus().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS),
+                           dev.lastMeasurementStatus().msg);
 
   JobPollResult result = pollWithBudget(dev, bus, 0);
   TEST_ASSERT_EQUAL_UINT32(jobId, result.jobId);
@@ -3262,14 +3559,16 @@ void test_forced_measurement_job_reports_in_progress_status() {
   TEST_ASSERT_TRUE(st.inProgress());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
                           static_cast<uint8_t>(dev.lastMeasurementStatus().code));
-  TEST_ASSERT_EQUAL_STRING("Measurement job started", dev.lastMeasurementStatus().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS),
+                           dev.lastMeasurementStatus().msg);
 
   const JobPollResult result = pollWithBudget(dev, bus, 1);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::WAITING),
                           static_cast<uint8_t>(result.state));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
                           static_cast<uint8_t>(dev.lastMeasurementStatus().code));
-  TEST_ASSERT_EQUAL_STRING("Measurement delay active", dev.lastMeasurementStatus().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS),
+                           dev.lastMeasurementStatus().msg);
 }
 
 void test_forced_measurement_job_success_clears_last_measurement_status() {
@@ -3305,7 +3604,7 @@ void test_forced_measurement_job_failure_preserves_last_measurement_status() {
   bus.nowMs += dev.estimateMeasurementTimeMs();
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_DATA_START;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "forced raw nack", -124);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -124);
   const JobPollResult result = pollUntilTerminal(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
                           static_cast<uint8_t>(result.state));
@@ -3356,7 +3655,7 @@ void test_forced_measurement_job_status_failure_clears_pending_state() {
   bus.nowMs += dev.estimateMeasurementTimeMs();
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "forced status timeout", -95);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -95);
   JobPollResult result = pollWithBudget(dev, bus, 2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
                           static_cast<uint8_t>(result.state));
@@ -3519,7 +3818,7 @@ void test_recovery_job_failed_humidity_calibration_keeps_previous_coefficients()
   putLe16(bus, cmd::REG_DIG_P1_LSB, 0x5678);
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CALIB_H_START;
-  bus.readError = Status::Error(Err::I2C_BUS, "recovery humidity calibration bus", -94);
+  bus.readError = TransportResult::Error(TransportErr::BUS, -94);
 
   TEST_ASSERT_TRUE(dev.startRecoveryJob().inProgress());
   const JobPollResult result = pollUntilTerminal(dev, bus, 4);
@@ -3542,7 +3841,7 @@ void test_recovery_job_error_stops_without_extra_instructions() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.writeErrorRemaining = 1;
-  bus.writeError = Status::Error(Err::I2C_BUS, "forced reset write error", -55);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -55);
   TEST_ASSERT_TRUE(dev.startSoftResetJob().inProgress());
 
   JobPollResult result = pollWithBudget(dev, bus, 4);
@@ -3665,7 +3964,7 @@ void test_resync_required_blocks_sync_and_staged_measurement_without_i2c() {
                           static_cast<uint8_t>(dev.calibrationState()));
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "config sleep timeout", -141);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -141);
   const Status configStatus = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(configStatus.code));
@@ -3700,7 +3999,7 @@ void test_staged_apply_advances_generation_without_freshening_old_sample() {
   TEST_ASSERT_NOT_EQUAL(0u, oldSequence);
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "make config dirty", -142);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -142);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(dev.setFilter(Filter::X2).code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
@@ -4067,8 +4366,7 @@ void test_ambiguous_trigger_reconciles_before_any_new_trigger() {
   const uint8_t writeLogStart = bus.writeLogLen;
 
   bus.failWriteAfterEffectOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT,
-                                 "accepted trigger timed out", -171);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -171);
   TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
   JobPollResult result = pollWithBudget(dev, bus, 1);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
@@ -4084,8 +4382,7 @@ void test_ambiguous_trigger_reconciles_before_any_new_trigger() {
 
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_BUS,
-                                "reconcile status failed", -172);
+  bus.readError = TransportResult::Error(TransportErr::BUS, -172);
   TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::FORCE_RECONCILE_STATUS),
                           static_cast<uint8_t>(dev.jobPhase()));
@@ -4168,8 +4465,7 @@ void test_poll_and_tick_use_explicit_health_timestamp_context() {
 
     bus.failReadReg = cmd::REG_STATUS;
     bus.failReadRegRemaining = 1;
-    bus.readError = Status::Error(Err::I2C_TIMEOUT,
-                                  "explicit poll time failure", -173);
+    bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -173);
     result = pollAtWithBudget(dev, bus, 1234u, 1);
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
                             static_cast<uint8_t>(result.state));
@@ -4188,8 +4484,7 @@ void test_poll_and_tick_use_explicit_health_timestamp_context() {
     bus.nowMs = 9000u;
     bus.failReadRegEnabled = true;
     bus.failReadReg = cmd::REG_DATA_START;
-    bus.readError = Status::Error(Err::I2C_NACK_DATA,
-                                  "explicit tick time failure", -174);
+    bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -174);
     dev.tick(tickNow);
     TEST_ASSERT_TRUE(dev.lastOkTimeValid());
     TEST_ASSERT_TRUE(dev.lastErrorTimeValid());
@@ -4381,6 +4676,13 @@ int main() {
   RUN_TEST(test_status_ok);
   RUN_TEST(test_status_error);
   RUN_TEST(test_status_in_progress);
+  RUN_TEST(test_transport_result_contract_is_terminal_only);
+  RUN_TEST(test_status_copy_assignment_and_persistent_fields_use_canonical_messages);
+  RUN_TEST(test_successful_transport_callbacks_report_exact_counts_once);
+  RUN_TEST(test_short_ok_counts_map_to_short_transfer_without_retry);
+  RUN_TEST(test_every_transport_error_maps_detail_and_nack_remap_is_presence_only);
+  RUN_TEST(test_mutating_short_transfer_marks_dirty_or_trigger_ambiguous);
+  RUN_TEST(test_partial_raw_read_preserves_committed_sample);
   RUN_TEST(test_config_defaults);
   RUN_TEST(test_driver_is_not_copyable_or_movable);
   RUN_TEST(test_get_settings_snapshot);

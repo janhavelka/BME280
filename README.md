@@ -95,20 +95,28 @@ void loop() {
 }
 ```
 
-The example adapter maps Arduino `Wire` failures to specific `I2C_*` status codes and keeps
-bus timeout ownership in `transport::initWire()`. `i2cTimeoutMs` bounds each transport
-callback; the separate `conversionReadyTimeoutMs` is chip-level grace after the estimated
-conversion or idle time. Inject `Config::nowMs` for synchronous scheduling and meaningful
-timestamps; absent an injected or explicit poll/tick time, timestamp values are zero and the
-matching validity flag is false.
+The example adapter returns terminal `TransportResult` values and maps Arduino
+`Wire` failures to address NACK, data NACK, timeout, bus, or other transport
+causes. Every callback makes exactly one physical attempt; write-read uses a
+combined pointer write and repeated START, and success requires exact byte
+counts. Adapters must not retry, recover the bus, or return driver-level
+`Status` values. The core maps results to canonical `I2C_*` status codes and
+retains only numeric adapter detail, never adapter-owned message storage.
+
+Bus timeout ownership remains in `transport::initWire()`. `i2cTimeoutMs` bounds
+each transport callback; the separate `conversionReadyTimeoutMs` is chip-level
+grace after the estimated conversion or idle time. Inject `Config::nowMs` for
+synchronous scheduling and meaningful timestamps; absent an injected or
+explicit poll/tick time, timestamp values are zero and the matching validity
+flag is false.
 `common/I2cTransport.h` is example-only glue; when manually copying only `include/` and
 `src/`, provide equivalent `Config::i2cWrite` and `Config::i2cWriteRead` callbacks in
 your application.
 
-For optional sensor slots, treat address NACK during chip-ID presence checks as
-`DEVICE_NOT_FOUND`. Data NACK, bus errors, transaction timeouts, and generic I2C
-faults are preserved as transport faults and should not be collapsed into optional
-absence by adapters.
+For optional sensor slots, only a definite `TransportErr::NACK_ADDRESS` during
+a chip-ID presence check becomes `DEVICE_NOT_FOUND`. A phase-ambiguous NACK,
+data NACK, bus error, transaction timeout, short transfer, or generic I2C fault
+remains a transport fault and must not be collapsed into optional absence.
 
 ## Hardware Integration Notes
 

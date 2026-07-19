@@ -133,6 +133,7 @@ static bool isTransportFailure(const Status& st) {
     case Err::I2C_NACK_DATA:
     case Err::I2C_TIMEOUT:
     case Err::I2C_BUS:
+    case Err::I2C_SHORT_TRANSFER:
       return true;
     default:
       return false;
@@ -145,6 +146,7 @@ static bool mayHaveReachedDeviceAfterDiagnosticWrite(const Status& st) {
     case Err::I2C_NACK_DATA:
     case Err::I2C_TIMEOUT:
     case Err::I2C_BUS:
+    case Err::I2C_SHORT_TRANSFER:
       return true;
     default:
       return false;
@@ -210,6 +212,31 @@ static int16_t signExtend12(int16_t value) {
     value |= 0xF000;
   }
   return value;
+}
+
+static Status mapTransportResult(const TransportResult& result,
+                                 size_t expectedWriteCount,
+                                 size_t expectedReadCount) {
+  switch (result.code) {
+    case TransportErr::OK:
+      if (result.writeCount != expectedWriteCount ||
+          result.readCount != expectedReadCount) {
+        return Status::Error(Err::I2C_SHORT_TRANSFER, result.detail);
+      }
+      return Status::Ok();
+    case TransportErr::NACK_ADDRESS:
+      return Status::Error(Err::I2C_NACK_ADDR, result.detail);
+    case TransportErr::NACK_DATA:
+      return Status::Error(Err::I2C_NACK_DATA, result.detail);
+    case TransportErr::TIMEOUT:
+      return Status::Error(Err::I2C_TIMEOUT, result.detail);
+    case TransportErr::BUS:
+      return Status::Error(Err::I2C_BUS, result.detail);
+    case TransportErr::OTHER:
+      return Status::Error(Err::I2C_ERROR, result.detail);
+    default:
+      return Status::Error(Err::I2C_ERROR, result.detail);
+  }
 }
 
 static bool bytesAllEqual(const uint8_t* data, size_t len, uint8_t value) {
@@ -2180,8 +2207,10 @@ Status BME280::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
   if (_config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C write-read not set");
   }
-  return _config.i2cWriteRead(_config.i2cAddress, txBuf, txLen, rxBuf, rxLen,
-                              _config.i2cTimeoutMs, _config.i2cUser);
+  const TransportResult result = _config.i2cWriteRead(
+      _config.i2cAddress, txBuf, txLen, rxBuf, rxLen,
+      _config.i2cTimeoutMs, _config.i2cUser);
+  return mapTransportResult(result, txLen, rxLen);
 }
 
 Status BME280::_i2cWriteRaw(const uint8_t* buf, size_t len) {
@@ -2191,8 +2220,9 @@ Status BME280::_i2cWriteRaw(const uint8_t* buf, size_t len) {
   if (_config.i2cWrite == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C write not set");
   }
-  return _config.i2cWrite(_config.i2cAddress, buf, len, _config.i2cTimeoutMs,
-                          _config.i2cUser);
+  const TransportResult result = _config.i2cWrite(
+      _config.i2cAddress, buf, len, _config.i2cTimeoutMs, _config.i2cUser);
+  return mapTransportResult(result, len, 0);
 }
 
 Status BME280::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,

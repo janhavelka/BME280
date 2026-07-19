@@ -114,7 +114,7 @@ ESP-IDF, TunnelMonitor, or hardware validation:
 | H-04 | Resolved in the library core: every accepted job has a nonzero identity and public phase/progress data; zero-I2C cancellation records owner-request or external-deadline reason. Natural terminal results are returned by the completing poll, while cancellation is retained for exactly one poll and blocks later hardware until retrieved. |
 | H-05 | Resolved in the library core: `OFFLINE` remains observable but no longer gates an explicit owner-directed operation. |
 | H-06 | Resolved in the library core: `end()` is idempotent zero-I2C unbind/teardown. |
-| H-07 | **Open.** The broader terminal exact-transfer/result and no-hidden-retry transport contract was not closed by this chunk and remains a release/integration gate. |
+| H-07 | Resolved in the library and shipped adapters: callbacks return terminal-only `TransportResult`, success requires exact byte counts, write-read requires one combined repeated-start transaction, and callbacks are contractually one physical attempt with no retry or bus recovery. Definite address/data NACK, timeout, bus, short-transfer, and other failures remain distinct. |
 | H-08 | Resolved in the library core: `startResyncJob()` and legacy `startRecoveryJob()` perform non-reset resync; `startSoftResetJob()` is the separate explicit reset operation. |
 | H-09 | Resolved in the library core: `ConversionState` represents trigger ambiguity, cancellation preserves it when a trigger may have reached the chip, and the next forced job reconciles status before issuing another trigger. Steady forced sampling no longer rewrites `ctrl_hum`. |
 | S-01 | Resolved in configuration: `conversionReadyTimeoutMs` is separate from per-transfer `i2cTimeoutMs`; short wrap-safe timeouts are range-checked. |
@@ -127,12 +127,20 @@ retain the latter across queueing and polling and call
 fixed NVM/measuring poll caps bound library work, but do not establish or renew
 an owner deadline.
 
-H-11 also remains open. No statement above closes persistent status-message
-lifetime, final integration review, release qualification, local ESP-IDF
-validation, TunnelMonitor adapter validation, or physical HIL. After this
-chunk, the native suite passed 151/151; the core-timing, CLI, HIL-contract, and
-ESP-IDF-example guards passed; and Doxygen 1.15 completed without warnings.
-These are software checks only, not hardware or local ESP-IDF evidence.
+H-11 is resolved in the library core. Persistent `Status` values retain only
+typed code and numeric detail; construction, copying, and assignment derive
+`msg` from the library-owned exhaustive `toString(Err)`. Transport adapters can
+no longer return a driver `Status` or inject borrowed text. Focused tests cover
+temporary-message mutation across direct copies and persistent driver, job, and
+snapshot fields.
+
+After the H-07/H-11 transport checkpoint, the native suite passed 158/158; the
+core-timing, CLI, HIL-contract, and ESP-IDF-example guards passed; Doxygen 1.15
+completed without warnings; and the pinned ESP32-S3/S2 Arduino builds passed at
+22,696/37,096 bytes RAM and 394,662/383,633 bytes flash respectively. Final
+integration review, release qualification, local ESP-IDF validation,
+TunnelMonitor adapter validation, and physical HIL remain separate gates. These
+are software checks only, not hardware or local ESP-IDF evidence.
 
 TunnelMonitor source changes are not authorized by its current architecture
 authority. `docs/guidelines/dependency_policy.md:32-41,114`,
