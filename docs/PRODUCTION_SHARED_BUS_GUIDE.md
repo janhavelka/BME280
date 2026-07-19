@@ -17,7 +17,10 @@ Application-owned resources:
 - A bus mutex used by every device on the shared bus.
 - A driver-instance mutex or single owner task for each `BME280::BME280`
   instance.
-- The monotonic clock used by `Config::nowMs` and `tick(nowMs)`.
+- The monotonic clock used by `Config::nowMs`, `pollJob(nowMs, ...)`, and
+  `tick(nowMs)`.
+- End-to-end operation deadlines, including time spent queued before a library
+  job starts.
 - Power/reset GPIOs and any bus recovery/reset procedure.
 - Retry, backoff, degraded/offline policy, and field telemetry.
 
@@ -25,6 +28,8 @@ Driver-owned state:
 
 - Cached BME280 configuration and calibration.
 - Measurement scheduling state.
+- One fixed-memory staged job, including nonzero identity, public phase,
+  chip-phase deadline, conversion state, and terminal status.
 - Cached raw and compensated samples.
 - Health counters and dirty-state diagnostics.
 
@@ -132,13 +137,13 @@ Preserve precise transport errors when possible:
 - generic platform failure: `I2C_ERROR` or `I2C_BUS` with the raw code in
   `Status::detail`.
 
-## Driver Initialization
+## Cooperative Driver Initialization
 
 ```cpp
 static BusContext busCtx = {/* bus, mutex, maxTimeoutMs */};
 static BME280::BME280 bme;
 
-BME280::Status initBme280() {
+BME280::Config makeBme280Config() {
   BME280::Config cfg;
   cfg.i2cWrite = bmeWrite;
   cfg.i2cWriteRead = bmeWriteRead;
@@ -147,18 +152,108 @@ BME280::Status initBme280() {
   cfg.timeUser = nullptr;
   cfg.i2cAddress = 0x76;     // 0x76 for SDO=GND, 0x77 for SDO=VDDIO
   cfg.i2cTimeoutMs = 50;     // finite transport timeout
+  cfg.nvmReadyTimeoutMs = 10;
+  cfg.conversionReadyTimeoutMs = 20; // chip-ready grace, not bus timeout
   cfg.mode = BME280::Mode::FORCED;
-
-  return bme.begin(cfg);     // verifies chip ID 0x60 and reads calibration
+  return cfg;
 }
 ```
+
+For a shared-bus owner, prefer the staged API. Every start performs validation
+and fixed-memory state setup but no I2C. Save the nonzero identity immediately:
+
+```cpp
+struct ActiveBmeJob {
+  bool active = false;
+  uint32_t jobId = 0;
+  uint64_t ownerDeadlineMs = 0; // chosen and retained by the application
+};
+
+ActiveBmeJob activeBme;
+
+BME280::Status startBme280Init(uint64_t ownerDeadlineMs) {
+  BME280::Status st = bme.startInitJob(makeBme280Config());
+  if (st.inProgress()) {
+    activeBme = {true, bme.jobId(), ownerDeadlineMs};
+  }
+  return st;
+}
+```
+
+The owner advances the job once per scheduling opportunity and captures the
+result from that exact call:
+
+```cpp
+void pollBmeJob(uint32_t nowLow32, uint64_t nowMs) {
+  BME280::JobPollResult result;
+
+  if (activeBme.active && nowMs >= activeBme.ownerDeadlineMs) {
+    BME280::Status cancelled =
+        bme.cancelJob(BME280::CancelReason::DEADLINE_EXPIRED); // zero I2C
+    if (!cancelled.ok() && cancelled.code != BME280::Err::DEADLINE_EXPIRED) {
+      publishBmeFault(cancelled);
+      return;
+    }
+    result = bme.pollJob(nowLow32, 0); // retrieve retained result exactly once
+  } else {
+    result = bme.pollJob(nowLow32, 1); // at most one transport callback
+  }
+
+  if (result.jobId == 0) {
+    return;
+  }
+  if (result.jobId != activeBme.jobId) {
+    publishBmeIdentityFault(result.jobId);
+    return;
+  }
+
+  switch (result.state) {
+    case BME280::JobState::RUNNING:
+    case BME280::JobState::WAITING:
+      return;
+    case BME280::JobState::DONE:
+      publishBmeJobSuccess(result);
+      break;
+    case BME280::JobState::FAILED:
+    case BME280::JobState::CANCELLED:
+    case BME280::JobState::TIMED_OUT:
+      publishBmeFault(result.status);
+      break;
+    default:
+      publishBmeIdentityFault(result.jobId);
+      return;
+  }
+  activeBme = {};
+}
+```
+
+Natural `DONE` and `FAILED` results exist only on the poll that reaches the
+terminal transition, so the owner must not infer completion from a later status
+read. Cancellation is different: its terminal result is retained until exactly
+one `pollJob()` call retrieves it. While that result is pending, later job
+starts and fallible synchronous hardware operations return `BUSY` without I2C;
+`tick()` also performs no I2C. Cached inspection and zero-I2C `end()` remain
+available.
+
+`JobPollResult::phaseDeadlineMs` is an active BME280 chip-phase deadline for
+NVM, conversion, or idle readiness. It is not the application deadline and
+must not replace, extend, or restart `ownerDeadlineMs`. The owner may log
+`JobPhase`, `phaseDeadlineActive`, `phaseDeadlineMs`, `callbacksUsed`, and
+`ConversionState` as bounded progress evidence.
 
 For I2C operation, tie CSB high to VDDIO before power-on reset. Do not leave SDO
 floating. Do not drive SDA, SCL, SDO, or CSB high while VDDIO is off.
 
 ## Measurement Task
 
-Use `requestMeasurement()` and scheduled `tick(nowMs)` instead of hidden waits:
+After staged initialization completes, a production shared-bus owner can use
+the same envelope to start `startForcedMeasurementJob()` and advance it with
+`pollJob(now, 1)`. The start is zero-I2C. On terminal success,
+`getSampleEnvelope()` returns the atomically committed sample, timestamp,
+sample sequence, and configuration generation without touching I2C.
+
+`requestMeasurement()` plus scheduled `tick(nowMs)` remains a synchronous
+compatibility path for simpler single-owner applications:
 
 ```cpp
 void bmeTask() {
@@ -204,18 +299,30 @@ void bmeTask() {
 }
 ```
 
-`Config::nowMs` and `tick(nowMs)` must use the same monotonic timebase.
-`requestMeasurement()` returns `INVALID_CONFIG` if no monotonic clock is
-injected. In forced mode, the driver triggers one conversion and the device
-returns to sleep. In normal mode, the driver waits one estimated normal cycle
-before reading so the sample is fresh relative to the request.
+`requestMeasurement()` returns `INVALID_CONFIG` if no `Config::nowMs` hook is
+injected. `pollJob(nowMs, ...)` and `tick(nowMs)` use their explicit argument as
+the time source for chip phases and health updates during that call; the hook is
+used by synchronous calls outside those scopes. All must use the same monotonic
+clock. If neither an explicit call time nor the hook is available, health time
+values are zero and `lastOkTimeValid()` / `lastErrorTimeValid()` are false.
+
+In forced mode, the device returns to sleep after conversion. A timeout or
+cancellation after the trigger can leave `ConversionState` as
+`UNKNOWN_AFTER_TRIGGER_ERROR`; the next staged forced job reconciles
+`status.measuring` before it may issue one new trigger. The driver never replays
+an ambiguous trigger. Once settings are synchronized, steady forced sampling
+writes only `ctrl_meas`; `ctrl_hum` is latched during configuration apply and is
+not rewritten for every sample. In normal mode, the compatibility scheduler
+waits one estimated normal cycle before reading so the sample is fresh relative
+to the request.
 
 `hasSample()` means the latest successful raw/compensated sample is cached; it
 does not by itself prove freshness for the current request. Use
 `sampleFreshness()` or `sampleFresh(nowMs, maxAgeMs)` before publishing data.
 `STALE_AFTER_ERROR` means a later refresh failed or is still non-OK, and
 `STALE_AFTER_CONFIG_DIRTY` means the hardware configuration may differ from the
-driver cache.
+driver cache. `STALE_AFTER_CONFIG_CHANGE` means the sample belongs to an older
+configuration generation.
 
 ## Shared Bus With Other Devices
 
@@ -231,7 +338,9 @@ If another device needs a bus reset, treat it as an application-level event:
 3. Perform the platform-specific bus recovery or peripheral reset outside the
    BME280 core driver.
 4. Reinitialize bus handles if the platform requires it.
-5. Call `recover()` or `begin()` on the BME280 from task context.
+5. Start `startResyncJob()` from task context and poll it under the original
+   application deadline. Use `startSoftResetJob()` only when application policy
+   explicitly requires a device reset.
 6. Request a fresh sample before publishing BME280 data again.
 
 ## Recovery Policy
@@ -241,18 +350,51 @@ successful `begin()` starts a new session and resets total success/failure
 counters. Consecutive failures move the driver through `DEGRADED` and then
 `OFFLINE` according to `Config::offlineThreshold`.
 
-When `OFFLINE` is latched, normal public I2C APIs return `BUSY` without touching
-the bus. `probe()` remains a raw diagnostic and does not clear the latch.
-`recover()` is the explicit resync path. A successful `recover()` reloads
+`OFFLINE` is an observational failure-threshold state, not an I2C admission
+gate. The owner may still perform an explicit probe, retry, resync, or reset; a
+successful tracked transaction returns health to `READY`. `probe()` remains a
+raw diagnostic and does not itself clear `OFFLINE`.
+
+`startResyncJob()` is the cooperative non-reset path. The legacy
+`startRecoveryJob()` is an alias and reports `JobKind::RESYNC`. Synchronous
+`recover()` also performs no reset. A successful `recover()` reloads
 calibration, reapplies cached configuration, clears dirty state, and invalidates
 cached raw and compensated samples. A failed `recover()` leaves pre-existing
 cached samples unchanged; publish them only if your application explicitly
 accepts stale data and records `sampleFreshness()`.
 
+`startSoftResetJob()` is the separate explicit reset operation. Its first
+callback writes `0xB6` to `0xE0`, then performs bounded NVM-copy readiness,
+calibration reload, and configuration apply. Do not turn a transport or shared-
+bus recovery automatically into a BME280 reset.
+
 Raw register writes are diagnostics, not normal configuration APIs. Writes that
 overlap `ctrl_hum`, `ctrl_meas`, `config`, or `reset` mark
 `hardwareConfigDirty()` and require `recover()` or `begin()` before the cached
 configuration should be trusted again.
+
+The driver exposes no writable-NVM, calibration-trim, or factory-programming
+API. It only waits for the BME280's internal calibration NVM copy to finish
+after POR/reset and reads the image registers. Cooperative NVM polling is
+bounded by `Config::nvmReadyTimeoutMs` and a fixed 255-status-callback cap.
+
+## Operation Classes and Bounds
+
+| Class | Operations | Bound |
+| --- | --- | --- |
+| Zero-I2C | staged starts, `cancelJob()`, `end()`, cached snapshots | No transport callback |
+| Cooperative | `pollJob(nowMs, budget)` | At most `budget` callbacks; zero budget may advance local-only phases |
+| Synchronous compatibility | `begin()`, `recover()`, `softReset()`, setters, request/tick, register diagnostics | Fixed transaction shape; each callback receives `i2cTimeoutMs` |
+
+Each measuring/idle readiness phase uses `conversionReadyTimeoutMs` plus a
+fixed 255-poll counter and can perform at most one final status callback before
+the poll-limit error. With no earlier phase deadline or transport failure, the
+staged cumulative callback caps are 518 for init or non-reset resync, 519 for
+explicit soft reset, 516 for config apply, 258 for a forced job starting from
+known idle, and 514 when a forced job first reconciles an ambiguous conversion.
+These are callback-count caps only. They do not define an overall application
+deadline or elapsed-time guarantee; the bus-manager timeout, owner scheduling
+cadence, queue time, and application deadline remain outside the library.
 
 ## HIL Evidence Expectations
 

@@ -30,7 +30,9 @@ enum class JobKind : uint8_t {
   INIT,                ///< Initialization job started by startInitJob()
   FORCED_MEASUREMENT,  ///< Forced conversion job started by startForcedMeasurementJob()
   APPLY_CONFIG,        ///< Config apply job started by startApplyConfigJob()
-  RECOVERY             ///< Recovery job started by startRecoveryJob()
+  RESYNC,              ///< Non-reset resynchronization started by startResyncJob()
+  RECOVERY = RESYNC,   ///< Compatibility name for RESYNC
+  SOFT_RESET           ///< Explicit reset and resynchronization job
 };
 
 /// State of the staged job runner.
@@ -39,14 +41,70 @@ enum class JobState : uint8_t {
   RUNNING,  ///< Job can make more progress when instruction budget is available
   WAITING,  ///< Job is waiting for time or chip status before more progress
   DONE,     ///< Job completed successfully
-  FAILED    ///< Job stopped on error; inspect status
+  FAILED,   ///< Job stopped on error; inspect status
+  CANCELLED, ///< Job was cancelled by its owner
+  TIMED_OUT  ///< Job was cancelled because its owner deadline expired
+};
+
+/// Reason supplied by the owner when cancelling a staged job.
+enum class CancelReason : uint8_t {
+  OWNER_REQUEST,   ///< Owner no longer needs the operation
+  DEADLINE_EXPIRED ///< Owner's external deadline expired
+};
+
+/// Knowledge of a forced-mode conversion that may be running in hardware.
+enum class ConversionState : uint8_t {
+  IDLE,                        ///< No forced conversion is known to be active
+  IN_PROGRESS,                 ///< A trigger succeeded or status reports measuring
+  UNKNOWN_AFTER_TRIGGER_ERROR  ///< A trigger/cancellation error left hardware ambiguous
+};
+
+/// Reason encoded in Status::detail when a job start or hardware operation is busy.
+enum class BusyReason : int32_t {
+  NONE = 0,
+  STAGED_JOB_ACTIVE = 1,      ///< A staged job currently owns hardware access
+  TERMINAL_RESULT_PENDING = 2 ///< A cancellation result must be retrieved first
+};
+
+/// Current phase of the fixed-memory staged state machine.
+enum class JobPhase : uint8_t {
+  NONE,                    ///< No staged phase is active
+  INIT_READ_CHIP_ID,       ///< Initialization identity read
+  INIT_NVM_START,          ///< Initialization NVM deadline setup
+  NVM_POLL,                ///< Bounded NVM-copy readiness polling
+  CALIB_TP,                ///< Temperature/pressure calibration burst read
+  CALIB_H,                 ///< Humidity calibration burst read
+  VALIDATE_CALIBRATION,    ///< Local-only calibration validation and commit
+  APPLY_WAIT_IDLE,         ///< Wait for an existing conversion before settings apply
+  APPLY_CTRL_MEAS_SLEEP,   ///< Request sleep before changing configuration
+  APPLY_WAIT_AFTER_SLEEP,  ///< Verify the device is idle after the sleep request
+  APPLY_CONFIG,            ///< Write filter and standby settings
+  APPLY_CTRL_HUM,          ///< Write humidity oversampling
+  APPLY_CTRL_MEAS,         ///< Latch oversampling and configured operating mode
+  FORCE_RECONCILE_STATUS,  ///< Resolve an ambiguous prior trigger through status
+  FORCE_TRIGGER,           ///< Issue exactly one forced ctrl_meas write
+  FORCE_WAIT_TIME,         ///< Local-only wait for the estimated conversion time
+  FORCE_READ_STATUS,       ///< Bounded conversion-ready status polling
+  FORCE_READ_DATA,         ///< Coherent raw data burst read
+  FORCE_COMPENSATE,        ///< Local-only validation, compensation, and sample commit
+  SOFT_RESET_WRITE,        ///< Explicit soft-reset register write
+  RESYNC_READ_CHIP_ID,     ///< Non-reset identity verification
+  RESYNC_NVM_START,        ///< Resynchronization NVM deadline setup
+  COMPLETE                 ///< Local-only successful terminal transition
 };
 
 /// Result returned by pollJob().
 struct JobPollResult {
+  uint32_t jobId = 0;              ///< Nonzero identity, or zero when no result exists
+  JobKind kind = JobKind::NONE;    ///< Kind associated with jobId
+  JobPhase phase = JobPhase::NONE; ///< Phase at the return boundary
   JobState state = JobState::IDLE; ///< Job state after this poll
   Status status = Status::Ok();    ///< OK, IN_PROGRESS, or terminal error
-  uint8_t instructionsUsed = 0;    ///< I2C callbacks used by this poll
+  ConversionState conversionState = ConversionState::IDLE; ///< Post-poll forced state
+  bool phaseDeadlineActive = false; ///< True when phaseDeadlineMs is meaningful
+  uint32_t phaseDeadlineMs = 0;     ///< Active chip-phase deadline, not an owner deadline
+  uint8_t callbacksUsed = 0;       ///< Transport callbacks issued by this poll
+  uint8_t instructionsUsed = 0;    ///< Compatibility alias of callbacksUsed
 };
 
 /// Measurement result (float)
@@ -150,6 +208,7 @@ struct SettingsSnapshot {
   uint8_t i2cAddress = 0x76;                  ///< Active 7-bit I2C address
   uint32_t i2cTimeoutMs = 0;                  ///< Active I2C timeout
   uint32_t nvmReadyTimeoutMs = 0;             ///< Active NVM ready timeout
+  uint32_t conversionReadyTimeoutMs = 0;      ///< Conversion/idle readiness grace period
   uint8_t offlineThreshold = 0;               ///< Failure threshold for OFFLINE
   bool hasNowMsHook = false;                  ///< True when Config::nowMs is set
   Mode mode = Mode::SLEEP;                    ///< Active measurement mode
@@ -160,6 +219,7 @@ struct SettingsSnapshot {
   Standby standby = Standby::MS_0_5;         ///< Standby time for normal mode
   bool measurementRequested = false;          ///< True while the scheduler has a pending capture
   bool measurementReady = false;              ///< True when an unread cached measurement is ready
+  ConversionState conversionState = ConversionState::IDLE; ///< Forced-conversion knowledge
   Status lastMeasurementStatus = Status::Ok(); ///< Last request/tick status for measurement scheduling
   bool hasSample = false;                     ///< True when a compensated sample is cached
   SampleFreshness sampleFreshness = SampleFreshness::NONE; ///< Freshness of the cached sample
@@ -177,6 +237,8 @@ struct SettingsSnapshot {
   CompensatedSample compSample = {};          ///< Last compensated sample
   SampleEnvelope sample = {};                 ///< Atomic sample/provenance snapshot
   Calibration calibration = {};               ///< Cached compensation coefficients
+  bool lastOkTimeValid = false;                ///< True when lastOkMs() has a real timebase
+  bool lastErrorTimeValid = false;             ///< True when lastErrorMs() has a real timebase
 };
 
 /// BME280 driver class.
@@ -277,16 +339,35 @@ public:
   /// @return IN_PROGRESS when accepted, error otherwise
   Status startApplyConfigJob();
 
-  /// Start a staged soft-reset recovery job.
-  /// Successful completion clears dirty config state after reset, calibration
-  /// reload, validation, and cached config re-apply all complete.
+  /// Start a staged non-reset resynchronization job. The job verifies identity
+  /// and NVM readiness, reloads calibration, and reapplies cached settings.
+  /// @return IN_PROGRESS when accepted, error otherwise
+  Status startResyncJob();
+
+  /// Compatibility alias for startResyncJob(). This method does not reset the
+  /// sensor and reports JobKind::RESYNC.
   /// @return IN_PROGRESS when accepted, error otherwise
   Status startRecoveryJob();
 
+  /// Start an explicit staged soft reset followed by full resynchronization.
+  /// The first transport callback writes exactly reset value 0xB6 to register
+  /// 0xE0. Reset uncertainty invalidates cached calibration.
+  /// @return IN_PROGRESS when accepted, error otherwise
+  Status startSoftResetJob();
+
+  /// Cancel the active job without accessing I2C. Cancellation is delivered
+  /// exactly once by pollJob(); a new start remains BUSY until that retrieval.
+  /// @param reason Owner-requested or owner-deadline cancellation reason
+  /// @return CANCELLED/DEADLINE_EXPIRED when accepted, INVALID_PARAM otherwise
+  Status cancelJob(CancelReason reason);
+
   /// Advance the active staged job.
   /// @param nowMs Current timestamp in milliseconds
+  /// A zero callback budget still permits bounded local-only phase transitions.
+  /// Natural terminal results are returned only by the poll that reaches them;
+  /// cancellation results are retained until exactly one poll retrieves them.
   /// @param maxInstructions Maximum I2C callbacks to issue this poll; defaults to 1
-  /// @return Job state, status, and number of I2C callbacks used
+  /// @return Identity, phase, state, status, deadline and callback usage
   JobPollResult pollJob(uint32_t nowMs, uint8_t maxInstructions = 1);
 
   /// Current staged job type.
@@ -297,6 +378,12 @@ public:
 
   /// Last staged job status.
   Status jobStatus() const { return _jobStatus; }
+
+  /// Identity of the active or last terminal staged job.
+  uint32_t jobId() const { return _jobId; }
+
+  /// Current staged job phase.
+  JobPhase jobPhase() const { return _jobPhase; }
   
   // =========================================================================
   // Diagnostics
@@ -382,10 +469,16 @@ public:
   /// Timestamp of last successful I2C operation
   /// @return Last successful tracked I2C timestamp in milliseconds, or 0
   uint32_t lastOkMs() const { return _lastOkMs; }
+
+  /// True when lastOkMs() was captured from Config::nowMs or explicit poll/tick time.
+  bool lastOkTimeValid() const { return _lastOkTimeValid; }
   
   /// Timestamp of last failed I2C operation
   /// @return Last failed tracked I2C timestamp in milliseconds, or 0
   uint32_t lastErrorMs() const { return _lastErrorMs; }
+
+  /// True when lastErrorMs() was captured from a real injected/explicit timebase.
+  bool lastErrorTimeValid() const { return _lastErrorTimeValid; }
   
   /// Most recent error status
   /// @return Last tracked error status
@@ -425,6 +518,9 @@ public:
   /// Check if measurement is ready to read
   /// @return true when getMeasurement() can consume a pending sample
   bool measurementReady() const { return _measurementReady; }
+
+  /// Current knowledge of forced-mode conversion activity.
+  ConversionState conversionState() const { return _conversionState; }
 
   /// True after at least one sample has been cached.
   /// @return true when raw and compensated cached sample data exists
@@ -590,7 +686,7 @@ public:
   /// attempt invalidates cached samples before touching hardware. If reset
   /// write succeeds but a later step fails, hardwareConfigDirty() remains set
   /// with the root-cause status. If NVM is still busy, returns BUSY or TIMEOUT
-  /// instead of hiding a polling loop; use startRecoveryJob()/pollJob() when
+  /// instead of hiding a polling loop; use startSoftResetJob()/pollJob() when
   /// the owner needs staged NVM polling.
   /// @return Status::Ok() on success, error otherwise
   Status softReset();
@@ -740,37 +836,14 @@ private:
   // Internal
   // =========================================================================
 
-  enum class JobPhase : uint8_t {
-    NONE,
-    INIT_READ_CHIP_ID,
-    INIT_NVM_START,
-    NVM_POLL,
-    CALIB_TP,
-    CALIB_H,
-    VALIDATE_CALIBRATION,
-    APPLY_WAIT_IDLE,
-    APPLY_CTRL_MEAS_SLEEP,
-    APPLY_WAIT_AFTER_SLEEP,
-    APPLY_CONFIG,
-    APPLY_CTRL_HUM,
-    APPLY_CTRL_MEAS,
-    FORCE_WRITE_CTRL_HUM,
-    FORCE_WRITE_CTRL_MEAS,
-    FORCE_WAIT_TIME,
-    FORCE_READ_STATUS,
-    FORCE_READ_DATA,
-    FORCE_COMPENSATE,
-    RECOVERY_WRITE_RESET,
-    RECOVERY_READ_CHIP_ID,
-    COMPLETE
-  };
-
   void _resetRuntime(bool preserveHistory = true);
   Status _prepareBeginConfig(const Config& config);
   bool _jobActive() const;
+  Status _jobStartAdmission() const;
   Status _hardwareOperationAdmission() const;
   void _clearJob();
   Status _startJob(JobKind kind, JobPhase phase);
+  JobPollResult _idleJobResult() const;
   JobPollResult _jobResult(uint8_t instructionsUsed) const;
   JobPollResult _failJob(const Status& st, uint8_t instructionsUsed);
   JobPollResult _completeJob(uint8_t instructionsUsed);
@@ -794,6 +867,7 @@ private:
   void _invalidateSampleCache();
   void _advanceConfigGeneration();
   uint32_t _nowMs() const;
+  bool _timeValid() const;
   
   // =========================================================================
   // State
@@ -806,6 +880,8 @@ private:
   // Health counters
   uint32_t _lastOkMs = 0;
   uint32_t _lastErrorMs = 0;
+  bool _lastOkTimeValid = false;
+  bool _lastErrorTimeValid = false;
   Status _lastError = Status::Ok();
   uint8_t _consecutiveFailures = 0;
   uint32_t _totalFailures = 0;
@@ -821,10 +897,16 @@ private:
   JobState _jobState = JobState::IDLE;
   JobPhase _jobPhase = JobPhase::NONE;
   Status _jobStatus = Status::Ok();
+  uint32_t _jobId = 0;
+  uint32_t _nextJobId = 0;
+  bool _jobTerminalResultPending = false;
   uint32_t _jobDeadlineMs = 0;
+  bool _jobDeadlineActive = false;
   uint16_t _jobNvmPolls = 0;
   uint16_t _jobWaitPolls = 0;
   bool _jobHardwareConfigTouched = false;
+  bool _jobResetMayHaveReached = false;
+  bool _jobForcedTriggerMayHaveReached = false;
   Calibration _jobCalibration = {};
   bool _jobHumidityCalibrationValid = false;
   ConfigSyncState _jobPriorConfigSyncState = ConfigSyncState::RESYNC_REQUIRED;
@@ -832,6 +914,10 @@ private:
   RawSample _jobRawSample = {};
   CompensatedSample _jobCompSample = {};
   int32_t _jobTFine = 0;
+
+  // Explicit poll/tick time context for health timestamps.
+  bool _timeContextActive = false;
+  uint32_t _timeContextMs = 0;
 
   // Calibration data
   uint16_t _digT1 = 0;
@@ -856,6 +942,7 @@ private:
   // Measurement state
   bool _measurementRequested = false;
   bool _measurementReady = false;
+  ConversionState _conversionState = ConversionState::IDLE;
   Status _lastMeasurementStatus = Status::Ok();
   bool _hasSample = false;
   uint32_t _measurementStartMs = 0;

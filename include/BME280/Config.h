@@ -109,6 +109,7 @@ struct Config {
   uint8_t i2cAddress = 0x76;             ///< 0x76 (SDO=GND) or 0x77 (SDO=VDDIO)
   uint32_t i2cTimeoutMs = 50;            ///< I2C transaction timeout in ms
   uint32_t nvmReadyTimeoutMs = 10;        ///< NVM ready timeout after POR/reset in ms
+  uint32_t conversionReadyTimeoutMs = 20; ///< Grace period for conversion/idle readiness
 
   // === Measurement Settings ===
   Oversampling osrsT = Oversampling::X1; ///< Temperature oversampling

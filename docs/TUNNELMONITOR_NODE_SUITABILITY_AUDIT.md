@@ -104,6 +104,36 @@ zero-I2C repeated teardown, and transport rebinding. The native suite passed
 143/143, and the core-timing, CLI, HIL-contract, and ESP-IDF-example guards also
 passed after this chunk.
 
+The cooperative control/timing chunk has the following implementation
+disposition. This is source-and-focused-regression progress, not final release,
+ESP-IDF, TunnelMonitor, or hardware validation:
+
+| Finding | 2026-07-19 implementation disposition |
+| --- | --- |
+| H-03 | Resolved in the library core: a running/waiting staged job exclusively owns hardware-facing entry points; conflicting fallible calls return typed `BUSY`, and `tick()` performs no I2C. |
+| H-04 | Resolved in the library core: every accepted job has a nonzero identity and public phase/progress data; zero-I2C cancellation records owner-request or external-deadline reason. Natural terminal results are returned by the completing poll, while cancellation is retained for exactly one poll and blocks later hardware until retrieved. |
+| H-05 | Resolved in the library core: `OFFLINE` remains observable but no longer gates an explicit owner-directed operation. |
+| H-06 | Resolved in the library core: `end()` is idempotent zero-I2C unbind/teardown. |
+| H-07 | **Open.** The broader terminal exact-transfer/result and no-hidden-retry transport contract was not closed by this chunk and remains a release/integration gate. |
+| H-08 | Resolved in the library core: `startResyncJob()` and legacy `startRecoveryJob()` perform non-reset resync; `startSoftResetJob()` is the separate explicit reset operation. |
+| H-09 | Resolved in the library core: `ConversionState` represents trigger ambiguity, cancellation preserves it when a trigger may have reached the chip, and the next forced job reconciles status before issuing another trigger. Steady forced sampling no longer rewrites `ctrl_hum`. |
+| S-01 | Resolved in configuration: `conversionReadyTimeoutMs` is separate from per-transfer `i2cTimeoutMs`; short wrap-safe timeouts are range-checked. |
+| S-02 | Resolved in cooperative timing: `pollJob(nowMs, ...)` and `tick(nowMs)` provide the time context for their chip phases and health updates; synchronous calls use the optional hook, and validity flags identify unavailable timestamps. |
+
+The job result now distinguishes its internal chip-phase deadline from the
+application's original end-to-end deadline. TunnelMonitor would still have to
+retain the latter across queueing and polling and call
+`cancelJob(DEADLINE_EXPIRED)` when it expires. Per-poll callback budgets and
+fixed NVM/measuring poll caps bound library work, but do not establish or renew
+an owner deadline.
+
+H-11 also remains open. No statement above closes persistent status-message
+lifetime, final integration review, release qualification, local ESP-IDF
+validation, TunnelMonitor adapter validation, or physical HIL. After this
+chunk, the native suite passed 151/151; the core-timing, CLI, HIL-contract, and
+ESP-IDF-example guards passed; and Doxygen 1.15 completed without warnings.
+These are software checks only, not hardware or local ESP-IDF evidence.
+
 TunnelMonitor source changes are not authorized by its current architecture
 authority. `docs/guidelines/dependency_policy.md:32-41,114`,
 `docs/guidelines/i2c_peripherals.md:477-486`, and

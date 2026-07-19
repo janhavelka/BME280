@@ -28,7 +28,9 @@ enum class Err : uint8_t {
   I2C_NACK_DATA,             ///< I2C data byte not acknowledged
   I2C_TIMEOUT,               ///< I2C transaction timeout
   I2C_BUS,                   ///< I2C bus error (arbitration lost, etc.)
-  RESYNC_REQUIRED            ///< Cached device state must be reconciled before use
+  RESYNC_REQUIRED,           ///< Cached device state must be reconciled before use
+  CANCELLED,                 ///< Staged job cancelled by its owner
+  DEADLINE_EXPIRED           ///< Staged job cancelled because its owner deadline expired
 };
 
 /// Status structure returned by all fallible operations
