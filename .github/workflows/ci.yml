@@ -71,6 +71,9 @@ jobs:
       - name: Run native tests
         run: pio test -e native
 
+      - name: Run native tests with ASan and UBSan
+        run: pio test -e native_sanitized
+
   validate-library:
     runs-on: ubuntu-latest
     steps:

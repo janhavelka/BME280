@@ -50,6 +50,10 @@ Core and API contracts:
 - Driver objects are non-copyable and non-movable.
 - Public error reporting keeps distinguishable transport errors when the
   adapter can provide them.
+- Transport callbacks return terminal-only `TransportResult`, require exact
+  byte counts and one physical attempt, and forbid adapter retry/recovery.
+  Driver `Status` messages are canonical library strings derived from typed
+  codes; adapter-owned text is never retained.
 - Measurement scheduling now requires an injected timebase for the synchronous
   compatibility path. Cooperative `pollJob(nowMs, ...)` and `tick(nowMs)` use
   the explicit timestamp for chip phases and health events in that call;
@@ -112,12 +116,20 @@ Configuration, reset, and recovery:
   any last-good sample only as stale diagnostic data.
 - `setFilter()` and `setStandby()` avoid config writes while the sensor reports
   `measuring`.
+- `SensorSettings` and `startApplySettingsJob()` provide one zero-I2C admission
+  point for coherent whole-settings changes while reusing the existing apply
+  phases. Pre-write failure restores the prior snapshot; possible partial
+  effects retain desired settings with an explicit resync requirement.
 - Synchronous reset/recover NVM readiness checks perform one status read and
   return visible `BUSY`, `TIMEOUT`, or the original transport error. Repeated
   bounded NVM polling is available through staged jobs advanced by `pollJob()`.
 - `Config::conversionReadyTimeoutMs` is separate from the per-callback
   `i2cTimeoutMs`. All wrap-safe timeout fields reject zero and values above
   `INT32_MAX`.
+- Pure helpers cover settings validation, exact Bosch microsecond timing,
+  rounded scheduler timing, chip identity, and checked fixed-unit conversion.
+  `CalibrationRaw` exposes the complete image through two bursts without a
+  duplicate H1 field or read.
 - The library exposes no writable calibration NVM, trimming, or factory-
   programming API. It only performs bounded waits for the BME280's internal NVM
   copy after POR/reset and reads the resulting calibration registers.
@@ -134,8 +146,9 @@ Examples, ESP-IDF, and CI:
 - Guard scripts check core framework neutrality, CLI parity, IDF example
   boundaries, HIL runner/docs consistency, generated version state, and package
   contents.
-- CI is configured for PlatformIO Arduino builds, native tests, package checks,
-  and ESP-IDF example builds.
+- CI is configured for PlatformIO Arduino builds, native tests, an ASan/UBSan
+  native lane, package checks, and ESP-IDF example builds. A configured lane is
+  not runtime evidence until the corresponding workflow succeeds.
 
 HIL preparation:
 

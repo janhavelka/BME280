@@ -375,6 +375,15 @@ callback writes `0xB6` to `0xE0`, then performs bounded NVM-copy readiness,
 calibration reload, and configuration apply. Do not turn a transport or shared-
 bus recovery automatically into a BME280 reset.
 
+For a whole runtime settings change, build a `SensorSettings` value, call the
+pure `validateSettings()`, then call zero-I2C `startApplySettingsJob()`. It uses
+the same fixed APPLY_CONFIG phases as cached reapply. Before a config write has
+any possible effect, failure/cancellation restores the prior cached settings.
+After a successful or ambiguous write, the desired settings remain the explicit
+resync target and `RESYNC_REQUIRED` blocks measurement until a full apply or
+resync succeeds. This makes partial hardware state visible without asking the
+application to duplicate the register sequence.
+
 Raw register writes are diagnostics, not normal configuration APIs. Writes that
 overlap `ctrl_hum`, `ctrl_meas`, `config`, or `reset` mark
 `hardwareConfigDirty()` and require `recover()` or `begin()` before the cached
@@ -389,7 +398,7 @@ bounded by `Config::nvmReadyTimeoutMs` and a fixed 255-status-callback cap.
 
 | Class | Operations | Bound |
 | --- | --- | --- |
-| Zero-I2C | staged starts, `cancelJob()`, `end()`, cached snapshots | No transport callback |
+| Pure/zero-I2C | settings validation/timing/unit helpers, staged starts, `cancelJob()`, `end()`, cached snapshots | No transport callback |
 | Cooperative | `pollJob(nowMs, budget)` | At most `budget` callbacks; zero budget may advance local-only phases |
 | Synchronous compatibility | `begin()`, `recover()`, `softReset()`, setters, request/tick, register diagnostics | Fixed transaction shape; each callback receives `i2cTimeoutMs` |
 
@@ -402,6 +411,13 @@ known idle, and 514 when a forced job first reconciles an ambiguous conversion.
 These are callback-count caps only. They do not define an overall application
 deadline or elapsed-time guarantee; the bus-manager timeout, owner scheduling
 cadence, queue time, and application deadline remain outside the library.
+
+`readCalibrationRaw()` is a diagnostic/commissioning read rather than a
+steady sampling operation. It is still fixed and bounded: one 26-byte burst for
+`0x88..0xA1` followed by one 7-byte burst for `0xE1..0xE7`. The H1 byte is
+`CalibrationRaw::tp[25]`; there is no redundant third transaction. The library
+does not expose calibration or NVM writes, so write endurance, unknown write
+completion, and maintenance retry policy do not arise in its public surface.
 
 ## HIL Evidence Expectations
 

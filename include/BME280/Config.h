@@ -117,12 +117,35 @@ enum class Oversampling : uint8_t {
   X16 = 5    ///< 16x oversampling
 };
 
+/// Return the canonical string for an oversampling setting.
+constexpr const char* toString(Oversampling value) {
+  switch (value) {
+    case Oversampling::SKIP: return "SKIP";
+    case Oversampling::X1: return "X1";
+    case Oversampling::X2: return "X2";
+    case Oversampling::X4: return "X4";
+    case Oversampling::X8: return "X8";
+    case Oversampling::X16: return "X16";
+    default: return "UNKNOWN_OVERSAMPLING";
+  }
+}
+
 /// Measurement mode
 enum class Mode : uint8_t {
   SLEEP = 0,  ///< No measurements, lowest power
   FORCED = 1, ///< On-demand single measurement; requestMeasurement() triggers conversion
   NORMAL = 3  ///< Continuous measurements
 };
+
+/// Return the canonical string for a measurement mode.
+constexpr const char* toString(Mode value) {
+  switch (value) {
+    case Mode::SLEEP: return "SLEEP";
+    case Mode::FORCED: return "FORCED";
+    case Mode::NORMAL: return "NORMAL";
+    default: return "UNKNOWN_MODE";
+  }
+}
 
 /// IIR filter coefficient
 enum class Filter : uint8_t {
@@ -132,6 +155,18 @@ enum class Filter : uint8_t {
   X8 = 3,  ///< 8x filter coefficient
   X16 = 4  ///< 16x filter coefficient
 };
+
+/// Return the canonical string for an IIR filter setting.
+constexpr const char* toString(Filter value) {
+  switch (value) {
+    case Filter::OFF: return "OFF";
+    case Filter::X2: return "X2";
+    case Filter::X4: return "X4";
+    case Filter::X8: return "X8";
+    case Filter::X16: return "X16";
+    default: return "UNKNOWN_FILTER";
+  }
+}
 
 /// Standby time between measurements (normal mode)
 enum class Standby : uint8_t {
@@ -144,6 +179,71 @@ enum class Standby : uint8_t {
   MS_10 = 6,   ///< 10 ms
   MS_20 = 7    ///< 20 ms
 };
+
+/// Return the canonical string for a standby setting.
+constexpr const char* toString(Standby value) {
+  switch (value) {
+    case Standby::MS_0_5: return "MS_0_5";
+    case Standby::MS_62_5: return "MS_62_5";
+    case Standby::MS_125: return "MS_125";
+    case Standby::MS_250: return "MS_250";
+    case Standby::MS_500: return "MS_500";
+    case Standby::MS_1000: return "MS_1000";
+    case Standby::MS_10: return "MS_10";
+    case Standby::MS_20: return "MS_20";
+    default: return "UNKNOWN_STANDBY";
+  }
+}
+
+/// Compact hardware measurement settings independent of transport policy.
+struct SensorSettings {
+  Oversampling osrsT = Oversampling::X1; ///< Temperature oversampling
+  Oversampling osrsP = Oversampling::X1; ///< Pressure oversampling
+  Oversampling osrsH = Oversampling::X1; ///< Humidity oversampling
+  Filter filter = Filter::OFF;           ///< IIR filter coefficient
+  Standby standby = Standby::MS_125;     ///< Normal-mode standby interval
+  Mode mode = Mode::FORCED;              ///< Measurement mode policy
+};
+
+/// Validate a settings tuple without accessing hardware.
+/// Temperature must be enabled whenever pressure or humidity is enabled, and
+/// at least one measurement channel must be selected.
+/// @param settings Settings to validate
+/// @return OK for a supported tuple, INVALID_PARAM otherwise
+Status validateSettings(const SensorSettings& settings);
+
+/// Estimate the exact Bosch maximum conversion duration for a settings tuple.
+/// This microsecond value has no library scheduling margin and performs no
+/// hardware access.
+/// @param settings Settings whose oversampling controls conversion duration
+/// @return Maximum conversion duration in microseconds, or 0 if invalid
+uint32_t estimateMeasurementTimeUs(const SensorSettings& settings);
+
+/// Estimate scheduler duration rounded up to whole milliseconds after adding
+/// the driver's fixed one-millisecond margin to the Bosch maximum.
+/// @param settings Settings whose oversampling controls conversion duration
+/// @return Rounded-up maximum conversion duration in milliseconds, or 0 if invalid
+uint32_t estimateMeasurementTimeMs(const SensorSettings& settings);
+
+/// Convert signed centi-degrees Celsius to signed milli-degrees Celsius.
+/// The output is unchanged when the multiplication would overflow int32_t.
+/// @param tempC_x100 Temperature in 0.01 degree Celsius units
+/// @param[out] outMilliC Temperature in 0.001 degree Celsius units
+/// @return OK on success, COMPENSATION_ERROR on overflow
+Status temperatureX100ToMilliC(int32_t tempC_x100, int32_t& outMilliC);
+
+/// Convert unsigned Q22.10 percent to signed milli-percent with truncation.
+/// The output is unchanged for input above 100% or signed overflow.
+/// @param humidityPct_x1024 Relative humidity percent multiplied by 1024
+/// @param[out] outMilliPercent Relative humidity in 0.001 percent units
+/// @return OK, INVALID_PARAM above 100%, or COMPENSATION_ERROR on overflow
+Status humidityX1024ToMilliPercent(uint32_t humidityPct_x1024,
+                                  int32_t& outMilliPercent);
+
+/// Check the mandatory BME280 chip identity value.
+/// @param chipId Value read from the chip-ID register
+/// @return true only for chip ID 0x60
+constexpr bool isBme280ChipId(uint8_t chipId) { return chipId == 0x60; }
 
 /// Configuration for BME280 driver.
 ///

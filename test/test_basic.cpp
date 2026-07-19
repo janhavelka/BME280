@@ -2,6 +2,7 @@
 /// @brief Native contract tests for BME280 lifecycle and health behavior.
 
 #include <unity.h>
+#include <cstring>
 #include <type_traits>
 
 #include "Arduino.h"
@@ -44,6 +45,9 @@ struct FakeBus {
   uint8_t writeRegLog[64] = {};
   uint8_t writeValueLog[64] = {};
   uint8_t writeLogLen = 0;
+  uint8_t readRegLog[64] = {};
+  size_t readLengthLog[64] = {};
+  uint8_t readLogLen = 0;
   bool failReadRegEnabled = false;
   uint8_t failReadReg = 0;
   uint32_t failReadRegRemaining = 0;
@@ -143,6 +147,11 @@ TransportResult fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
   const uint8_t reg = txData[0];
   bus->lastReadReg = reg;
   bus->lastReadLen = rxLen;
+  if (bus->readLogLen < sizeof(bus->readRegLog)) {
+    bus->readRegLog[bus->readLogLen] = reg;
+    bus->readLengthLog[bus->readLogLen] = rxLen;
+    bus->readLogLen++;
+  }
   if (bus->failReadRegEnabled && reg == bus->failReadReg) {
     bus->failReadRegEnabled = false;
     return bus->readError;
@@ -206,6 +215,40 @@ static_assert(!std::is_constructible<TransportResult, Status>::value,
               "driver Status must not be accepted as a transport result");
 static_assert(!std::is_convertible<Status, TransportResult>::value,
               "driver Status must not convert to a transport result");
+static_assert(std::is_standard_layout<TransportResult>::value,
+              "transport result must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<TransportResult>::value,
+              "transport result must remain trivially copyable");
+static_assert(sizeof(TransportResult) <= 32,
+              "transport result grew beyond a conservative fixed-memory cap");
+static_assert(std::is_standard_layout<SensorSettings>::value,
+              "sensor settings must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<SensorSettings>::value,
+              "sensor settings must remain trivially copyable");
+static_assert(sizeof(SensorSettings) <= 16,
+              "sensor settings must remain compact");
+static_assert(std::is_standard_layout<RawSample>::value,
+              "raw sample must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<RawSample>::value,
+              "raw sample must remain trivially copyable");
+static_assert(sizeof(RawSample) <= 32,
+              "raw sample grew beyond a conservative fixed-memory cap");
+static_assert(std::is_standard_layout<CompensatedSample>::value,
+              "compensated sample must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<CompensatedSample>::value,
+              "compensated sample must remain trivially copyable");
+static_assert(sizeof(CompensatedSample) <= 32,
+              "compensated sample grew beyond a conservative fixed-memory cap");
+static_assert(std::is_standard_layout<SampleEnvelope>::value,
+              "sample envelope must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<SampleEnvelope>::value,
+              "sample envelope must remain trivially copyable");
+static_assert(sizeof(SampleEnvelope) <= 96,
+              "sample envelope grew beyond a conservative fixed-memory cap");
+static_assert(std::is_standard_layout<JobPollResult>::value,
+              "job result must have a portable fixed layout");
+static_assert(sizeof(JobPollResult) <= 128,
+              "job result grew beyond a conservative fixed-memory cap");
 
 uint32_t fakeNowMs(void* user) {
   return static_cast<FakeBus*>(user)->nowMs;
@@ -223,6 +266,17 @@ Config makeConfig(FakeBus& bus) {
   cfg.offlineThreshold = 3;
   cfg.mode = Mode::FORCED;
   return cfg;
+}
+
+SensorSettings makeDesiredSettings() {
+  SensorSettings settings;
+  settings.osrsT = Oversampling::X2;
+  settings.osrsP = Oversampling::X4;
+  settings.osrsH = Oversampling::X8;
+  settings.filter = Filter::X16;
+  settings.standby = Standby::MS_20;
+  settings.mode = Mode::NORMAL;
+  return settings;
 }
 
 uint32_t totalBusCalls(const FakeBus& bus) {
@@ -424,6 +478,28 @@ void assertSampleEnvelopeEqual(const SampleEnvelope& expected,
   TEST_ASSERT_EQUAL_UINT32(expected.timestampMs, actual.timestampMs);
   TEST_ASSERT_EQUAL_UINT32(expected.sampleSequence, actual.sampleSequence);
   TEST_ASSERT_EQUAL_UINT32(expected.configGeneration, actual.configGeneration);
+}
+
+void assertSensorSettingsEqual(const SensorSettings& expected,
+                               const SensorSettings& actual) {
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.osrsT),
+                          static_cast<uint8_t>(actual.osrsT));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.osrsP),
+                          static_cast<uint8_t>(actual.osrsP));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.osrsH),
+                          static_cast<uint8_t>(actual.osrsH));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.filter),
+                          static_cast<uint8_t>(actual.filter));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.standby),
+                          static_cast<uint8_t>(actual.standby));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.mode),
+                          static_cast<uint8_t>(actual.mode));
+}
+
+void assertKnownEnumString(const char* actual, const char* unknown) {
+  TEST_ASSERT_NOT_NULL(actual);
+  TEST_ASSERT_NOT_NULL(unknown);
+  TEST_ASSERT_FALSE(std::strcmp(actual, unknown) == 0);
 }
 
 void assertCalibrationEqual(const Calibration& expected,
@@ -788,6 +864,340 @@ void test_partial_raw_read_preserves_committed_sample() {
   SampleEnvelope after{};
   TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
   assertSampleEnvelopeEqual(before, after);
+}
+
+void test_sensor_settings_defaults_and_exhaustive_validation_are_pure() {
+  const SensorSettings defaults{};
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
+                          static_cast<uint8_t>(defaults.osrsT));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
+                          static_cast<uint8_t>(defaults.osrsP));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
+                          static_cast<uint8_t>(defaults.osrsH));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Filter::OFF),
+                          static_cast<uint8_t>(defaults.filter));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Standby::MS_125),
+                          static_cast<uint8_t>(defaults.standby));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::FORCED),
+                          static_cast<uint8_t>(defaults.mode));
+  TEST_ASSERT_TRUE(validateSettings(defaults).ok());
+
+  for (uint16_t raw = 6; raw <= 0xFF; ++raw) {
+    SensorSettings settings = defaults;
+    settings.osrsT = static_cast<Oversampling>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+    settings = defaults;
+    settings.osrsP = static_cast<Oversampling>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+    settings = defaults;
+    settings.osrsH = static_cast<Oversampling>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+  }
+  for (uint16_t raw = 5; raw <= 0xFF; ++raw) {
+    SensorSettings settings = defaults;
+    settings.filter = static_cast<Filter>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+  }
+  for (uint16_t raw = 8; raw <= 0xFF; ++raw) {
+    SensorSettings settings = defaults;
+    settings.standby = static_cast<Standby>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+  }
+  for (uint16_t raw = 0; raw <= 0xFF; ++raw) {
+    if (raw == static_cast<uint8_t>(Mode::SLEEP) ||
+        raw == static_cast<uint8_t>(Mode::FORCED) ||
+        raw == static_cast<uint8_t>(Mode::NORMAL)) {
+      continue;
+    }
+    SensorSettings settings = defaults;
+    settings.mode = static_cast<Mode>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+  }
+
+  SensorSettings settings = defaults;
+  settings.osrsT = Oversampling::SKIP;
+  settings.osrsP = Oversampling::X1;
+  settings.osrsH = Oversampling::SKIP;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(
+                              validateSettings(settings).code));
+  settings.osrsP = Oversampling::SKIP;
+  settings.osrsH = Oversampling::X1;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(
+                              validateSettings(settings).code));
+  settings.osrsH = Oversampling::SKIP;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(
+                              validateSettings(settings).code));
+  settings.osrsT = Oversampling::X1;
+  TEST_ASSERT_TRUE(validateSettings(settings).ok());
+}
+
+void test_pure_measurement_time_helpers_match_bosch_boundaries() {
+  SensorSettings settings{};
+  TEST_ASSERT_EQUAL_UINT32(9300u, estimateMeasurementTimeUs(settings));
+  TEST_ASSERT_EQUAL_UINT32(11u, estimateMeasurementTimeMs(settings));
+
+  settings.osrsT = Oversampling::X1;
+  settings.osrsP = Oversampling::SKIP;
+  settings.osrsH = Oversampling::SKIP;
+  TEST_ASSERT_TRUE(validateSettings(settings).ok());
+  TEST_ASSERT_EQUAL_UINT32(3550u, estimateMeasurementTimeUs(settings));
+  TEST_ASSERT_EQUAL_UINT32(5u, estimateMeasurementTimeMs(settings));
+
+  settings.osrsT = Oversampling::X16;
+  settings.osrsP = Oversampling::X16;
+  settings.osrsH = Oversampling::X16;
+  TEST_ASSERT_EQUAL_UINT32(112800u, estimateMeasurementTimeUs(settings));
+  TEST_ASSERT_EQUAL_UINT32(114u, estimateMeasurementTimeMs(settings));
+
+  SensorSettings invalid = settings;
+  invalid.osrsT = static_cast<Oversampling>(0x80);
+  TEST_ASSERT_EQUAL_UINT32(0u, estimateMeasurementTimeUs(invalid));
+  TEST_ASSERT_EQUAL_UINT32(0u, estimateMeasurementTimeMs(invalid));
+
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.osrsT = settings.osrsT;
+  cfg.osrsP = settings.osrsP;
+  cfg.osrsH = settings.osrsH;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_EQUAL_UINT32(estimateMeasurementTimeUs(settings),
+                           dev.estimateMeasurementTimeUs());
+  TEST_ASSERT_EQUAL_UINT32(estimateMeasurementTimeMs(settings),
+                           dev.estimateMeasurementTimeMs());
+}
+
+void test_checked_fixed_point_unit_conversions_preserve_output_on_overflow() {
+  int32_t output = 123456;
+  TEST_ASSERT_TRUE(temperatureX100ToMilliC(0, output).ok());
+  TEST_ASSERT_EQUAL_INT32(0, output);
+  TEST_ASSERT_TRUE(temperatureX100ToMilliC(2534, output).ok());
+  TEST_ASSERT_EQUAL_INT32(25340, output);
+  TEST_ASSERT_TRUE(temperatureX100ToMilliC(-4000, output).ok());
+  TEST_ASSERT_EQUAL_INT32(-40000, output);
+  TEST_ASSERT_TRUE(temperatureX100ToMilliC(INT32_MAX / 10, output).ok());
+  TEST_ASSERT_EQUAL_INT32((INT32_MAX / 10) * 10, output);
+  output = 7654321;
+  Status st = temperatureX100ToMilliC(INT32_MAX / 10 + 1, output);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::COMPENSATION_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(7654321, output);
+  st = temperatureX100ToMilliC(INT32_MIN / 10 - 1, output);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::COMPENSATION_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(7654321, output);
+
+  TEST_ASSERT_TRUE(humidityX1024ToMilliPercent(0, output).ok());
+  TEST_ASSERT_EQUAL_INT32(0, output);
+  TEST_ASSERT_TRUE(humidityX1024ToMilliPercent(1024, output).ok());
+  TEST_ASSERT_EQUAL_INT32(1000, output);
+  TEST_ASSERT_TRUE(humidityX1024ToMilliPercent(102400, output).ok());
+  TEST_ASSERT_EQUAL_INT32(100000, output);
+  output = 7654321;
+  st = humidityX1024ToMilliPercent(102401u, output);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(7654321, output);
+  st = humidityX1024ToMilliPercent(UINT32_MAX, output);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(7654321, output);
+}
+
+void test_chip_id_helper_is_exhaustive() {
+  for (uint16_t value = 0; value <= 0xFF; ++value) {
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(value == cmd::CHIP_ID_BME280),
+        static_cast<uint8_t>(isBme280ChipId(static_cast<uint8_t>(value))));
+  }
+}
+
+void test_all_enum_to_string_overloads_cover_values_and_invalid_fallbacks() {
+  for (uint8_t value = static_cast<uint8_t>(Err::OK);
+       value <= static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER); ++value) {
+    assertKnownEnumString(toString(static_cast<Err>(value)), "UNKNOWN_ERROR");
+  }
+  for (uint8_t value = static_cast<uint8_t>(TransportErr::OK);
+       value <= static_cast<uint8_t>(TransportErr::OTHER); ++value) {
+    assertKnownEnumString(toString(static_cast<TransportErr>(value)),
+                          "UNKNOWN_TRANSPORT_ERROR");
+  }
+  for (uint8_t value = static_cast<uint8_t>(Oversampling::SKIP);
+       value <= static_cast<uint8_t>(Oversampling::X16); ++value) {
+    assertKnownEnumString(toString(static_cast<Oversampling>(value)),
+                          "UNKNOWN_OVERSAMPLING");
+  }
+  assertKnownEnumString(toString(Mode::SLEEP), "UNKNOWN_MODE");
+  assertKnownEnumString(toString(Mode::FORCED), "UNKNOWN_MODE");
+  assertKnownEnumString(toString(Mode::NORMAL), "UNKNOWN_MODE");
+  for (uint8_t value = static_cast<uint8_t>(Filter::OFF);
+       value <= static_cast<uint8_t>(Filter::X16); ++value) {
+    assertKnownEnumString(toString(static_cast<Filter>(value)),
+                          "UNKNOWN_FILTER");
+  }
+  for (uint8_t value = static_cast<uint8_t>(Standby::MS_0_5);
+       value <= static_cast<uint8_t>(Standby::MS_20); ++value) {
+    assertKnownEnumString(toString(static_cast<Standby>(value)),
+                          "UNKNOWN_STANDBY");
+  }
+  for (uint8_t value = static_cast<uint8_t>(DriverState::UNINIT);
+       value <= static_cast<uint8_t>(DriverState::OFFLINE); ++value) {
+    assertKnownEnumString(toString(static_cast<DriverState>(value)),
+                          "UNKNOWN_DRIVER_STATE");
+  }
+  for (uint8_t value = static_cast<uint8_t>(JobKind::NONE);
+       value <= static_cast<uint8_t>(JobKind::SOFT_RESET); ++value) {
+    assertKnownEnumString(toString(static_cast<JobKind>(value)),
+                          "UNKNOWN_JOB_KIND");
+  }
+  for (uint8_t value = static_cast<uint8_t>(JobState::IDLE);
+       value <= static_cast<uint8_t>(JobState::TIMED_OUT); ++value) {
+    assertKnownEnumString(toString(static_cast<JobState>(value)),
+                          "UNKNOWN_JOB_STATE");
+  }
+  for (uint8_t value = static_cast<uint8_t>(CancelReason::OWNER_REQUEST);
+       value <= static_cast<uint8_t>(CancelReason::DEADLINE_EXPIRED); ++value) {
+    assertKnownEnumString(toString(static_cast<CancelReason>(value)),
+                          "UNKNOWN_CANCEL_REASON");
+  }
+  for (uint8_t value = static_cast<uint8_t>(ConversionState::IDLE);
+       value <= static_cast<uint8_t>(
+                    ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR); ++value) {
+    assertKnownEnumString(toString(static_cast<ConversionState>(value)),
+                          "UNKNOWN_CONVERSION_STATE");
+  }
+  for (int32_t value = static_cast<int32_t>(BusyReason::NONE);
+       value <= static_cast<int32_t>(BusyReason::JOB_STATE_MACHINE_STALLED);
+       ++value) {
+    assertKnownEnumString(toString(static_cast<BusyReason>(value)),
+                          "UNKNOWN_BUSY_REASON");
+  }
+  for (uint8_t value = static_cast<uint8_t>(JobPhase::NONE);
+       value <= static_cast<uint8_t>(JobPhase::COMPLETE); ++value) {
+    assertKnownEnumString(toString(static_cast<JobPhase>(value)),
+                          "UNKNOWN_JOB_PHASE");
+  }
+  for (uint8_t value = static_cast<uint8_t>(SampleFreshness::NONE);
+       value <= static_cast<uint8_t>(
+                    SampleFreshness::STALE_AFTER_CONFIG_CHANGE); ++value) {
+    assertKnownEnumString(toString(static_cast<SampleFreshness>(value)),
+                          "UNKNOWN_SAMPLE_FRESHNESS");
+  }
+  for (uint8_t value = static_cast<uint8_t>(ConfigSyncState::SYNCHRONIZED);
+       value <= static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED); ++value) {
+    assertKnownEnumString(toString(static_cast<ConfigSyncState>(value)),
+                          "UNKNOWN_CONFIG_SYNC_STATE");
+  }
+  for (uint8_t value = static_cast<uint8_t>(CalibrationState::INVALID);
+       value <= static_cast<uint8_t>(CalibrationState::VALID); ++value) {
+    assertKnownEnumString(toString(static_cast<CalibrationState>(value)),
+                          "UNKNOWN_CALIBRATION_STATE");
+  }
+
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_ERROR", toString(static_cast<Err>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_TRANSPORT_ERROR",
+                           toString(static_cast<TransportErr>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_OVERSAMPLING",
+                           toString(static_cast<Oversampling>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_MODE", toString(static_cast<Mode>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_FILTER",
+                           toString(static_cast<Filter>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_STANDBY",
+                           toString(static_cast<Standby>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_DRIVER_STATE",
+                           toString(static_cast<DriverState>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_JOB_KIND",
+                           toString(static_cast<JobKind>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_JOB_STATE",
+                           toString(static_cast<JobState>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_CANCEL_REASON",
+                           toString(static_cast<CancelReason>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_CONVERSION_STATE",
+                           toString(static_cast<ConversionState>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_BUSY_REASON",
+                           toString(static_cast<BusyReason>(-1)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_JOB_PHASE",
+                           toString(static_cast<JobPhase>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_SAMPLE_FRESHNESS",
+                           toString(static_cast<SampleFreshness>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_CONFIG_SYNC_STATE",
+                           toString(static_cast<ConfigSyncState>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_CALIBRATION_STATE",
+                           toString(static_cast<CalibrationState>(0xFF)));
+}
+
+void test_busy_statuses_use_typed_nonzero_reasons() {
+  const BusyReason reasons[] = {
+      BusyReason::STAGED_JOB_ACTIVE,
+      BusyReason::TERMINAL_RESULT_PENDING,
+      BusyReason::MEASUREMENT_ACTIVE,
+      BusyReason::DEVICE_MEASURING,
+      BusyReason::NVM_UPDATE,
+      BusyReason::INVALID_JOB_STATE,
+      BusyReason::JOB_STATE_MACHINE_STALLED,
+  };
+  for (size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); ++i) {
+    TEST_ASSERT_NOT_EQUAL(0, static_cast<int32_t>(reasons[i]));
+    for (size_t j = i + 1; j < sizeof(reasons) / sizeof(reasons[0]); ++j) {
+      TEST_ASSERT_NOT_EQUAL(static_cast<int32_t>(reasons[i]),
+                            static_cast<int32_t>(reasons[j]));
+    }
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    TEST_ASSERT_TRUE(dev.startApplyConfigJob().inProgress());
+    uint8_t status = 0;
+    assertBusyReason(dev.readStatus(status), BusyReason::STAGED_JOB_ACTIVE);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(
+                                dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+    assertBusyReason(dev.startForcedMeasurementJob(),
+                     BusyReason::TERMINAL_RESULT_PENDING);
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+    assertBusyReason(dev.requestMeasurement(), BusyReason::MEASUREMENT_ACTIVE);
+    assertBusyReason(dev.startForcedMeasurementJob(),
+                     BusyReason::MEASUREMENT_ACTIVE);
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_MEASURING;
+    assertBusyReason(dev.setFilter(Filter::X2),
+                     BusyReason::DEVICE_MEASURING);
+  }
+
+  {
+    FakeBus bus;
+    bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
+    BME280::BME280 dev;
+    assertBusyReason(dev.begin(makeConfig(bus)), BusyReason::NVM_UPDATE);
+  }
 }
 
 void test_config_defaults() {
@@ -1342,6 +1752,265 @@ void test_apply_config_job_checks_not_measuring_after_sleep_write() {
                           static_cast<uint8_t>(result.state));
   TEST_ASSERT_TRUE(result.status.ok());
   TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+}
+
+void test_apply_settings_job_validation_and_start_are_zero_callback() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const SensorSettings prior = dev.sensorSettings();
+
+  SensorSettings invalid = makeDesiredSettings();
+  invalid.osrsT = static_cast<Oversampling>(0x80);
+  uint32_t callsBefore = totalBusCalls(bus);
+  Status st = dev.startApplySettingsJob(invalid);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::IDLE),
+                          static_cast<uint8_t>(dev.jobState()));
+  assertSensorSettingsEqual(prior, dev.sensorSettings());
+
+  const SensorSettings desired = makeDesiredSettings();
+  callsBefore = totalBusCalls(bus);
+  st = dev.startApplySettingsJob(desired);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::APPLY_CONFIG),
+                          static_cast<uint8_t>(dev.jobKind()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::APPLY_WAIT_IDLE),
+                          static_cast<uint8_t>(dev.jobPhase()));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::UPDATE_IN_PROGRESS),
+      static_cast<uint8_t>(dev.configSyncState()));
+  assertSensorSettingsEqual(desired, dev.sensorSettings());
+
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                          static_cast<uint8_t>(
+                              dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+  (void)pollWithBudget(dev, bus, 0);
+  assertSensorSettingsEqual(prior, dev.sensorSettings());
+}
+
+void test_apply_settings_job_applies_order_and_advances_generation_once() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+  SampleEnvelope oldSample{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(oldSample).ok());
+  const uint32_t generationBefore = dev.configGeneration();
+  const uint8_t writeLogStart = bus.writeLogLen;
+  const uint32_t callsBeforeStart = totalBusCalls(bus);
+  const SensorSettings desired = makeDesiredSettings();
+
+  TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+  const uint32_t jobId = dev.jobId();
+  const JobPollResult result = pollUntilTerminal(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT32(jobId, result.jobId);
+  TEST_ASSERT_TRUE(result.status.ok());
+  TEST_ASSERT_EQUAL_UINT32(generationBefore + 1u, dev.configGeneration());
+  assertSensorSettingsEqual(desired, dev.sensorSettings());
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::SYNCHRONIZED),
+      static_cast<uint8_t>(dev.configSyncState()));
+
+  TEST_ASSERT_EQUAL_UINT8(writeLogStart + 4u, bus.writeLogLen);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CTRL_MEAS,
+                         bus.writeRegLog[writeLogStart]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG,
+                         bus.writeRegLog[writeLogStart + 1u]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CTRL_HUM,
+                         bus.writeRegLog[writeLogStart + 2u]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CTRL_MEAS,
+                         bus.writeRegLog[writeLogStart + 3u]);
+  const uint8_t expectedSleep = static_cast<uint8_t>(
+      (static_cast<uint8_t>(desired.osrsT) << cmd::BIT_CTRL_MEAS_OSRS_T) |
+      (static_cast<uint8_t>(desired.osrsP) << cmd::BIT_CTRL_MEAS_OSRS_P));
+  const uint8_t expectedConfig = static_cast<uint8_t>(
+      (static_cast<uint8_t>(desired.standby) << cmd::BIT_CONFIG_T_SB) |
+      (static_cast<uint8_t>(desired.filter) << cmd::BIT_CONFIG_FILTER));
+  const uint8_t expectedHum = static_cast<uint8_t>(
+      static_cast<uint8_t>(desired.osrsH) << cmd::BIT_CTRL_HUM_OSRS_H);
+  const uint8_t expectedFinal = static_cast<uint8_t>(
+      expectedSleep |
+      (static_cast<uint8_t>(desired.mode) << cmd::BIT_CTRL_MEAS_MODE));
+  TEST_ASSERT_EQUAL_HEX8(expectedSleep,
+                         bus.writeValueLog[writeLogStart]);
+  TEST_ASSERT_EQUAL_HEX8(expectedConfig,
+                         bus.writeValueLog[writeLogStart + 1u]);
+  TEST_ASSERT_EQUAL_HEX8(expectedHum,
+                         bus.writeValueLog[writeLogStart + 2u]);
+  TEST_ASSERT_EQUAL_HEX8(expectedFinal,
+                         bus.writeValueLog[writeLogStart + 3u]);
+
+  SampleEnvelope retained{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+  assertSampleEnvelopeEqual(oldSample, retained);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_CHANGE),
+      static_cast<uint8_t>(dev.sampleFreshness()));
+  const JobPollResult idle = pollWithBudget(dev, bus, 0);
+  TEST_ASSERT_EQUAL_UINT32(0u, idle.jobId);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::IDLE),
+                          static_cast<uint8_t>(idle.state));
+}
+
+void test_apply_settings_cancel_and_failure_before_write_restore_prior_state() {
+  const SensorSettings desired = makeDesiredSettings();
+
+  {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    const SensorSettings prior = dev.sensorSettings();
+    const ConfigSyncState priorSync = dev.configSyncState();
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint32_t callsBefore = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+    const uint32_t jobId = dev.jobId();
+    TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(
+                                dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+    TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+    assertSensorSettingsEqual(prior, dev.sensorSettings());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(priorSync),
+                            static_cast<uint8_t>(dev.configSyncState()));
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    const JobPollResult terminal = pollWithBudget(dev, bus, 0);
+    TEST_ASSERT_EQUAL_UINT32(jobId, terminal.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::CANCELLED),
+                            static_cast<uint8_t>(terminal.state));
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
+
+  {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    const SensorSettings prior = dev.sensorSettings();
+    const ConfigSyncState priorSync = dev.configSyncState();
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+    const uint32_t jobId = dev.jobId();
+    bus.failReadRegEnabled = true;
+    bus.failReadReg = cmd::REG_STATUS;
+    bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -210);
+    const JobPollResult failed = pollWithBudget(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                            static_cast<uint8_t>(failed.state));
+    TEST_ASSERT_EQUAL_UINT32(jobId, failed.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                            static_cast<uint8_t>(failed.status.code));
+    TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+    assertSensorSettingsEqual(prior, dev.sensorSettings());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(priorSync),
+                            static_cast<uint8_t>(dev.configSyncState()));
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
+}
+
+void test_apply_settings_cancel_after_each_exposed_write_keeps_desired_dirty() {
+  const SensorSettings desired = makeDesiredSettings();
+  const JobPhase phasesAfterWrite[] = {
+      JobPhase::APPLY_WAIT_AFTER_SLEEP,
+      JobPhase::APPLY_CTRL_HUM,
+      JobPhase::APPLY_CTRL_MEAS,
+  };
+
+  for (size_t i = 0; i < sizeof(phasesAfterWrite) /
+                              sizeof(phasesAfterWrite[0]); ++i) {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+    const uint32_t jobId = dev.jobId();
+    (void)pollUntilPhase(dev, bus, phasesAfterWrite[i]);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore + static_cast<uint32_t>(i) + 1u,
+                             bus.writeCalls);
+    const uint32_t callsBeforeCancel = totalBusCalls(bus);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(
+                                dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeCancel, totalBusCalls(bus));
+    assertSensorSettingsEqual(desired, dev.sensorSettings());
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+        static_cast<uint8_t>(dev.configSyncState()));
+    TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    const JobPollResult terminal = pollWithBudget(dev, bus, 0);
+    TEST_ASSERT_EQUAL_UINT32(jobId, terminal.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::CANCELLED),
+                            static_cast<uint8_t>(terminal.state));
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
+}
+
+void test_apply_settings_failure_at_each_write_keeps_desired_dirty() {
+  const SensorSettings desired = makeDesiredSettings();
+  for (uint32_t failingWrite = 1; failingWrite <= 4; ++failingWrite) {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+    const uint32_t jobId = dev.jobId();
+    const int32_t detail = -220 - static_cast<int32_t>(failingWrite);
+    bus.failWriteOnCall = writesBefore + failingWrite;
+    bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, detail);
+    const JobPollResult failed = pollUntilTerminal(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                            static_cast<uint8_t>(failed.state));
+    TEST_ASSERT_EQUAL_UINT32(jobId, failed.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                            static_cast<uint8_t>(failed.status.code));
+    TEST_ASSERT_EQUAL_INT32(detail, failed.status.detail);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore + failingWrite, bus.writeCalls);
+    assertSensorSettingsEqual(desired, dev.sensorSettings());
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+        static_cast<uint8_t>(dev.configSyncState()));
+    TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+    TEST_ASSERT_EQUAL_INT32(detail, dev.hardwareConfigDirtyError().detail);
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
 }
 
 void test_init_job_success_clears_existing_dirty_state() {
@@ -3335,12 +4004,27 @@ void test_read_calibration_raw_uses_register_bytes_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   CalibrationRaw raw{};
+  const uint32_t readsBefore = bus.readCalls;
+  const uint8_t readLogStart = bus.readLogLen;
   TEST_ASSERT_TRUE(dev.readCalibrationRaw(raw).ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 2u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT8(readLogStart + 2u, bus.readLogLen);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CALIB_TP_START,
+                         bus.readRegLog[readLogStart]);
+  TEST_ASSERT_EQUAL_UINT32(
+      cmd::REG_CALIB_TP_LEN,
+      static_cast<uint32_t>(bus.readLengthLog[readLogStart]));
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CALIB_H_START,
+                         bus.readRegLog[readLogStart + 1u]);
+  TEST_ASSERT_EQUAL_UINT32(
+      cmd::REG_CALIB_H_LEN,
+      static_cast<uint32_t>(bus.readLengthLog[readLogStart + 1u]));
   TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_T1_LSB],
                           raw.tp[cmd::REG_DIG_T1_LSB - cmd::REG_CALIB_TP_START]);
   TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_P9_MSB],
                           raw.tp[cmd::REG_DIG_P9_MSB - cmd::REG_CALIB_TP_START]);
-  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H1], raw.h1);
+  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H1],
+                          raw.tp[cmd::REG_DIG_H1 - cmd::REG_CALIB_TP_START]);
   TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H4_MSB],
                           raw.h[cmd::REG_DIG_H4_MSB - cmd::REG_CALIB_H_START]);
   TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H4_H5],
@@ -3351,10 +4035,12 @@ void test_read_calibration_raw_uses_register_bytes_and_preserves_error() {
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CALIB_H_START;
   bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -31);
+  const uint32_t readsBeforeFailure = bus.readCalls;
   Status st = dev.readCalibrationRaw(raw);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_INT32(-31, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(readsBeforeFailure + 2u, bus.readCalls);
 }
 
 void test_raw_burst_reconstructs_20_and_16_bit_samples() {
@@ -4683,6 +5369,12 @@ int main() {
   RUN_TEST(test_every_transport_error_maps_detail_and_nack_remap_is_presence_only);
   RUN_TEST(test_mutating_short_transfer_marks_dirty_or_trigger_ambiguous);
   RUN_TEST(test_partial_raw_read_preserves_committed_sample);
+  RUN_TEST(test_sensor_settings_defaults_and_exhaustive_validation_are_pure);
+  RUN_TEST(test_pure_measurement_time_helpers_match_bosch_boundaries);
+  RUN_TEST(test_checked_fixed_point_unit_conversions_preserve_output_on_overflow);
+  RUN_TEST(test_chip_id_helper_is_exhaustive);
+  RUN_TEST(test_all_enum_to_string_overloads_cover_values_and_invalid_fallbacks);
+  RUN_TEST(test_busy_statuses_use_typed_nonzero_reasons);
   RUN_TEST(test_config_defaults);
   RUN_TEST(test_driver_is_not_copyable_or_movable);
   RUN_TEST(test_get_settings_snapshot);
@@ -4709,6 +5401,11 @@ int main() {
   RUN_TEST(test_init_job_stuck_nvm_no_spin_when_time_static);
   RUN_TEST(test_apply_config_job_waits_for_not_measuring_before_writes);
   RUN_TEST(test_apply_config_job_checks_not_measuring_after_sleep_write);
+  RUN_TEST(test_apply_settings_job_validation_and_start_are_zero_callback);
+  RUN_TEST(test_apply_settings_job_applies_order_and_advances_generation_once);
+  RUN_TEST(test_apply_settings_cancel_and_failure_before_write_restore_prior_state);
+  RUN_TEST(test_apply_settings_cancel_after_each_exposed_write_keeps_desired_dirty);
+  RUN_TEST(test_apply_settings_failure_at_each_write_keeps_desired_dirty);
   RUN_TEST(test_init_job_success_clears_existing_dirty_state);
   RUN_TEST(test_recovery_job_success_clears_existing_dirty_state);
   RUN_TEST(test_soft_reset_job_failure_after_reset_marks_dirty);

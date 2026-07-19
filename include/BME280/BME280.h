@@ -24,6 +24,17 @@ enum class DriverState : uint8_t {
   OFFLINE    ///< Diagnostic: consecutiveFailures >= offlineThreshold; does not block I2C
 };
 
+/// Return the canonical string for a driver health state.
+constexpr const char* toString(DriverState value) {
+  switch (value) {
+    case DriverState::UNINIT: return "UNINIT";
+    case DriverState::READY: return "READY";
+    case DriverState::DEGRADED: return "DEGRADED";
+    case DriverState::OFFLINE: return "OFFLINE";
+    default: return "UNKNOWN_DRIVER_STATE";
+  }
+}
+
 /// Active staged job type.
 enum class JobKind : uint8_t {
   NONE,                ///< No staged job is active
@@ -34,6 +45,19 @@ enum class JobKind : uint8_t {
   RECOVERY = RESYNC,   ///< Compatibility name for RESYNC
   SOFT_RESET           ///< Explicit reset and resynchronization job
 };
+
+/// Return the canonical string for a staged job kind.
+constexpr const char* toString(JobKind value) {
+  switch (value) {
+    case JobKind::NONE: return "NONE";
+    case JobKind::INIT: return "INIT";
+    case JobKind::FORCED_MEASUREMENT: return "FORCED_MEASUREMENT";
+    case JobKind::APPLY_CONFIG: return "APPLY_CONFIG";
+    case JobKind::RESYNC: return "RESYNC";
+    case JobKind::SOFT_RESET: return "SOFT_RESET";
+    default: return "UNKNOWN_JOB_KIND";
+  }
+}
 
 /// State of the staged job runner.
 enum class JobState : uint8_t {
@@ -46,11 +70,34 @@ enum class JobState : uint8_t {
   TIMED_OUT  ///< Job was cancelled because its owner deadline expired
 };
 
+/// Return the canonical string for a staged job state.
+constexpr const char* toString(JobState value) {
+  switch (value) {
+    case JobState::IDLE: return "IDLE";
+    case JobState::RUNNING: return "RUNNING";
+    case JobState::WAITING: return "WAITING";
+    case JobState::DONE: return "DONE";
+    case JobState::FAILED: return "FAILED";
+    case JobState::CANCELLED: return "CANCELLED";
+    case JobState::TIMED_OUT: return "TIMED_OUT";
+    default: return "UNKNOWN_JOB_STATE";
+  }
+}
+
 /// Reason supplied by the owner when cancelling a staged job.
 enum class CancelReason : uint8_t {
   OWNER_REQUEST,   ///< Owner no longer needs the operation
   DEADLINE_EXPIRED ///< Owner's external deadline expired
 };
+
+/// Return the canonical string for a cancellation reason.
+constexpr const char* toString(CancelReason value) {
+  switch (value) {
+    case CancelReason::OWNER_REQUEST: return "OWNER_REQUEST";
+    case CancelReason::DEADLINE_EXPIRED: return "DEADLINE_EXPIRED";
+    default: return "UNKNOWN_CANCEL_REASON";
+  }
+}
 
 /// Knowledge of a forced-mode conversion that may be running in hardware.
 enum class ConversionState : uint8_t {
@@ -59,12 +106,43 @@ enum class ConversionState : uint8_t {
   UNKNOWN_AFTER_TRIGGER_ERROR  ///< A trigger/cancellation error left hardware ambiguous
 };
 
+/// Return the canonical string for forced-conversion knowledge.
+constexpr const char* toString(ConversionState value) {
+  switch (value) {
+    case ConversionState::IDLE: return "IDLE";
+    case ConversionState::IN_PROGRESS: return "IN_PROGRESS";
+    case ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR:
+      return "UNKNOWN_AFTER_TRIGGER_ERROR";
+    default: return "UNKNOWN_CONVERSION_STATE";
+  }
+}
+
 /// Reason encoded in Status::detail when a job start or hardware operation is busy.
 enum class BusyReason : int32_t {
   NONE = 0,
   STAGED_JOB_ACTIVE = 1,      ///< A staged job currently owns hardware access
-  TERMINAL_RESULT_PENDING = 2 ///< A cancellation result must be retrieved first
+  TERMINAL_RESULT_PENDING = 2, ///< A cancellation result must be retrieved first
+  MEASUREMENT_ACTIVE = 3,      ///< A measurement request is already active
+  DEVICE_MEASURING = 4,        ///< Hardware is measuring during configuration
+  NVM_UPDATE = 5,              ///< Hardware NVM copy is still active
+  INVALID_JOB_STATE = 6,       ///< Staged runner encountered an invalid phase
+  JOB_STATE_MACHINE_STALLED = 7 ///< Local transition guard was exhausted
 };
+
+/// Return the canonical string for a BUSY detail reason.
+constexpr const char* toString(BusyReason value) {
+  switch (value) {
+    case BusyReason::NONE: return "NONE";
+    case BusyReason::STAGED_JOB_ACTIVE: return "STAGED_JOB_ACTIVE";
+    case BusyReason::TERMINAL_RESULT_PENDING: return "TERMINAL_RESULT_PENDING";
+    case BusyReason::MEASUREMENT_ACTIVE: return "MEASUREMENT_ACTIVE";
+    case BusyReason::DEVICE_MEASURING: return "DEVICE_MEASURING";
+    case BusyReason::NVM_UPDATE: return "NVM_UPDATE";
+    case BusyReason::INVALID_JOB_STATE: return "INVALID_JOB_STATE";
+    case BusyReason::JOB_STATE_MACHINE_STALLED: return "JOB_STATE_MACHINE_STALLED";
+    default: return "UNKNOWN_BUSY_REASON";
+  }
+}
 
 /// Current phase of the fixed-memory staged state machine.
 enum class JobPhase : uint8_t {
@@ -92,6 +170,36 @@ enum class JobPhase : uint8_t {
   RESYNC_NVM_START,        ///< Resynchronization NVM deadline setup
   COMPLETE                 ///< Local-only successful terminal transition
 };
+
+/// Return the canonical string for a staged job phase.
+constexpr const char* toString(JobPhase value) {
+  switch (value) {
+    case JobPhase::NONE: return "NONE";
+    case JobPhase::INIT_READ_CHIP_ID: return "INIT_READ_CHIP_ID";
+    case JobPhase::INIT_NVM_START: return "INIT_NVM_START";
+    case JobPhase::NVM_POLL: return "NVM_POLL";
+    case JobPhase::CALIB_TP: return "CALIB_TP";
+    case JobPhase::CALIB_H: return "CALIB_H";
+    case JobPhase::VALIDATE_CALIBRATION: return "VALIDATE_CALIBRATION";
+    case JobPhase::APPLY_WAIT_IDLE: return "APPLY_WAIT_IDLE";
+    case JobPhase::APPLY_CTRL_MEAS_SLEEP: return "APPLY_CTRL_MEAS_SLEEP";
+    case JobPhase::APPLY_WAIT_AFTER_SLEEP: return "APPLY_WAIT_AFTER_SLEEP";
+    case JobPhase::APPLY_CONFIG: return "APPLY_CONFIG";
+    case JobPhase::APPLY_CTRL_HUM: return "APPLY_CTRL_HUM";
+    case JobPhase::APPLY_CTRL_MEAS: return "APPLY_CTRL_MEAS";
+    case JobPhase::FORCE_RECONCILE_STATUS: return "FORCE_RECONCILE_STATUS";
+    case JobPhase::FORCE_TRIGGER: return "FORCE_TRIGGER";
+    case JobPhase::FORCE_WAIT_TIME: return "FORCE_WAIT_TIME";
+    case JobPhase::FORCE_READ_STATUS: return "FORCE_READ_STATUS";
+    case JobPhase::FORCE_READ_DATA: return "FORCE_READ_DATA";
+    case JobPhase::FORCE_COMPENSATE: return "FORCE_COMPENSATE";
+    case JobPhase::SOFT_RESET_WRITE: return "SOFT_RESET_WRITE";
+    case JobPhase::RESYNC_READ_CHIP_ID: return "RESYNC_READ_CHIP_ID";
+    case JobPhase::RESYNC_NVM_START: return "RESYNC_NVM_START";
+    case JobPhase::COMPLETE: return "COMPLETE";
+    default: return "UNKNOWN_JOB_PHASE";
+  }
+}
 
 /// Result returned by pollJob().
 struct JobPollResult {
@@ -164,8 +272,8 @@ struct Calibration {
 
 /// Raw calibration register blocks
 struct CalibrationRaw {
-  uint8_t tp[cmd::REG_CALIB_TP_LEN] = {}; ///< Raw 0x88..0xA1 block; last byte is dig_H1
-  uint8_t h1 = 0;                         ///< Raw 0xA1 humidity byte, duplicated for clarity
+  /// Raw 0x88..0xA1 burst; tp[25] is register 0xA1 / dig_H1.
+  uint8_t tp[cmd::REG_CALIB_TP_LEN] = {};
   uint8_t h[cmd::REG_CALIB_H_LEN] = {};   ///< Raw 0xE1..0xE7 humidity block
 };
 
@@ -178,6 +286,20 @@ enum class SampleFreshness : uint8_t {
   STALE_AFTER_CONFIG_CHANGE ///< Cached sample belongs to an older configuration generation
 };
 
+/// Return the canonical string for cached-sample freshness.
+constexpr const char* toString(SampleFreshness value) {
+  switch (value) {
+    case SampleFreshness::NONE: return "NONE";
+    case SampleFreshness::FRESH: return "FRESH";
+    case SampleFreshness::STALE_AFTER_ERROR: return "STALE_AFTER_ERROR";
+    case SampleFreshness::STALE_AFTER_CONFIG_DIRTY:
+      return "STALE_AFTER_CONFIG_DIRTY";
+    case SampleFreshness::STALE_AFTER_CONFIG_CHANGE:
+      return "STALE_AFTER_CONFIG_CHANGE";
+    default: return "UNKNOWN_SAMPLE_FRESHNESS";
+  }
+}
+
 /// Synchronization state between cached settings and device registers.
 enum class ConfigSyncState : uint8_t {
   SYNCHRONIZED,       ///< Cached settings are fully applied to the device
@@ -185,11 +307,30 @@ enum class ConfigSyncState : uint8_t {
   RESYNC_REQUIRED     ///< Device settings may differ from the cached settings
 };
 
+/// Return the canonical string for cached/hardware synchronization state.
+constexpr const char* toString(ConfigSyncState value) {
+  switch (value) {
+    case ConfigSyncState::SYNCHRONIZED: return "SYNCHRONIZED";
+    case ConfigSyncState::UPDATE_IN_PROGRESS: return "UPDATE_IN_PROGRESS";
+    case ConfigSyncState::RESYNC_REQUIRED: return "RESYNC_REQUIRED";
+    default: return "UNKNOWN_CONFIG_SYNC_STATE";
+  }
+}
+
 /// Validity of the cached device-specific compensation coefficients.
 enum class CalibrationState : uint8_t {
   INVALID, ///< Calibration must be reloaded before measurement
   VALID    ///< Calibration is valid for the configured measurement channels
 };
+
+/// Return the canonical string for cached calibration validity.
+constexpr const char* toString(CalibrationState value) {
+  switch (value) {
+    case CalibrationState::INVALID: return "INVALID";
+    case CalibrationState::VALID: return "VALID";
+    default: return "UNKNOWN_CALIBRATION_STATE";
+  }
+}
 
 /// Atomically committed sample and its provenance.
 struct SampleEnvelope {
@@ -317,6 +458,12 @@ public:
   /// @return Const reference to the active driver configuration copy
   const Config& getConfig() const { return _config; }
 
+  /// Return the compact cached sensor settings without accessing I2C.
+  /// During startApplySettingsJob(), this reports the staged desired settings;
+  /// an untouched failed/cancelled apply restores the prior snapshot.
+  /// @return Current cached sensor settings by value
+  SensorSettings sensorSettings() const;
+
   // =========================================================================
   // Staged I2C Jobs
   // =========================================================================
@@ -338,6 +485,15 @@ public:
   /// completion clears dirty config state.
   /// @return IN_PROGRESS when accepted, error otherwise
   Status startApplyConfigJob();
+
+  /// Validate and stage a desired settings snapshot using the existing
+  /// APPLY_CONFIG state machine. This start performs no transport callback.
+  /// Before the first mutating/ambiguous write, failure or cancellation restores
+  /// prior cached settings and sync state. Afterwards desired settings remain
+  /// cached with RESYNC_REQUIRED until a successful full apply/resync.
+  /// @param settings Desired sensor settings
+  /// @return IN_PROGRESS when accepted, validation/precondition error otherwise
+  Status startApplySettingsJob(const SensorSettings& settings);
 
   /// Start a staged non-reset resynchronization job. The job verifies identity
   /// and NVM readiness, reloads calibration, and reapplies cached settings.
@@ -592,7 +748,8 @@ public:
   /// @return Status::Ok(), or BUSY while a staged job is active
   Status invalidateDeviceState();
 
-  /// Read raw calibration registers from the device.
+  /// Read raw calibration registers using exactly two bounded bursts:
+  /// 0x88..0xA1 and 0xE1..0xE7. Transport errors are preserved.
   /// @param[out] out Raw register blocks
   /// @return Status::Ok() on success, error otherwise
   Status readCalibrationRaw(CalibrationRaw& out);
@@ -774,8 +931,11 @@ public:
   // Timing
   // =========================================================================
 
-  /// Estimate max measurement time based on current oversampling
-  /// Returns time in milliseconds
+  /// Estimate maximum measurement time for cached settings in microseconds.
+  /// @return Exact Bosch maximum without the scheduler margin
+  uint32_t estimateMeasurementTimeUs() const;
+
+  /// Estimate max measurement time based on current oversampling.
   /// @return Estimated measurement duration in milliseconds
   uint32_t estimateMeasurementTimeMs() const;
 
@@ -838,6 +998,7 @@ private:
 
   void _resetRuntime(bool preserveHistory = true);
   Status _prepareBeginConfig(const Config& config);
+  void _setSensorSettings(const SensorSettings& settings);
   bool _jobActive() const;
   Status _jobStartAdmission() const;
   Status _hardwareOperationAdmission() const;
@@ -907,6 +1068,8 @@ private:
   bool _jobHardwareConfigTouched = false;
   bool _jobResetMayHaveReached = false;
   bool _jobForcedTriggerMayHaveReached = false;
+  bool _jobSettingsStaged = false;
+  SensorSettings _jobPriorSettings = {};
   Calibration _jobCalibration = {};
   bool _jobHumidityCalibrationValid = false;
   ConfigSyncState _jobPriorConfigSyncState = ConfigSyncState::RESYNC_REQUIRED;

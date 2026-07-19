@@ -72,7 +72,6 @@ uint32_t pendingStartMs = 0;
 int stressRemaining = 0;
 StressStats stressStats;
 uint8_t activeAddress = 0x76;
-uint8_t lastJobInstructions = 0;
 static constexpr uint32_t STRESS_PROGRESS_UPDATES = 10U;
 static constexpr size_t CLI_INPUT_MAX_LEN = 127U;
 static constexpr uint8_t JOB_CLI_DEFAULT_BUDGET = 1U;
@@ -103,27 +102,7 @@ BME280::Config makeDefaultConfig() {
 }
 
 const char* errToStr(BME280::Err err) {
-  using namespace BME280;
-  switch (err) {
-    case Err::OK:                  return "OK";
-    case Err::NOT_INITIALIZED:     return "NOT_INITIALIZED";
-    case Err::INVALID_CONFIG:      return "INVALID_CONFIG";
-    case Err::I2C_ERROR:           return "I2C_ERROR";
-    case Err::TIMEOUT:             return "TIMEOUT";
-    case Err::INVALID_PARAM:       return "INVALID_PARAM";
-    case Err::DEVICE_NOT_FOUND:    return "DEVICE_NOT_FOUND";
-    case Err::CHIP_ID_MISMATCH:    return "CHIP_ID_MISMATCH";
-    case Err::CALIBRATION_INVALID: return "CALIBRATION_INVALID";
-    case Err::MEASUREMENT_NOT_READY: return "MEASUREMENT_NOT_READY";
-    case Err::COMPENSATION_ERROR:  return "COMPENSATION_ERROR";
-    case Err::BUSY:                return "BUSY";
-    case Err::IN_PROGRESS:         return "IN_PROGRESS";
-    case Err::I2C_NACK_ADDR:       return "I2C_NACK_ADDR";
-    case Err::I2C_NACK_DATA:       return "I2C_NACK_DATA";
-    case Err::I2C_TIMEOUT:         return "I2C_TIMEOUT";
-    case Err::I2C_BUS:             return "I2C_BUS";
-    default:                       return "UNKNOWN";
-  }
+  return BME280::toString(err);
 }
 
 const char* stateToStr(BME280::DriverState st) {
@@ -134,30 +113,6 @@ const char* stateToStr(BME280::DriverState st) {
     case DriverState::DEGRADED: return "DEGRADED";
     case DriverState::OFFLINE:  return "OFFLINE";
     default:                    return "UNKNOWN";
-  }
-}
-
-const char* jobKindToStr(BME280::JobKind kind) {
-  using namespace BME280;
-  switch (kind) {
-    case JobKind::NONE: return "NONE";
-    case JobKind::INIT: return "INIT";
-    case JobKind::FORCED_MEASUREMENT: return "FORCED_MEASUREMENT";
-    case JobKind::APPLY_CONFIG: return "APPLY_CONFIG";
-    case JobKind::RECOVERY: return "RECOVERY";
-    default: return "UNKNOWN";
-  }
-}
-
-const char* jobStateToStr(BME280::JobState state) {
-  using namespace BME280;
-  switch (state) {
-    case JobState::IDLE: return "IDLE";
-    case JobState::RUNNING: return "RUNNING";
-    case JobState::WAITING: return "WAITING";
-    case JobState::DONE: return "DONE";
-    case JobState::FAILED: return "FAILED";
-    default: return "UNKNOWN";
   }
 }
 
@@ -536,7 +491,7 @@ void printCalibrationRaw() {
     }
   }
   Serial.println();
-  Serial.printf("  H1: %02X\n", raw.h1);
+  Serial.printf("  H1: %02X\n", raw.tp[BME280::cmd::REG_CALIB_TP_LEN - 1U]);
   Serial.print("  H: ");
   for (size_t i = 0; i < sizeof(raw.h); ++i) {
     Serial.printf("%02X", raw.h[i]);
@@ -1416,9 +1371,10 @@ bool parseI2cAddress(const String& token, uint8_t& out) {
   return true;
 }
 
-bool parseJobBudget(const String& token, uint8_t& out) {
+bool parseJobBudget(const String& token, uint8_t& out, bool allowZero) {
   uint32_t value = 0;
-  if (!parseU32(token, value) || value < 1U || value > JOB_CLI_MAX_BUDGET) {
+  const uint32_t minimum = allowZero ? 0U : 1U;
+  if (!parseU32(token, value) || value < minimum || value > JOB_CLI_MAX_BUDGET) {
     return false;
   }
   out = static_cast<uint8_t>(value);
@@ -1426,25 +1382,51 @@ bool parseJobBudget(const String& token, uint8_t& out) {
 }
 
 void printJobUsage() {
-  LOGW("Usage: job status | job init|force|apply|recover|poll [1..8]");
+  LOGW("Usage: job status | job start <init|force|apply|resync|reset|recover> | job cancel <owner|deadline> | job poll [0..8] | job <init|force|apply|resync|reset|recover> [1..8]");
+}
+
+bool isTerminalJobState(BME280::JobState state) {
+  return state == BME280::JobState::DONE ||
+         state == BME280::JobState::FAILED ||
+         state == BME280::JobState::CANCELLED ||
+         state == BME280::JobState::TIMED_OUT;
+}
+
+BME280::JobPollResult makeJobBoundaryResult(const BME280::Status& status) {
+  BME280::JobPollResult result;
+  result.jobId = device.jobId();
+  result.kind = device.jobKind();
+  result.phase = device.jobPhase();
+  result.state = device.jobState();
+  result.status = status;
+  result.conversionState = device.conversionState();
+  return result;
+}
+
+void printJobResult(const BME280::JobPollResult& result, const char* boundary) {
+  Serial.println("=== Job Status ===");
+  Serial.printf("Boundary: %s\n", boundary);
+  Serial.printf("Job ID: %lu\n", static_cast<unsigned long>(result.jobId));
+  Serial.printf("Job kind: %s\n", BME280::toString(result.kind));
+  Serial.printf("Job phase: %s\n", BME280::toString(result.phase));
+  Serial.printf("Job state: %s\n", BME280::toString(result.state));
+  Serial.printf("Terminal state: %s\n", isTerminalJobState(result.state) ? "true" : "false");
+  Serial.printf("Status: %s (code=%u, detail=%ld)\n",
+                BME280::toString(result.status.code),
+                static_cast<unsigned>(result.status.code),
+                static_cast<long>(result.status.detail));
+  Serial.printf("Conversion state: %s\n", BME280::toString(result.conversionState));
+  Serial.printf("Phase deadline active: %s\n", result.phaseDeadlineActive ? "true" : "false");
+  Serial.printf("Phase deadline ms: %lu\n", static_cast<unsigned long>(result.phaseDeadlineMs));
+  Serial.printf("Callbacks used: %u\n", static_cast<unsigned>(result.callbacksUsed));
+  Serial.printf("Instructions: %u\n", static_cast<unsigned>(result.instructionsUsed));
+  Serial.printf("Driver: %s\n", stateToStr(device.state()));
+  Serial.printf("Hardware config dirty: %s\n", device.hardwareConfigDirty() ? "true" : "false");
+  Serial.printf("Consecutive failures: %u\n", static_cast<unsigned>(device.consecutiveFailures()));
 }
 
 void printJobStatus() {
-  const BME280::Status st = device.jobStatus();
-  Serial.println("=== Job Status ===");
-  Serial.printf("Job kind: %s\n", jobKindToStr(device.jobKind()));
-  Serial.printf("Job state: %s\n", jobStateToStr(device.jobState()));
-  Serial.printf("Status: %s (code=%u, detail=%ld)\n",
-                errToStr(st.code),
-                static_cast<unsigned>(st.code),
-                static_cast<long>(st.detail));
-  if (st.msg != nullptr && st.msg[0] != '\0') {
-    Serial.printf("Message: %s\n", st.msg);
-  }
-  Serial.printf("Instructions: %u\n", static_cast<unsigned>(lastJobInstructions));
-  Serial.printf("Driver: %s\n", stateToStr(device.state()));
-  Serial.printf("Hardware config dirty: %s\n", log_bool_str(device.hardwareConfigDirty()));
-  Serial.printf("Consecutive failures: %u\n", static_cast<unsigned>(device.consecutiveFailures()));
+  printJobResult(makeJobBoundaryResult(device.jobStatus()), "SNAPSHOT");
 }
 
 BME280::Status startJobByName(const String& action) {
@@ -1457,6 +1439,12 @@ BME280::Status startJobByName(const String& action) {
   if (action == "apply") {
     return device.startApplyConfigJob();
   }
+  if (action == "resync") {
+    return device.startResyncJob();
+  }
+  if (action == "reset") {
+    return device.startSoftResetJob();
+  }
   if (action == "recover") {
     return device.startRecoveryJob();
   }
@@ -1465,34 +1453,53 @@ BME280::Status startJobByName(const String& action) {
 
 void pollJobOnce(uint8_t budget) {
   const BME280::JobPollResult result = device.pollJob(millis(), budget);
-  lastJobInstructions = result.instructionsUsed;
-  printJobStatus();
+  printJobResult(result, "POLL");
+}
+
+void startJobNonBlocking(const String& action) {
+  const BME280::Status status = startJobByName(action);
+  printJobResult(makeJobBoundaryResult(status), "START");
+}
+
+void cancelJobByName(const String& reason) {
+  BME280::CancelReason cancelReason;
+  if (reason == "owner") {
+    cancelReason = BME280::CancelReason::OWNER_REQUEST;
+  } else if (reason == "deadline") {
+    cancelReason = BME280::CancelReason::DEADLINE_EXPIRED;
+  } else {
+    printJobUsage();
+    return;
+  }
+  const BME280::Status status = device.cancelJob(cancelReason);
+  printJobResult(makeJobBoundaryResult(status), "CANCEL");
 }
 
 void runJobToTerminal(const String& action, uint8_t budget) {
   cancelPending();
-  lastJobInstructions = 0;
   const BME280::Status st = startJobByName(action);
   if (!st.inProgress()) {
-    printStatus(st);
-    printJobStatus();
+    printJobResult(makeJobBoundaryResult(st), "START");
     return;
   }
 
   BME280::JobPollResult result{};
   for (uint16_t poll = 0; poll < JOB_CLI_MAX_POLLS; ++poll) {
     result = device.pollJob(millis(), budget);
-    lastJobInstructions = result.instructionsUsed;
-    if (result.state == BME280::JobState::DONE ||
-        result.state == BME280::JobState::FAILED) {
-      printJobStatus();
+    if (isTerminalJobState(result.state)) {
+      printJobResult(result, "POLL");
       return;
     }
     delay(JOB_CLI_POLL_DELAY_MS);
   }
 
   LOGW("Job poll limit reached");
-  printJobStatus();
+  const BME280::Status cancelStatus = device.cancelJob(BME280::CancelReason::OWNER_REQUEST);
+  if (!isTerminalJobState(device.jobState())) {
+    printJobResult(makeJobBoundaryResult(cancelStatus), "CANCEL");
+    return;
+  }
+  printJobResult(device.pollJob(millis(), 0U), "POLL");
 }
 
 void handleJobCommand(const String& cmd) {
@@ -1505,30 +1512,53 @@ void handleJobCommand(const String& cmd) {
 
   const int space = rest.indexOf(' ');
   String action = (space < 0) ? rest : rest.substring(0, space);
-  String budgetToken = (space < 0) ? "" : rest.substring(space + 1);
+  String argument = (space < 0) ? "" : rest.substring(space + 1);
   action.trim();
-  budgetToken.trim();
-
-  uint8_t budget = JOB_CLI_DEFAULT_BUDGET;
-  if (budgetToken.length() > 0 && !parseJobBudget(budgetToken, budget)) {
-    printJobUsage();
-    return;
-  }
+  argument.trim();
 
   if (action == "status") {
-    if (budgetToken.length() > 0) {
+    if (argument.length() > 0) {
       printJobUsage();
       return;
     }
     printJobStatus();
     return;
   }
+  if (action == "start") {
+    if (argument.length() == 0 || argument.indexOf(' ') >= 0 ||
+        (argument != "init" && argument != "force" && argument != "apply" &&
+         argument != "resync" && argument != "reset" && argument != "recover")) {
+      printJobUsage();
+      return;
+    }
+    startJobNonBlocking(argument);
+    return;
+  }
+  if (action == "cancel") {
+    if (argument.length() == 0 || argument.indexOf(' ') >= 0) {
+      printJobUsage();
+      return;
+    }
+    cancelJobByName(argument);
+    return;
+  }
   if (action == "poll") {
+    uint8_t budget = JOB_CLI_DEFAULT_BUDGET;
+    if (argument.length() > 0 && !parseJobBudget(argument, budget, true)) {
+      printJobUsage();
+      return;
+    }
     pollJobOnce(budget);
     return;
   }
   if (action == "init" || action == "force" ||
-      action == "apply" || action == "recover") {
+      action == "apply" || action == "resync" ||
+      action == "reset" || action == "recover") {
+    uint8_t budget = JOB_CLI_DEFAULT_BUDGET;
+    if (argument.length() > 0 && !parseJobBudget(argument, budget, false)) {
+      printJobUsage();
+      return;
+    }
     runJobToTerminal(action, budget);
     return;
   }
@@ -1579,7 +1609,7 @@ void printHelp() {
   cli::printHelpItem("state", "Show compact one-line health summary");
   cli::printHelpItem("probe", "Probe device (no health tracking)");
   cli::printHelpItem("recover", "Manual recovery attempt");
-  cli::printHelpItem("job status|init|force|apply|recover|poll [budget]", "Run staged job API diagnostics");
+  cli::printHelpItem("job status|start|cancel|poll|init|force|apply|resync|reset|recover", "Run staged job API diagnostics");
   cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   cli::printHelpItem("stress [N]", "Run N measurement cycles");
   cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles");

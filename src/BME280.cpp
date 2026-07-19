@@ -258,6 +258,74 @@ static bool humidityCalibrationBlockValid(const uint8_t* data, size_t len) {
 
 }  // namespace
 
+Status validateSettings(const SensorSettings& settings) {
+  if (!isValidOversampling(settings.osrsT) ||
+      !isValidOversampling(settings.osrsP) ||
+      !isValidOversampling(settings.osrsH) ||
+      !isValidFilter(settings.filter) ||
+      !isValidStandby(settings.standby) ||
+      !isValidMode(settings.mode) ||
+      !isValidMeasurementSelection(settings.osrsT, settings.osrsP,
+                                   settings.osrsH)) {
+    return Status::Error(Err::INVALID_PARAM);
+  }
+  return Status::Ok();
+}
+
+uint32_t estimateMeasurementTimeUs(const SensorSettings& settings) {
+  if (!validateSettings(settings).ok()) {
+    return 0;
+  }
+  const uint8_t tOsrs = osrsMultiplier(settings.osrsT);
+  const uint8_t pOsrs = osrsMultiplier(settings.osrsP);
+  const uint8_t hOsrs = osrsMultiplier(settings.osrsH);
+
+  uint32_t timeUs = 1250;
+  if (tOsrs > 0) {
+    timeUs += 2300U * tOsrs;
+  }
+  if (pOsrs > 0) {
+    timeUs += 2300U * pOsrs + 575U;
+  }
+  if (hOsrs > 0) {
+    timeUs += 2300U * hOsrs + 575U;
+  }
+  return timeUs;
+}
+
+uint32_t estimateMeasurementTimeMs(const SensorSettings& settings) {
+  const uint32_t boschTimeUs = estimateMeasurementTimeUs(settings);
+  if (boschTimeUs == 0) {
+    return 0;
+  }
+  return (boschTimeUs + MEASUREMENT_MARGIN_US + 999U) / 1000U;
+}
+
+Status temperatureX100ToMilliC(int32_t tempC_x100, int32_t& outMilliC) {
+  const int64_t candidate = static_cast<int64_t>(tempC_x100) * 10;
+  if (candidate < std::numeric_limits<int32_t>::min() ||
+      candidate > std::numeric_limits<int32_t>::max()) {
+    return Status::Error(Err::COMPENSATION_ERROR);
+  }
+  outMilliC = static_cast<int32_t>(candidate);
+  return Status::Ok();
+}
+
+Status humidityX1024ToMilliPercent(uint32_t humidityPct_x1024,
+                                  int32_t& outMilliPercent) {
+  static constexpr uint32_t HUMIDITY_100_PERCENT_X1024 = 100U * 1024U;
+  if (humidityPct_x1024 > HUMIDITY_100_PERCENT_X1024) {
+    return Status::Error(Err::INVALID_PARAM);
+  }
+  const uint64_t candidate =
+      (static_cast<uint64_t>(humidityPct_x1024) * 1000U) / 1024U;
+  if (candidate > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+    return Status::Error(Err::COMPENSATION_ERROR);
+  }
+  outMilliPercent = static_cast<int32_t>(candidate);
+  return Status::Ok();
+}
+
 void BME280::_resetRuntime(bool preserveHistory) {
   const bool priorHardwareConfigDirty =
       preserveHistory && hardwareConfigDirty();
@@ -363,16 +431,13 @@ Status BME280::_prepareBeginConfig(const Config& config) {
   if (config.i2cAddress != 0x76 && config.i2cAddress != 0x77) {
     return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address");
   }
-  if (!isValidOversampling(config.osrsT) ||
-      !isValidOversampling(config.osrsP) ||
-      !isValidOversampling(config.osrsH) ||
-      !isValidFilter(config.filter) ||
-      !isValidStandby(config.standby) ||
-      !isValidMode(config.mode)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid configuration value");
-  }
-  if (!isValidMeasurementSelection(config.osrsT, config.osrsP, config.osrsH)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid oversampling combination");
+  const SensorSettings settings = {
+    config.osrsT, config.osrsP, config.osrsH,
+    config.filter, config.standby, config.mode
+  };
+  const Status settingsStatus = validateSettings(settings);
+  if (!settingsStatus.ok()) {
+    return Status::Error(Err::INVALID_CONFIG, settingsStatus.detail);
   }
 
   _config = config;
@@ -398,7 +463,7 @@ Status BME280::begin(const Config& config) {
   if (!st.ok()) {
     return mapPresenceError(st);
   }
-  if (chipId != cmd::CHIP_ID_BME280) {
+  if (!isBme280ChipId(chipId)) {
     return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
   }
 
@@ -533,7 +598,7 @@ Status BME280::probe() {
   if (!st.ok()) {
     return mapPresenceError(st);
   }
-  if (chipId != cmd::CHIP_ID_BME280) {
+  if (!isBme280ChipId(chipId)) {
     return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
   }
 
@@ -555,7 +620,7 @@ Status BME280::recover() {
     if (!st.ok()) {
       return st;
     }
-    if (chipId != cmd::CHIP_ID_BME280) {
+    if (!isBme280ChipId(chipId)) {
       return _recordFailure(
           Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId));
     }
@@ -593,6 +658,26 @@ Status BME280::recover() {
   return result;
 }
 
+SensorSettings BME280::sensorSettings() const {
+  return SensorSettings{
+    _config.osrsT,
+    _config.osrsP,
+    _config.osrsH,
+    _config.filter,
+    _config.standby,
+    _config.mode
+  };
+}
+
+void BME280::_setSensorSettings(const SensorSettings& settings) {
+  _config.osrsT = settings.osrsT;
+  _config.osrsP = settings.osrsP;
+  _config.osrsH = settings.osrsH;
+  _config.filter = settings.filter;
+  _config.standby = settings.standby;
+  _config.mode = settings.mode;
+}
+
 Status BME280::getSettings(SettingsSnapshot& out) const {
   out.initialized = _initialized;
   out.state = _driverState;
@@ -602,12 +687,13 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   out.conversionReadyTimeoutMs = _config.conversionReadyTimeoutMs;
   out.offlineThreshold = _config.offlineThreshold;
   out.hasNowMsHook = (_config.nowMs != nullptr);
-  out.mode = _config.mode;
-  out.osrsT = _config.osrsT;
-  out.osrsP = _config.osrsP;
-  out.osrsH = _config.osrsH;
-  out.filter = _config.filter;
-  out.standby = _config.standby;
+  const SensorSettings settings = sensorSettings();
+  out.mode = settings.mode;
+  out.osrsT = settings.osrsT;
+  out.osrsP = settings.osrsP;
+  out.osrsH = settings.osrsH;
+  out.filter = settings.filter;
+  out.standby = settings.standby;
   out.measurementRequested = _measurementRequested;
   out.measurementReady = _measurementReady;
   out.conversionState = _conversionState;
@@ -715,6 +801,8 @@ void BME280::_clearJob() {
   _jobHardwareConfigTouched = false;
   _jobResetMayHaveReached = false;
   _jobForcedTriggerMayHaveReached = false;
+  _jobSettingsStaged = false;
+  _jobPriorSettings = SensorSettings{};
   _jobCalibration = Calibration{};
   _jobHumidityCalibrationValid = false;
   _jobPriorConfigSyncState = ConfigSyncState::RESYNC_REQUIRED;
@@ -749,6 +837,8 @@ Status BME280::_startJob(JobKind kind, JobPhase phase) {
   _jobHardwareConfigTouched = false;
   _jobResetMayHaveReached = false;
   _jobForcedTriggerMayHaveReached = false;
+  _jobSettingsStaged = false;
+  _jobPriorSettings = SensorSettings{};
   _jobCalibration = Calibration{};
   _jobHumidityCalibrationValid = false;
   _jobRawSample = RawSample{};
@@ -796,10 +886,15 @@ JobPollResult BME280::_failJob(const Status& st, uint8_t instructionsUsed) {
   }
   if (_jobHardwareConfigTouched && !finalStatus.ok() && !finalStatus.inProgress()) {
     _markHardwareConfigDirty(finalStatus);
-  } else if (configJob &&
-             _configSyncState == ConfigSyncState::UPDATE_IN_PROGRESS) {
-    _configSyncState = _jobPriorConfigSyncState;
-    _hardwareConfigDirtyError = _jobPriorHardwareConfigDirtyError;
+  } else {
+    if (_jobSettingsStaged) {
+      _setSensorSettings(_jobPriorSettings);
+    }
+    if (configJob &&
+        _configSyncState == ConfigSyncState::UPDATE_IN_PROGRESS) {
+      _configSyncState = _jobPriorConfigSyncState;
+      _hardwareConfigDirtyError = _jobPriorHardwareConfigDirtyError;
+    }
   }
   if (_jobKind == JobKind::FORCED_MEASUREMENT &&
       !finalStatus.ok() && !finalStatus.inProgress()) {
@@ -872,7 +967,8 @@ Status BME280::startForcedMeasurementJob() {
     return Status::Error(Err::INVALID_PARAM, "Device is not in forced mode");
   }
   if (_measurementRequested && !_measurementReady) {
-    return Status::Error(Err::BUSY, "Measurement in progress");
+    return Status::Error(
+        Err::BUSY, static_cast<int32_t>(BusyReason::MEASUREMENT_ACTIVE));
   }
 
   const JobPhase firstPhase = (_conversionState == ConversionState::IDLE)
@@ -901,6 +997,36 @@ Status BME280::startApplyConfigJob() {
     _measurementReady = false;
     _lastMeasurementStatus = Status::Error(
         Err::RESYNC_REQUIRED, "Configuration update in progress");
+  }
+  return st;
+}
+
+Status BME280::startApplySettingsJob(const SensorSettings& settings) {
+  const Status admission = _jobStartAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
+  const Status validation = validateSettings(settings);
+  if (!validation.ok()) {
+    return validation;
+  }
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED);
+  }
+  if (settings.osrsH != Oversampling::SKIP &&
+      !_humidityCalibrationValid) {
+    return Status::Error(Err::CALIBRATION_INVALID);
+  }
+
+  const SensorSettings priorSettings = sensorSettings();
+  Status st = _startJob(JobKind::APPLY_CONFIG, JobPhase::APPLY_WAIT_IDLE);
+  if (st.inProgress()) {
+    _jobSettingsStaged = true;
+    _jobPriorSettings = priorSettings;
+    _setSensorSettings(settings);
+    _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
+    _measurementReady = false;
+    _lastMeasurementStatus = Status::Error(Err::RESYNC_REQUIRED);
   }
   return st;
 }
@@ -987,10 +1113,15 @@ Status BME280::cancelJob(CancelReason reason) {
     _markHardwareConfigDirty(cancellation);
   } else if (_jobHardwareConfigTouched) {
     _markHardwareConfigDirty(cancellation);
-  } else if (configJob &&
-             _configSyncState == ConfigSyncState::UPDATE_IN_PROGRESS) {
-    _configSyncState = _jobPriorConfigSyncState;
-    _hardwareConfigDirtyError = _jobPriorHardwareConfigDirtyError;
+  } else {
+    if (_jobSettingsStaged) {
+      _setSensorSettings(_jobPriorSettings);
+    }
+    if (configJob &&
+        _configSyncState == ConfigSyncState::UPDATE_IN_PROGRESS) {
+      _configSyncState = _jobPriorConfigSyncState;
+      _hardwareConfigDirtyError = _jobPriorHardwareConfigDirtyError;
+    }
   }
 
   if (_jobKind == JobKind::FORCED_MEASUREMENT &&
@@ -1049,7 +1180,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (!st.ok()) {
           return _failJob(mapPresenceError(st), instructionsUsed);
         }
-        if (chipId != cmd::CHIP_ID_BME280) {
+        if (!isBme280ChipId(chipId)) {
           return _failJob(
               Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId),
               instructionsUsed);
@@ -1156,7 +1287,15 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         }
         if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
           if (_jobWaitPolls == 0) {
-            _jobDeadlineMs = nowMs + estimateMeasurementTimeMs() +
+            uint32_t waitEstimateMs = estimateMeasurementTimeMs();
+            if (_jobSettingsStaged) {
+              const uint32_t priorEstimateMs =
+                  ::BME280::estimateMeasurementTimeMs(_jobPriorSettings);
+              if (priorEstimateMs > waitEstimateMs) {
+                waitEstimateMs = priorEstimateMs;
+              }
+            }
+            _jobDeadlineMs = nowMs + waitEstimateMs +
                              _config.conversionReadyTimeoutMs;
             _jobDeadlineActive = true;
           }
@@ -1205,7 +1344,15 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         }
         if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
           if (_jobWaitPolls == 0) {
-            _jobDeadlineMs = nowMs + estimateMeasurementTimeMs() +
+            uint32_t waitEstimateMs = estimateMeasurementTimeMs();
+            if (_jobSettingsStaged) {
+              const uint32_t priorEstimateMs =
+                  ::BME280::estimateMeasurementTimeMs(_jobPriorSettings);
+              if (priorEstimateMs > waitEstimateMs) {
+                waitEstimateMs = priorEstimateMs;
+              }
+            }
+            _jobDeadlineMs = nowMs + waitEstimateMs +
                              _config.conversionReadyTimeoutMs;
             _jobDeadlineActive = true;
           }
@@ -1217,7 +1364,8 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           }
           ++_jobWaitPolls;
           _markHardwareConfigDirty(
-              Status::Error(Err::BUSY, "Device still measuring after sleep write"));
+              Status::Error(Err::BUSY,
+                            static_cast<int32_t>(BusyReason::DEVICE_MEASURING)));
           _jobState = JobState::WAITING;
           _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
           return _jobResult(instructionsUsed);
@@ -1453,7 +1601,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (!st.ok()) {
           return _failJob(st, instructionsUsed);
         }
-        if (chipId != cmd::CHIP_ID_BME280) {
+        if (!isBme280ChipId(chipId)) {
           return _failJob(
               Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId),
               instructionsUsed);
@@ -1483,12 +1631,16 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
 
       case JobPhase::NONE:
       default:
-        return _failJob(Status::Error(Err::BUSY, "Invalid job state"),
+        return _failJob(Status::Error(
+                            Err::BUSY,
+                            static_cast<int32_t>(BusyReason::INVALID_JOB_STATE)),
                         instructionsUsed);
     }
   }
 
-  return _failJob(Status::Error(Err::BUSY, "Job state machine stalled"),
+  return _failJob(Status::Error(
+                      Err::BUSY,
+                      static_cast<int32_t>(BusyReason::JOB_STATE_MACHINE_STALLED)),
                   instructionsUsed);
 }
 
@@ -1520,7 +1672,8 @@ Status BME280::requestMeasurement() {
     return st;
   }
   if (_measurementRequested && !_measurementReady) {
-    Status st = Status::Error(Err::BUSY, "Measurement in progress");
+    Status st = Status::Error(
+        Err::BUSY, static_cast<int32_t>(BusyReason::MEASUREMENT_ACTIVE));
     _lastMeasurementStatus = st;
     return st;
   }
@@ -1713,11 +1866,6 @@ Status BME280::readCalibrationRaw(CalibrationRaw& out) {
   }
 
   Status st = readRegs(cmd::REG_CALIB_TP_START, out.tp, sizeof(out.tp));
-  if (!st.ok()) {
-    return st;
-  }
-
-  st = readRegs(cmd::REG_CALIB_H1, &out.h1, 1);
   if (!st.ok()) {
     return st;
   }
@@ -2161,24 +2309,12 @@ Status BME280::isMeasuring(bool& measuring) {
   return Status::Ok();
 }
 
+uint32_t BME280::estimateMeasurementTimeUs() const {
+  return ::BME280::estimateMeasurementTimeUs(sensorSettings());
+}
+
 uint32_t BME280::estimateMeasurementTimeMs() const {
-  const uint8_t t_osrs = osrsMultiplier(_config.osrsT);
-  const uint8_t p_osrs = osrsMultiplier(_config.osrsP);
-  const uint8_t h_osrs = osrsMultiplier(_config.osrsH);
-
-  uint32_t timeUs = 1250;
-  if (t_osrs > 0) {
-    timeUs += 2300U * t_osrs;
-  }
-  if (p_osrs > 0) {
-    timeUs += 2300U * p_osrs + 575U;
-  }
-  if (h_osrs > 0) {
-    timeUs += 2300U * h_osrs + 575U;
-  }
-  timeUs += MEASUREMENT_MARGIN_US;
-
-  return (timeUs + 999U) / 1000U;
+  return ::BME280::estimateMeasurementTimeMs(sensorSettings());
 }
 
 uint32_t BME280::getStandbyTimeMs() const {
@@ -2437,7 +2573,8 @@ Status BME280::_ensureConfigWriteReady() {
     return st;
   }
   if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
-    return Status::Error(Err::BUSY, "Device measuring; config write deferred");
+    return Status::Error(
+        Err::BUSY, static_cast<int32_t>(BusyReason::DEVICE_MEASURING));
   }
   return Status::Ok();
 }
@@ -2514,8 +2651,8 @@ Status BME280::_waitForNvmReady(bool tracked) {
                          static_cast<int32_t>(_config.nvmReadyTimeoutMs));
   }
 
-  return Status::Error(Err::BUSY, "NVM update in progress",
-                       static_cast<int32_t>(_config.nvmReadyTimeoutMs));
+  return Status::Error(
+      Err::BUSY, static_cast<int32_t>(BusyReason::NVM_UPDATE));
 }
 
 Status BME280::_readCalibrationTp() {

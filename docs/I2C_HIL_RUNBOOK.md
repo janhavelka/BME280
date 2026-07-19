@@ -244,7 +244,7 @@ Default command groups:
 | `normal-mode` | Bounded normal-mode entry, repeated reads, and return to sleep |
 | `reset-recover` | Soft reset, post-reset `im_update`/status evidence, recover/resync, and dirty-state evidence |
 | `stress-health` | Safe selftest, short forced stress, and final driver health |
-| `job-api` | Opt-in staged init/apply/forced/recovery jobs and instruction-budget validation |
+| `job-api` | Opt-in staged start/poll/cancel retrieval, init/apply/forced, non-reset resync, and explicit reset jobs with callback-budget validation |
 
 The post-`force` `reg 0xF4` capture records `ctrl_meas`; for formal forced-mode
 sleep-return evidence, verify mode bits `[1:0]` are `00`. The following
@@ -267,9 +267,20 @@ Formal BME280 serial acceptance checks:
 - `stress` rows must parse `stress Errors=0`; sample plausibility still
   requires operator review.
 - `drv` should parse `Consecutive failures: 0` at the end of the run.
-- `job` rows added by `--include-job-api` must parse a terminal staged-job
-  state, keep `Instructions:` within the requested budget, and end staged
-  recovery with `Consecutive failures: 0`.
+- `job` rows added by `--include-job-api` must report the exact command
+  boundary, job ID/kind/phase/state, canonical status code/detail, conversion
+  state, phase-deadline state/value, callback count, and terminal flag.
+- The staged cancellation sequence must show `job start init` using zero
+  callbacks, `job poll 1` using exactly one callback, `job cancel deadline`
+  using zero callbacks, one `job poll 0` returning the retained `TIMED_OUT` /
+  `DEADLINE_EXPIRED` result, and the next `job poll 0` returning the empty
+  `IDLE` result. This is the exactly-once retrieval check.
+- Natural job terminals must be printed from the `JobPollResult` returned by
+  the terminal poll. `Callbacks used:` and its compatibility `Instructions:`
+  alias must agree and remain within the requested budget.
+- `job resync 1` must report kind `RESYNC` without a soft-reset phase;
+  `job reset 1` separately reports kind `SOFT_RESET`. Both must finish with
+  `Consecutive failures: 0` on a passing bench run.
 
 ## Gated Work
 
@@ -288,9 +299,11 @@ The default run excludes raw writes, long soak, and physical fault injection.
   commands, invalid address/mode/config values, and malformed register commands.
 - `--include-benchmarks` or `--sample-rate-benchmark` adds forced-measurement
   and mixed-operation sampling-rate benchmarks.
-- `--include-job-api` adds `job status`, `job poll 1`, staged init/apply/forced
-  measurement/recovery jobs with budgets `1` and `3`, and post-job raw/comp/cfg
-  evidence. This exercises the public chunked-job API and parser validators.
+- `--include-job-api` adds a bounded staged-job sequence: zero-I2C start,
+  one-callback progress, deadline cancellation, zero-budget exactly-once
+  terminal retrieval, then natural init/apply/forced terminals, explicit
+  non-reset resync, explicit soft reset, and post-job raw/comp/cfg evidence.
+  The group remains opt-in and makes no physical hardware-validation claim.
 - `--soak-duration-s N` runs a duration-based command mix after the fixed plan.
   Each command remains individually timeout-bounded, and the loop stops early on
   `FAIL` or `TIMEOUT`. `--soak-reset-interval N` controls periodic soft

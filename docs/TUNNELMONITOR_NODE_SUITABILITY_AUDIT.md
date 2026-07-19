@@ -142,6 +142,27 @@ integration review, release qualification, local ESP-IDF validation,
 TunnelMonitor adapter validation, and physical HIL remain separate gates. These
 are software checks only, not hardware or local ESP-IDF evidence.
 
+The remaining public-surface chunk adds a compact `SensorSettings` value and
+zero-I2C `startApplySettingsJob()` while reusing the existing APPLY_CONFIG
+runner. Pure validation rejects invalid enum/channel combinations. An untouched
+failed/cancelled apply restores prior cached settings; once a config write
+succeeds or may have reached the chip, desired settings remain observable with
+`RESYNC_REQUIRED`. Exact Bosch microsecond timing, rounded scheduler timing,
+checked TunnelMonitor-unit conversions, chip-ID checks, exhaustive public enum
+strings, and typed nonzero `BusyReason` details are fixed-memory helpers. The
+duplicate `CalibrationRaw::h1` field/read is removed: `tp[25]` already contains
+register `0xA1`, so the diagnostic read is exactly two bursts.
+
+The native suite passed 169/169 for this chunk, including the settings
+write-stage failure/cancellation matrix, helper boundaries, conservative public
+POD layout/size contracts, exact two-burst calibration behavior, and legacy
+cached-config apply. Updated CLI/HIL guards and 23 HIL parser tests passed. The
+pinned sequential Arduino builds passed on ESP32-S3 at 22,688 bytes RAM and
+397,130 bytes flash and ESP32-S2 at 37,104 bytes RAM and 386,133 bytes flash.
+An ASan/UBSan CI environment is configured. It was not runnable locally because
+the installed MinGW toolchain lacks `libasan` and `libubsan`; no local sanitizer
+success is claimed.
+
 TunnelMonitor source changes are not authorized by its current architecture
 authority. `docs/guidelines/dependency_policy.md:32-41,114`,
 `docs/guidelines/i2c_peripherals.md:477-486`, and

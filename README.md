@@ -189,6 +189,7 @@ tracked I2C success. The counters do not wrap.
 - `void end()` - Zero-I2C, idempotent unbind that clears callbacks and cached runtime state; it does not put the sensor to sleep
 - `bool isInitialized()` - True after successful `begin()` until `end()`
 - `const Config& getConfig()` - Cached configuration snapshot owned by the driver
+- `SensorSettings sensorSettings()` - Compact zero-I2C snapshot of typed chip settings, separate from transport/time/health policy
 
 ### Diagnostics
 
@@ -202,6 +203,7 @@ tracked I2C success. The counters do not wrap.
 - `Status startInitJob(const Config& config)` - Validate/cache configuration and start chunked initialization without I2C
 - `Status startForcedMeasurementJob()` - Start a chunked forced-mode sample without I2C
 - `Status startApplyConfigJob()` - Start a cached-config apply without I2C
+- `Status startApplySettingsJob(const SensorSettings& settings)` - Validate and stage a whole typed settings update without I2C, then reuse the bounded apply job
 - `Status startResyncJob()` - Start identity verification, bounded NVM readiness, calibration reload, and config re-apply without resetting the sensor
 - `Status startRecoveryJob()` - Compatibility alias for `startResyncJob()`; reports `JobKind::RESYNC` and does not reset
 - `Status startSoftResetJob()` - Start an explicit `0xE0 = 0xB6` reset followed by full resynchronization
@@ -242,7 +244,7 @@ deadline.
 - `SampleFreshness sampleFreshness()` - Classify the cached sample as `NONE`, `FRESH`, `STALE_AFTER_ERROR`, `STALE_AFTER_CONFIG_DIRTY`, or `STALE_AFTER_CONFIG_CHANGE`
 - `bool sampleFresh(uint32_t nowMs, uint32_t maxAgeMs)` - True only when a cached sample is fresh and within the caller's age budget
 - `Status getCalibration(Calibration& out)` - Return cached calibration coefficients
-- `Status readCalibrationRaw(CalibrationRaw& out)` - Read calibration register blocks from the device
+- `Status readCalibrationRaw(CalibrationRaw& out)` - Read the complete calibration image in exactly two bursts; `tp[25]` is register `0xA1` / `dig_H1`
 
 Forced mode is an on-demand policy: `begin()` and `setMode(FORCED)` keep the hardware in
 sleep until `requestMeasurement()` writes the forced-mode trigger. Normal-mode requests
@@ -275,6 +277,7 @@ stale-but-readable samples after errors or uncertain hardware configuration.
 
 ### Configuration
 
+- `Status validateSettings(const SensorSettings& settings)` - Pure, zero-I2C validation of enum values and channel dependencies
 - `Status setMode(Mode mode)` - Select `SLEEP`, `FORCED`, or `NORMAL`
 - `Status setOversamplingT/P/H(Oversampling osrs)` - Configure temperature, pressure, or humidity oversampling
 - `Status setFilter(Filter filter)` - Configure the IIR filter coefficient through a safe sleep/config/restore sequence
@@ -286,6 +289,16 @@ stale-but-readable samples after errors or uncertain hardware configuration.
 Temperature oversampling must be enabled whenever pressure or humidity is enabled because
 Bosch compensation requires `t_fine`. At least one measured channel must be enabled.
 Invalid combinations are rejected in `begin()` and typed setters before touching I2C.
+
+`startApplySettingsJob()` stages the desired settings in the same
+`APPLY_CONFIG` state machine used by `startApplyConfigJob()`; it does not create
+a second configuration engine. A failure or cancellation before any config
+write succeeds or may have reached the device restores the prior cached
+settings and synchronization state. Once a write has a possible hardware
+effect, the desired settings remain the explicit resync target and
+`ConfigSyncState::RESYNC_REQUIRED` prevents measurements until a complete
+apply/resync succeeds. The last-good sample remains readable only with its
+existing freshness/generation provenance.
 
 Humidity oversampling follows the Bosch latch rule: `setOversamplingH()` writes
 `ctrl_hum` first and then writes `ctrl_meas` so the new humidity setting becomes
@@ -457,6 +470,12 @@ validation and transport setup errors do not transition the driver into
 
 ### Timing
 
+- `uint32_t estimateMeasurementTimeUs(const SensorSettings&)` - Pure exact Bosch maximum-duration formula, without scheduling margin
+- `uint32_t estimateMeasurementTimeMs(const SensorSettings&)` - Pure rounded scheduler estimate with the fixed 1 ms library margin
+- `Status temperatureX100ToMilliC(...)` - Checked centi-Celsius to signed milli-Celsius conversion
+- `Status humidityX1024ToMilliPercent(...)` - Checked Q22.10 percent to signed milli-percent conversion, rejecting input above 100%
+- `bool isBme280ChipId(uint8_t)` - Pure identity check for chip ID `0x60`
+- `uint32_t estimateMeasurementTimeUs()` - Exact Bosch maximum for current cached settings
 - `uint32_t estimateMeasurementTimeMs()` - Max measurement time for current oversampling
 - `uint32_t getStandbyTimeMs()` - Configured standby interval in ms
 - `uint32_t estimateNormalCycleMs()` - Full normal-mode cycle (measurement + standby)
@@ -474,8 +493,8 @@ t_meas_us = 1250
           + (temperature enabled ? 2300 * osrs_t : 0)
           + (pressure enabled ? 2300 * osrs_p + 575 : 0)
           + (humidity enabled ? 2300 * osrs_h + 575 : 0)
-          + 1000 safety margin
-estimateMeasurementTimeMs = ceil(t_meas_us / 1000)
+estimateMeasurementTimeUs = t_meas_us
+estimateMeasurementTimeMs = ceil((t_meas_us + 1000 safety margin) / 1000)
 estimateNormalCycleMs = estimateMeasurementTimeMs + getStandbyTimeMs()
 ```
 
@@ -521,6 +540,25 @@ Not part of the library. These simulate project-level glue and keep examples sel
 12. A running staged job exclusively owns hardware access. Cancellation is zero-I2C and its terminal result must be retrieved once before later hardware work.
 13. Synchronous reset/resync NVM readiness checks perform one status read and return visible `BUSY`, `TIMEOUT`, or the original transport error. Bounded repeated NVM polling belongs to staged jobs advanced by `pollJob()`.
 14. Health timestamp values are meaningful only when `lastOkTimeValid()` / `lastErrorTimeValid()` (or the snapshot flags) are true.
+
+## Migration From v1.7.x
+
+- Transport callbacks now return terminal-only `TransportResult`, not driver
+  `Status`. Return exact physical write/read counts; perform one physical
+  attempt; use a combined repeated-start register read; and never retry or
+  recover the bus inside a callback. An `OK` result with short counts maps to
+  `I2C_SHORT_TRANSFER`.
+- `Status::msg` is now always derived from the canonical library
+  `toString(Err)` table. Custom adapter/application message pointers passed to
+  the legacy constructor are ignored; retain diagnostics in the typed code and
+  numeric `detail` field.
+- `CalibrationRaw::h1` was removed. Register `0xA1` is already `tp[25]`, and
+  `readCalibrationRaw()` now performs two bursts instead of three callbacks.
+- Use `SensorSettings` plus `startApplySettingsJob()` for cooperative whole-
+  settings updates. The existing individual synchronous setters and
+  `startApplyConfigJob()` remain available.
+- Rebuild dependent firmware: public result/settings layouts and callback
+  signatures changed, so this is a major-version migration.
 
 ## Migration From v1.6.x
 
@@ -571,6 +609,7 @@ python tools/run_i2c_hil.py --dry-run
 python tools/run_i2c_hil.py --dry-run --include-job-api
 doxygen Doxyfile
 python -m platformio test -e native
+python -m platformio test -e native_sanitized
 python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
 python -m platformio pkg pack

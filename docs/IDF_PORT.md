@@ -100,6 +100,11 @@ The native IDF adapter uses the modern ESP-IDF I2C master driver:
   resynchronization. `startRecoveryJob()` is its compatibility alias. Use
   `startSoftResetJob()` only for an explicit sensor reset; shared-bus recovery
   does not imply a device reset.
+- Use `SensorSettings`, pure `validateSettings()`, and
+  `startApplySettingsJob()` for one coherent runtime settings change. Admission
+  performs no callback; before any possible config-write effect cancellation
+  restores prior settings, while a later cancellation retains the desired
+  settings with `RESYNC_REQUIRED` for explicit reconciliation.
 - The native and Arduino diagnostic CLIs must keep identical staged-job help and
   behavior for status/init/force/apply/resync/reset/cancel/poll, including
   job identity, phase, callback use, deadline, and conversion-state output.
@@ -157,15 +162,21 @@ known-idle state, and 514 when forced measurement first reconciles an ambiguous
 trigger. These are callback caps, not an overall owner deadline or elapsed-time
 claim.
 
+Pure `estimateMeasurementTimeUs(const SensorSettings&)` implements the exact
+Bosch maximum formula. The millisecond helper adds the library's fixed 1 ms
+scheduling margin and rounds up. Checked fixed-point helpers convert
+centi-Celsius to signed milli-Celsius and Q22.10 relative humidity to signed
+milli-percent without heap, float, I2C, or platform dependencies.
+
 Current example mapping:
 
-| ESP-IDF result | Library status |
+| ESP-IDF result | Adapter result | Core status |
 | --- | --- |
-| `ESP_OK` | `Err::OK` |
-| `ESP_ERR_TIMEOUT` | `Err::I2C_TIMEOUT` |
-| `ESP_ERR_INVALID_ARG` | `Err::INVALID_PARAM` |
-| `ESP_ERR_INVALID_RESPONSE` | `Err::I2C_ERROR` |
-| other failures | `Err::I2C_BUS` |
+| `ESP_OK` | `TransportErr::OK` with exact counts | `Err::OK` |
+| `ESP_ERR_TIMEOUT` | `TransportErr::TIMEOUT` | `Err::I2C_TIMEOUT` |
+| `ESP_ERR_INVALID_ARG` | `TransportErr::OTHER` | `Err::I2C_ERROR` |
+| `ESP_ERR_INVALID_RESPONSE` | `TransportErr::OTHER` because the failed phase is unknown | `Err::I2C_ERROR` |
+| other controller failures | `TransportErr::BUS` | `Err::I2C_BUS` |
 
 ## Build Checks
 

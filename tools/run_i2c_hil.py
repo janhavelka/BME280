@@ -71,6 +71,16 @@ CONSECUTIVE_FAILURES_RE = re.compile(r"Consecutive failures:\s*(\d+)")
 TOTAL_FAILURES_RE = re.compile(r"Total failures:\s*(\d+)")
 CHIP_ID_RE = re.compile(r"Chip ID:\s*0x([0-9A-Fa-f]{1,2})|Reg\s+0xD0\s*=\s*0x([0-9A-Fa-f]{1,2})")
 JOB_STATE_RE = re.compile(r"Job state:\s*([A-Z_]+)")
+JOB_BOUNDARY_RE = re.compile(r"Boundary:\s*([A-Z_]+)")
+JOB_ID_RE = re.compile(r"Job ID:\s*(\d+)")
+JOB_KIND_RE = re.compile(r"Job kind:\s*([A-Z_]+)")
+JOB_PHASE_RE = re.compile(r"Job phase:\s*([A-Z_]+)")
+JOB_TERMINAL_RE = re.compile(r"Terminal state:\s*(true|false)", re.IGNORECASE)
+JOB_STATUS_RE = re.compile(r"^Status:\s*([A-Z_]+)\s*\(code=(\d+),\s*detail=(-?\d+)\)", re.MULTILINE)
+JOB_CONVERSION_RE = re.compile(r"Conversion state:\s*([A-Z_]+)")
+JOB_DEADLINE_ACTIVE_RE = re.compile(r"Phase deadline active:\s*(true|false)", re.IGNORECASE)
+JOB_DEADLINE_MS_RE = re.compile(r"Phase deadline ms:\s*(\d+)")
+JOB_CALLBACKS_RE = re.compile(r"Callbacks used:\s*(\d+)")
 JOB_INSTRUCTIONS_RE = re.compile(r"Instructions:\s*(\d+)")
 DRIVER_READY_RE = re.compile(r"(?:Driver:\s*state=READY\b|State:\s*READY\b)")
 DIRTY_FALSE_RE = re.compile(r"(?:dirty=false\b|Hardware config dirty:\s*(?:false|no)\b)", re.IGNORECASE)
@@ -85,6 +95,12 @@ VALIDATOR_DRIVER_ZERO_CONSECUTIVE = "driver_zero_consecutive_failures"
 VALIDATOR_JOB_DONE_OR_FAILED = "job_done_or_failed"
 VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES = "job_zero_consecutive_failures"
 VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED = "job_instruction_budget_respected"
+VALIDATOR_JOB_RESULT_FIELDS = "job_result_fields"
+VALIDATOR_JOB_START_RUNNING = "job_start_running"
+VALIDATOR_JOB_ONE_CALLBACK = "job_one_callback"
+VALIDATOR_JOB_CANCEL_TIMED_OUT = "job_cancel_timed_out"
+VALIDATOR_JOB_TIMED_OUT_RETRIEVAL = "job_timed_out_retrieval"
+VALIDATOR_JOB_IDLE_NO_RESULT = "job_idle_no_result"
 JOB_CLI_DEFAULT_BUDGET = 1
 
 
@@ -787,43 +803,92 @@ JOB_API_COMMANDS: tuple[CommandSpec, ...] = (
         command="job status",
         purpose="Capture staged-job baseline status.",
         group="job-api",
-        expected=("Job Status", "Job kind:", "Job state:", "Status:", "Instructions:", "Driver:"),
+        expected=("Job Status", "Boundary: SNAPSHOT", "Job kind:", "Job state:", "Callbacks used:", "Driver:"),
+        validators=(VALIDATOR_JOB_RESULT_FIELDS,),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job start init",
+        purpose="Start staged initialization without issuing an I2C callback.",
+        group="job-api",
+        expected=("Boundary: START", "Job kind: INIT", "Job state: RUNNING", "Status: IN_PROGRESS", "Callbacks used: 0"),
+        validators=(VALIDATOR_JOB_RESULT_FIELDS, VALIDATOR_JOB_START_RUNNING),
         timeout_s=5.0,
         requires_opt_in="--include-job-api",
     ),
     CommandSpec(
         command="job poll 1",
-        purpose="Exercise one-instruction job poll command with no active job.",
+        purpose="Advance the staged init job with exactly one transport callback.",
         group="job-api",
-        expected=("Job Status", "Job state:", "Instructions:", "Driver:"),
-        validators=(VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,),
+        expected=("Boundary: POLL", "Job kind: INIT", "Job state: RUNNING", "Status: IN_PROGRESS", "Callbacks used: 1"),
+        validators=(
+            VALIDATOR_JOB_RESULT_FIELDS,
+            VALIDATOR_JOB_ONE_CALLBACK,
+            VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
+        ),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job cancel deadline",
+        purpose="Cancel the active job at an owner deadline without issuing I2C.",
+        group="job-api",
+        expected=("Boundary: CANCEL", "Job kind: INIT", "Job state: TIMED_OUT", "Status: DEADLINE_EXPIRED", "Callbacks used: 0"),
+        validators=(VALIDATOR_JOB_RESULT_FIELDS, VALIDATOR_JOB_CANCEL_TIMED_OUT),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job poll 0",
+        purpose="Retrieve the retained timed-out terminal result with zero I2C callbacks.",
+        group="job-api",
+        expected=("Boundary: POLL", "Job kind: INIT", "Job state: TIMED_OUT", "Status: DEADLINE_EXPIRED", "Callbacks used: 0"),
+        validators=(
+            VALIDATOR_JOB_RESULT_FIELDS,
+            VALIDATOR_JOB_TIMED_OUT_RETRIEVAL,
+            VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
+        ),
+        timeout_s=5.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
+        command="job poll 0",
+        purpose="Prove the retained cancellation terminal is delivered exactly once.",
+        group="job-api",
+        expected=("Boundary: POLL", "Job ID: 0", "Job kind: NONE", "Job state: IDLE", "Status: OK", "Callbacks used: 0"),
+        validators=(
+            VALIDATOR_JOB_RESULT_FIELDS,
+            VALIDATOR_JOB_IDLE_NO_RESULT,
+            VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
+        ),
         timeout_s=5.0,
         requires_opt_in="--include-job-api",
     ),
     CommandSpec(
         command="job init 1",
-        purpose="Run staged initialization with one I2C instruction per poll.",
+        purpose="Run staged initialization to a natural terminal with one callback per poll.",
         group="job-api",
-        expected=("Job Status", "Job state: DONE", "Status: OK", "Driver: READY"),
-        validators=(VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
+        expected=("Boundary: POLL", "Job state: DONE", "Status: OK", "Driver: READY"),
+        validators=(VALIDATOR_JOB_RESULT_FIELDS, VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
         timeout_s=25.0,
         requires_opt_in="--include-job-api",
     ),
     CommandSpec(
         command="job apply 1",
-        purpose="Run staged cached-config apply with one I2C instruction per poll.",
+        purpose="Run staged cached-config apply with one callback per poll.",
         group="job-api",
-        expected=("Job Status", "Job state: DONE", "Status: OK"),
-        validators=(VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
+        expected=("Boundary: POLL", "Job state: DONE", "Status: OK"),
+        validators=(VALIDATOR_JOB_RESULT_FIELDS, VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
         timeout_s=25.0,
         requires_opt_in="--include-job-api",
     ),
     CommandSpec(
         command="job force 1",
-        purpose="Run staged forced measurement with one I2C instruction per poll.",
+        purpose="Run staged forced measurement with one callback per poll.",
         group="job-api",
-        expected=("Job Status", "Job state: DONE", "Status: OK"),
-        validators=(VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
+        expected=("Boundary: POLL", "Job state: DONE", "Status: OK"),
+        validators=(VALIDATOR_JOB_RESULT_FIELDS, VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
         timeout_s=25.0,
         requires_opt_in="--include-job-api",
     ),
@@ -844,11 +909,12 @@ JOB_API_COMMANDS: tuple[CommandSpec, ...] = (
         requires_opt_in="--include-job-api",
     ),
     CommandSpec(
-        command="job recover 1",
-        purpose="Run staged recovery with one I2C instruction per poll.",
+        command="job resync 1",
+        purpose="Run explicit non-reset resynchronization with one callback per poll.",
         group="job-api",
-        expected=("Job Status", "Job state: DONE", "Status: OK", "Driver: READY"),
+        expected=("Boundary: POLL", "Job kind: RESYNC", "Job state: DONE", "Status: OK", "Driver: READY"),
         validators=(
+            VALIDATOR_JOB_RESULT_FIELDS,
             VALIDATOR_JOB_DONE_OR_FAILED,
             VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES,
             VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
@@ -858,7 +924,7 @@ JOB_API_COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         command="cfg",
-        purpose="Capture settings after staged recovery.",
+        purpose="Capture settings after non-reset staged resynchronization.",
         group="job-api",
         expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
         completion=("Hardware config dirty:",),
@@ -867,7 +933,7 @@ JOB_API_COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         command="status",
-        purpose="Capture status and dirty-state after staged recovery.",
+        purpose="Capture status and dirty-state after non-reset staged resynchronization.",
         group="job-api",
         expected=("Status: 0x", "Driver:", "dirty=false"),
         validators=(VALIDATOR_STATUS_NOT_MEASURING,),
@@ -875,11 +941,25 @@ JOB_API_COMMANDS: tuple[CommandSpec, ...] = (
         requires_opt_in="--include-job-api",
     ),
     CommandSpec(
+        command="job reset 1",
+        purpose="Run the separately named explicit soft-reset staged job.",
+        group="job-api",
+        expected=("Boundary: POLL", "Job kind: SOFT_RESET", "Job state: DONE", "Status: OK", "Driver: READY"),
+        validators=(
+            VALIDATOR_JOB_RESULT_FIELDS,
+            VALIDATOR_JOB_DONE_OR_FAILED,
+            VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES,
+            VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
+        ),
+        timeout_s=25.0,
+        requires_opt_in="--include-job-api",
+    ),
+    CommandSpec(
         command="job force 3",
         purpose="Run staged forced measurement with multi-instruction poll budget.",
         group="job-api",
-        expected=("Job Status", "Job state: DONE", "Status: OK"),
-        validators=(VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
+        expected=("Boundary: POLL", "Job state: DONE", "Status: OK"),
+        validators=(VALIDATOR_JOB_RESULT_FIELDS, VALIDATOR_JOB_DONE_OR_FAILED, VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED),
         timeout_s=25.0,
         requires_opt_in="--include-job-api",
     ),
@@ -1219,6 +1299,28 @@ def extract_parsed_evidence(output: str) -> dict:
         evidence["chip_id"] = f"0x{int(chip_id, 16):02X}"
     if match := JOB_STATE_RE.search(output):
         evidence["job_state"] = match.group(1)
+    if match := JOB_BOUNDARY_RE.search(output):
+        evidence["job_boundary"] = match.group(1)
+    if match := JOB_ID_RE.search(output):
+        evidence["job_id"] = int(match.group(1))
+    if match := JOB_KIND_RE.search(output):
+        evidence["job_kind"] = match.group(1)
+    if match := JOB_PHASE_RE.search(output):
+        evidence["job_phase"] = match.group(1)
+    if match := JOB_TERMINAL_RE.search(output):
+        evidence["job_terminal"] = match.group(1).lower() == "true"
+    if match := JOB_STATUS_RE.search(output):
+        evidence["job_status"] = match.group(1)
+        evidence["job_status_code"] = int(match.group(2))
+        evidence["job_status_detail"] = int(match.group(3))
+    if match := JOB_CONVERSION_RE.search(output):
+        evidence["job_conversion_state"] = match.group(1)
+    if match := JOB_DEADLINE_ACTIVE_RE.search(output):
+        evidence["job_phase_deadline_active"] = match.group(1).lower() == "true"
+    if match := JOB_DEADLINE_MS_RE.search(output):
+        evidence["job_phase_deadline_ms"] = int(match.group(1))
+    if match := JOB_CALLBACKS_RE.search(output):
+        evidence["job_callbacks"] = int(match.group(1))
     if match := JOB_INSTRUCTIONS_RE.search(output):
         evidence["job_instructions"] = int(match.group(1))
     return evidence
@@ -1292,13 +1394,80 @@ def validate_parsed_output(spec: CommandSpec, output: str) -> tuple[str | None, 
                 return RESULT_FAIL, f"job consecutive failures={failures}, expected 0."
             reasons.append("job consecutive failures=0")
         elif validator == VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED:
-            instructions = evidence.get("job_instructions")
-            if instructions is None:
-                return RESULT_REVIEW, "job instruction count was not parsed from serial output."
+            callbacks = evidence.get("job_callbacks")
+            if callbacks is None:
+                return RESULT_REVIEW, "job callback count was not parsed from serial output."
             budget = job_command_budget(spec.command)
-            if instructions > budget:
-                return RESULT_FAIL, f"job used {instructions} instruction(s), budget was {budget}."
-            reasons.append(f"job instructions {instructions}<={budget}")
+            if callbacks > budget:
+                return RESULT_FAIL, f"job used {callbacks} callback(s), budget was {budget}."
+            reasons.append(f"job callbacks {callbacks}<={budget}")
+        elif validator == VALIDATOR_JOB_RESULT_FIELDS:
+            required = (
+                "job_boundary",
+                "job_id",
+                "job_kind",
+                "job_phase",
+                "job_state",
+                "job_terminal",
+                "job_status",
+                "job_status_code",
+                "job_status_detail",
+                "job_conversion_state",
+                "job_phase_deadline_active",
+                "job_phase_deadline_ms",
+                "job_callbacks",
+                "job_instructions",
+            )
+            missing = [name for name in required if name not in evidence]
+            if missing:
+                return RESULT_REVIEW, f"job result fields were not parsed: {', '.join(missing)}."
+            if evidence["job_callbacks"] != evidence["job_instructions"]:
+                return RESULT_FAIL, "job callback count differs from compatibility instruction count."
+            terminal_states = {"DONE", "FAILED", "CANCELLED", "TIMED_OUT"}
+            if evidence["job_terminal"] != (evidence["job_state"] in terminal_states):
+                return RESULT_FAIL, "job terminal flag does not match the reported job state."
+            if (not evidence["job_phase_deadline_active"] and
+                    evidence["job_phase_deadline_ms"] != 0):
+                return RESULT_FAIL, "inactive job phase deadline has a nonzero value."
+            reasons.append("job result fields complete and internally consistent")
+        elif validator == VALIDATOR_JOB_START_RUNNING:
+            if (evidence.get("job_boundary") != "START" or
+                    evidence.get("job_id", 0) == 0 or
+                    evidence.get("job_state") != "RUNNING" or
+                    evidence.get("job_status") != "IN_PROGRESS" or
+                    evidence.get("job_callbacks") != 0):
+                return RESULT_FAIL, "job start boundary was not a zero-callback running result."
+            reasons.append("job start is running with zero callbacks")
+        elif validator == VALIDATOR_JOB_ONE_CALLBACK:
+            if evidence.get("job_boundary") != "POLL" or evidence.get("job_callbacks") != 1:
+                return RESULT_FAIL, "job poll did not report exactly one callback."
+            reasons.append("job poll used exactly one callback")
+        elif validator == VALIDATOR_JOB_CANCEL_TIMED_OUT:
+            if (evidence.get("job_boundary") != "CANCEL" or
+                    evidence.get("job_id", 0) == 0 or
+                    evidence.get("job_state") != "TIMED_OUT" or
+                    evidence.get("job_status") != "DEADLINE_EXPIRED" or
+                    evidence.get("job_callbacks") != 0):
+                return RESULT_FAIL, "deadline cancellation boundary was not a zero-callback timed-out result."
+            reasons.append("deadline cancellation is terminal with zero callbacks")
+        elif validator == VALIDATOR_JOB_TIMED_OUT_RETRIEVAL:
+            if (evidence.get("job_boundary") != "POLL" or
+                    evidence.get("job_id", 0) == 0 or
+                    evidence.get("job_state") != "TIMED_OUT" or
+                    evidence.get("job_status") != "DEADLINE_EXPIRED" or
+                    evidence.get("job_callbacks") != 0):
+                return RESULT_FAIL, "zero-budget poll did not retrieve the timed-out terminal result."
+            reasons.append("zero-budget poll retrieved timed-out terminal")
+        elif validator == VALIDATOR_JOB_IDLE_NO_RESULT:
+            if (evidence.get("job_boundary") != "POLL" or
+                    evidence.get("job_id") != 0 or
+                    evidence.get("job_kind") != "NONE" or
+                    evidence.get("job_phase") != "NONE" or
+                    evidence.get("job_state") != "IDLE" or
+                    evidence.get("job_status") != "OK" or
+                    evidence.get("job_callbacks") != 0):
+                return RESULT_FAIL, "second zero-budget poll did not report an empty idle result."
+            reasons.append("cancellation terminal was delivered exactly once")
         else:
             return RESULT_REVIEW, f"unknown runner validator: {validator}"
     if reasons:
@@ -1682,6 +1851,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
                     "Job kind: FORCED_MEASUREMENT\n"
                     "Job state: DONE\n"
                     "Status: OK (code=0, detail=0)\n"
+                    "Callbacks used: 1\n"
                     "Instructions: 1\n"
                     "Driver: READY\n"
                     "Consecutive failures: 0\n"
@@ -1696,7 +1866,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
             "job consecutive validator",
             classify_output(
                 CommandSpec(
-                    command="job recover 1",
+                    command="job resync 1",
                     purpose="self-test",
                     expected=("Job Status",),
                     validators=(VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES,),
@@ -1705,6 +1875,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
                     "=== Job Status ===\n"
                     "Job state: DONE\n"
                     "Status: OK (code=0, detail=0)\n"
+                    "Callbacks used: 1\n"
                     "Instructions: 1\n"
                     "Driver: READY\n"
                     "Consecutive failures: 2\n"
@@ -1728,6 +1899,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
                     "=== Job Status ===\n"
                     "Job state: DONE\n"
                     "Status: OK (code=0, detail=0)\n"
+                    "Callbacks used: 2\n"
                     "Instructions: 2\n"
                     "Driver: READY\n"
                     "Consecutive failures: 0\n"
@@ -2429,7 +2601,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--include-invalid-inputs", action="store_true", help="Include safe CLI invalid-input checks.")
     parser.add_argument("--include-benchmarks", action="store_true", help="Include sample-rate benchmark commands.")
     parser.add_argument("--sample-rate-benchmark", action="store_true", help="Alias for --include-benchmarks.")
-    parser.add_argument("--include-job-api", action="store_true", help="Include staged-job API CLI checks.")
+    parser.add_argument(
+        "--include-job-api",
+        action="store_true",
+        help="Include bounded staged-job start/poll/cancel/resync/reset checks.",
+    )
     parser.add_argument("--soak-duration-s", type=parse_nonnegative_float, default=0.0, help="Run a duration-based safe soak loop after the fixed plan.")
     parser.add_argument("--soak-cycle-stress-count", type=parse_positive_int, default=50, help="Forced stress count per duration-soak cycle.")
     parser.add_argument("--soak-cycle-mix-count", type=parse_positive_int, default=70, help="stress_mix count per duration-soak cycle.")
