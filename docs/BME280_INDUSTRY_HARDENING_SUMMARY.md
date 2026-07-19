@@ -14,9 +14,10 @@ use on ESP32-S2 and ESP32-S3 with Arduino/PlatformIO and ESP-IDF consumers.
 No physical BME280 hardware validation is claimed here. Local ESP-IDF `idf.py`
 validation is claimed only when the exact commands are run and recorded.
 
-Release scope: `v1.7.0` is the direct public successor to `v1.6.0`. The
-release notes for `v1.7.0` contain the staged recovery closure, sample
-freshness API, job CLI/HIL coverage, and release-gating runner flags.
+Release scope: `2.0.0` is a major release candidate because the transport
+callback and `CalibrationRaw` contracts break source compatibility. `v1.7.0`
+remains the latest published tag until the exact 2.0.0 release commit passes
+remote CI and is tagged.
 
 ## Active Documentation Set
 
@@ -124,8 +125,9 @@ Configuration, reset, and recovery:
   return visible `BUSY`, `TIMEOUT`, or the original transport error. Repeated
   bounded NVM polling is available through staged jobs advanced by `pollJob()`.
 - `Config::conversionReadyTimeoutMs` is separate from the per-callback
-  `i2cTimeoutMs`. All wrap-safe timeout fields reject zero and values above
-  `INT32_MAX`.
+  `i2cTimeoutMs`. Timeout fields reject zero; conversion grace also reserves
+  the maximum 1,114 ms mutable measurement/standby base interval so every
+  composed deadline remains at or below `INT32_MAX`.
 - Pure helpers cover settings validation, exact Bosch microsecond timing,
   rounded scheduler timing, chip identity, and checked fixed-unit conversion.
   `CalibrationRaw` exposes the complete image through two bursts without a

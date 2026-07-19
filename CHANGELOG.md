@@ -9,6 +9,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
+## [2.0.0] - 2026-07-19
+
+### Added
+
+- Zero-I2C cancellation, nonzero job identity, public `JobPhase`, conversion
+  ambiguity, chip-phase deadline, callback-usage, and exactly-once terminal
+  result diagnostics for the fixed-memory staged runner.
+- Separate non-reset `startResyncJob()` and explicit
+  `startSoftResetJob()` operations; legacy `startRecoveryJob()` is a non-reset
+  compatibility alias.
+- `ConfigSyncState`, `CalibrationState`, configuration generations,
+  `SampleEnvelope`, sample sequences, and zero-I2C device/calibration
+  invalidation for safe hotplug/replacement handling.
+- Terminal-only `TransportResult` / `TransportErr` with exact write/read byte
+  counts and `Err::I2C_SHORT_TRANSFER`.
+- Compact `SensorSettings`, zero-I2C `validateSettings()`, cooperative
+  `startApplySettingsJob()`, exact Bosch microsecond timing, rounded scheduler
+  timing, checked fixed-unit conversion, chip-ID, and exhaustive public enum
+  string helpers.
+- Typed `BusyReason` details for every `BUSY` result.
+- Native tests for each settings-write stage, transport error/count mapping,
+  cancellation/timing boundaries, cache provenance, partial and ambiguous
+  effects, fixed-layout contracts, and helper boundaries.
+- Matching Arduino/ESP-IDF CLI start, poll, cancel, resync, and reset commands,
+  plus opt-in HIL parser coverage for zero-budget exactly-once cancellation
+  retrieval.
+- Exact PlatformIO Core/platform pins and a configured ASan/UBSan native CI
+  lane.
+
+### Changed
+
+- **Breaking:** injected I2C callbacks return `TransportResult` instead of
+  driver `Status`. A callback is one terminal physical attempt, must not retry
+  or recover the bus, and a write-read must be one combined repeated-start
+  transaction without an intermediate STOP.
+- **Breaking:** `Status::msg` is always library-owned canonical text derived
+  from `Err`; custom message pointers passed through the legacy constructor are
+  ignored. Typed code and numeric detail are the persistent diagnostic
+  contract.
+- A running/waiting staged job now exclusively owns hardware-facing access.
+  Conflicting calls return typed `BUSY` without I2C, while `tick()` performs no
+  I2C.
+- `OFFLINE` is observational rather than an admission gate. Retry, recovery,
+  reset, and retirement policy remain with the application I2C owner.
+- `end()` is an idempotent zero-I2C unbind. Putting the sensor to sleep remains
+  an explicit fallible operation.
+- `conversionReadyTimeoutMs` is distinct from the per-transfer timeout, and
+  cooperative health timing uses the explicit `pollJob()` / `tick()` time.
+- Whole-settings apply reuses the existing apply phases. Pre-write failure or
+  cancellation restores prior settings; any possible write effect retains the
+  desired settings with `RESYNC_REQUIRED`.
+- ESP32-S3/S2 Arduino and native ESP-IDF example adapters implement the exact
+  terminal transport contract without adapter retries or recovery.
+
+### Fixed
+
+- Raw data, compensated data, `t_fine`, timestamp, sequence, and configuration
+  generation now commit atomically only after complete validation; a failed
+  refresh preserves the last-good sample byte-for-byte.
+- Old-generation samples remain explicitly stale after configuration apply or
+  resync and cannot become fresh under new settings.
+- Partial configuration writes, diagnostic control-register writes, and
+  uncertain reset/config effects preserve the original error and require a
+  full verified resync.
+- Forced-trigger timeouts/cancellation expose an unknown conversion state; the
+  next forced job reconciles `status.measuring` before issuing another trigger.
+- Synchronized steady forced sampling no longer rewrites unchanged
+  `ctrl_hum`; humidity remains latched through the configuration
+  `ctrl_meas` write.
+- Cached calibration can be invalidated independently and is committed only
+  after complete reads and validation, including erased humidity-block checks
+  when humidity is enabled.
+- Synchronous and staged recovery keep replacement calibration private until
+  configuration also succeeds. A definite identity/calibration change that
+  cannot be fully resynchronized leaves calibration invalid and blocks further
+  measurement instead of restoring stale operational state.
+- Accepted configuration jobs cancel older compatibility measurement tracking,
+  and `tick()` performs no I2C while configuration or calibration truth is
+  unresolved, preventing old-settings data from receiving a new generation.
+- A successful `ctrl_hum` write followed by any failed `ctrl_meas` latch write
+  now records partial hardware state even when the second failure is a definite
+  address NACK.
+- Conversion-grace validation reserves the maximum mutable measurement plus
+  standby interval so every composed millisecond deadline remains within the
+  signed wrap-safe half range.
+- Pressure and humidity compensation replace negative signed shifts and
+  unchecked extreme-trim intermediates with checked 64-bit operations;
+  overflow returns `COMPENSATION_ERROR` without changing the last-good sample.
+- Health timestamps expose validity, and persistent status snapshots cannot
+  retain borrowed adapter text.
+
+### Removed
+
+- **Breaking:** duplicate `CalibrationRaw::h1`. Register `0xA1` is already
+  available as `CalibrationRaw::tp[25]`; raw calibration now uses exactly two
+  bursts rather than a redundant third transaction.
+- The inert internal platform-time shim; framework-neutral time is now explicit
+  through the injected or caller-provided time context.
+
 ## [1.7.0] - 2026-06-23
 
 ### Added
@@ -322,7 +421,8 @@ for all changes accumulated since `v1.5.0`.
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/janhavelka/BME280/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/janhavelka/BME280/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/janhavelka/BME280/compare/v1.4.0...v1.5.0

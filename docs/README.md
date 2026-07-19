@@ -20,9 +20,10 @@ source evidence.
 - `I2C_HIL_TARGET_TEMPLATE.md`: per-target evidence form for a physical run.
 - `BME280_HARDWARE_VALIDATION_MATRIX.md`: committed hardware validation ledger.
 
-`v1.7.0` is the direct public successor to `v1.6.0`. Keep release-facing
-change history merged into the current release entry unless a later release is
-actually published.
+The repository metadata is prepared for the `2.0.0` major release candidate.
+`v1.7.0` remains the latest published immutable tag until the exact candidate
+commit passes remote CI and is tagged. Keep release-facing history in
+`CHANGELOG.md`; do not infer publication from metadata alone.
 
 ## Source Evidence
 

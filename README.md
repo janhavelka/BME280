@@ -9,9 +9,10 @@ hardware validation and local pure ESP-IDF `idf.py` builds are not claimed
 unless a hardware matrix, HIL artifact package, or validation log records the
 exact commands and setup.
 
-Release status: `v1.7.0` is the direct public successor to `v1.6.0`. The
-`v1.7.0` changelog entry covers the staged recovery closure, sample freshness
-API, job CLI/HIL coverage, and release-gating runner flags.
+Release status: the `2.0.0` major release candidate contains the external-owner
+and transport-contract hardening described in the changelog. Until its exact
+release commit passes remote CI and receives tag `v2.0.0`, `v1.7.0` remains the
+latest published immutable tag.
 
 ## Features
 
@@ -30,8 +31,11 @@ Add to `platformio.ini`:
 
 ```ini
 lib_deps = 
-  https://github.com/janhavelka/BME280.git
+  https://github.com/janhavelka/BME280.git#v2.0.0
 ```
+
+Production consumers should pin an exact tag or commit. Do not use an unpinned
+branch for a qualified firmware build.
 
 ### Manual
 
@@ -654,8 +658,10 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - `docs/extracted-md/00_document_inventory.md` - index for extracted datasheet notes
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
-The `v1.7.0` release notes are the public changelog entry for the staged
-recovery, sample freshness, and job-HIL closure work after `v1.6.0`.
+The `2.0.0` changelog entry records the breaking transport migration, bounded
+owner-job contracts, state/cache integrity work, typed settings/helpers, and
+validation scope. The tag is published only after the exact release commit
+passes remote CI.
 
 ## Known Limitations
 
