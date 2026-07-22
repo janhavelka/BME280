@@ -1,6 +1,6 @@
 # BME280 Industry Hardening Summary
 
-Last updated: 2026-07-19
+Last updated: 2026-07-22
 
 This document is the maintained summary for the merged industry-readiness work.
 It replaces the temporary prompt, phase, merge-gate, and self-test records that
@@ -14,10 +14,9 @@ use on ESP32-S2 and ESP32-S3 with Arduino/PlatformIO and ESP-IDF consumers.
 No physical BME280 hardware validation is claimed here. Local ESP-IDF `idf.py`
 validation is claimed only when the exact commands are run and recorded.
 
-Release scope: `2.0.0` is a major release candidate because the transport
-callback and `CalibrationRaw` contracts break source compatibility. `v1.7.0`
-remains the latest published tag until the exact 2.0.0 release commit passes
-remote CI and is tagged.
+Release scope: `2.0.0` is a major release because the transport callback and
+`CalibrationRaw` contracts break source compatibility. The `v2.0.0` tag
+identifies the exact CI-qualified release commit.
 
 ## Active Documentation Set
 
@@ -221,9 +220,8 @@ claiming soak coverage.
   history. Check the current branch and release tag before publishing new
   evidence.
 - Release status: version metadata, changelog entries, generated version
-  header, and Doxygen project metadata must be aligned on the exact release
-  commit before tagging. Publishing still requires the pushed tag and
-  successful CI for that commit.
+  header, and Doxygen project metadata are aligned for `2.0.0`. The published
+  tag must identify the exact commit whose remote CI workflow passed.
 - Hardware status: not complete until `BME280_HARDWARE_VALIDATION_MATRIX.md` or
   an attached HIL artifact package records real board, wiring, transcript,
   reference, fault, and soak evidence. The software release does not claim

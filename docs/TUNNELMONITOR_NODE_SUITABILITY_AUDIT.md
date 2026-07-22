@@ -1035,7 +1035,7 @@ level.
 
 ## Final assessment
 
-The 2.0.0 release candidate closes the library-side state truth, bounded owner
+The 2.0.0 release closes the library-side state truth, bounded owner
 operation, cancellation, identity, health-policy, transport, reset/resync,
 calibration lifecycle, and persistent-error findings. It remains a general
 chip library: TunnelMonitor candidate selection, original 64-bit request
@@ -1049,8 +1049,8 @@ dependency. That decision must select the exact tagged 2.0.0 release commit and
 authorize one private `I2cTask` adapter plus deletion of the duplicate direct
 protocol; it must not create another application-side state machine.
 
-Library publication still requires remote CI on the exact release commit before
-tagging. Product integration still requires native adapter tests and real
-ESP32-S3 shared-bus/hotplug/fault/enclosure HIL. Those external gates, not an
-unresolved general-library finding, are why the current TunnelMonitor direct
-path must remain in place for now.
+The library release is published from the exact `v2.0.0` commit only after its
+remote CI workflow passes. Product integration still requires native adapter
+tests and real ESP32-S3 shared-bus/hotplug/fault/enclosure HIL. Those product
+gates, not an unresolved general-library finding, are why the current
+TunnelMonitor direct path must remain in place for now.

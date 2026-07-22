@@ -9,10 +9,9 @@ hardware validation and local pure ESP-IDF `idf.py` builds are not claimed
 unless a hardware matrix, HIL artifact package, or validation log records the
 exact commands and setup.
 
-Release status: the `2.0.0` major release candidate contains the external-owner
-and transport-contract hardening described in the changelog. Until its exact
-release commit passes remote CI and receives tag `v2.0.0`, `v1.7.0` remains the
-latest published immutable tag.
+Release status: `2.0.0` is the current major release. It contains the
+external-owner and transport-contract hardening described in the changelog and
+is published from the exact CI-qualified `v2.0.0` tag.
 
 ## Features
 
@@ -660,8 +659,8 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 
 The `2.0.0` changelog entry records the breaking transport migration, bounded
 owner-job contracts, state/cache integrity work, typed settings/helpers, and
-validation scope. The tag is published only after the exact release commit
-passes remote CI.
+validation scope. The `v2.0.0` tag identifies the exact release commit after
+its remote CI workflow passes.
 
 ## Known Limitations
 
