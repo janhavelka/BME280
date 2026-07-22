@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
-## [2.0.0] - 2026-07-19
+## [2.0.0] - 2026-07-22
 
 ### Added
 
@@ -99,6 +99,9 @@ No unreleased changes.
   overflow returns `COMPENSATION_ERROR` without changing the last-good sample.
 - Health timestamps expose validity, and persistent status snapshots cannot
   retain borrowed adapter text.
+- The sanitizer regression now verifies canonical status-message content
+  without assuming that compilers merge identical string literals across
+  translation units.
 
 ### Removed
 

@@ -733,15 +733,15 @@ void test_transport_result_contract_is_terminal_only() {
 void test_status_copy_assignment_and_persistent_fields_use_canonical_messages() {
   char borrowed[] = "borrowed message";
   Status source{Err::I2C_BUS, -181, borrowed};
-  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_BUS), source.msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::I2C_BUS), source.msg);
 
   source.msg = borrowed;
   Status copied(source);
   Status assigned;
   assigned = source;
   borrowed[0] = 'X';
-  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_BUS), copied.msg);
-  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_BUS), assigned.msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::I2C_BUS), copied.msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::I2C_BUS), assigned.msg);
   TEST_ASSERT_EQUAL_STRING("I2C_BUS", copied.msg);
   TEST_ASSERT_EQUAL_STRING("I2C_BUS", assigned.msg);
 
@@ -759,12 +759,12 @@ void test_status_copy_assignment_and_persistent_fields_use_canonical_messages() 
   SettingsSnapshot configSnapshot{};
   TEST_ASSERT_TRUE(configDev.getSettings(configSnapshot).ok());
   returnedBorrowed[0] = 'X';
-  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_SHORT_TRANSFER),
-                        configDev.lastError().msg);
-  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_SHORT_TRANSFER),
-                        configDev.hardwareConfigDirtyError().msg);
-  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_SHORT_TRANSFER),
-                        configSnapshot.hardwareConfigDirtyError.msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::I2C_SHORT_TRANSFER),
+                           configDev.lastError().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::I2C_SHORT_TRANSFER),
+                           configDev.hardwareConfigDirtyError().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::I2C_SHORT_TRANSFER),
+                           configSnapshot.hardwareConfigDirtyError.msg);
 
   FakeBus jobBus;
   BME280::BME280 jobDev;
@@ -777,12 +777,12 @@ void test_status_copy_assignment_and_persistent_fields_use_canonical_messages() 
   SettingsSnapshot jobSnapshot{};
   TEST_ASSERT_TRUE(jobDev.getSettings(jobSnapshot).ok());
   jobBorrowed[0] = 'X';
-  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS), jobDev.jobStatus().msg);
-  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS), polled.status.msg);
-  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS),
-                        jobDev.lastMeasurementStatus().msg);
-  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS),
-                        jobSnapshot.lastMeasurementStatus.msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS), jobDev.jobStatus().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS), polled.status.msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS),
+                           jobDev.lastMeasurementStatus().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS),
+                           jobSnapshot.lastMeasurementStatus.msg);
 }
 
 void test_successful_transport_callbacks_report_exact_counts_once() {
