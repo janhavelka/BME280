@@ -14,26 +14,33 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-#include "BME280/Status.h"
+#include "BME280/Config.h"
 
 namespace transport {
 
-inline BME280::Status mapWireResult(uint8_t result, const char* context) {
+inline BME280::TransportResult mapWireResult(uint8_t result,
+                                             size_t writeCount,
+                                             size_t readCount = 0) {
   switch (result) {
     case 0:
-      return BME280::Status::Ok();
+      return BME280::TransportResult::Complete(writeCount, readCount);
     case 1:
-      return BME280::Status::Error(BME280::Err::INVALID_PARAM, context, result);
+      return BME280::TransportResult::Error(BME280::TransportErr::OTHER,
+                                            result);
     case 2:
-      return BME280::Status::Error(BME280::Err::I2C_NACK_ADDR, context, result);
+      return BME280::TransportResult::Error(
+          BME280::TransportErr::NACK_ADDRESS, result);
     case 3:
-      return BME280::Status::Error(BME280::Err::I2C_NACK_DATA, context, result);
+      return BME280::TransportResult::Error(BME280::TransportErr::NACK_DATA,
+                                            result);
     case 4:
-      return BME280::Status::Error(BME280::Err::I2C_BUS, context, result);
+      return BME280::TransportResult::Error(BME280::TransportErr::BUS, result);
     case 5:
-      return BME280::Status::Error(BME280::Err::I2C_TIMEOUT, context, result);
+      return BME280::TransportResult::Error(BME280::TransportErr::TIMEOUT,
+                                            result);
     default:
-      return BME280::Status::Error(BME280::Err::I2C_ERROR, context, result);
+      return BME280::TransportResult::Error(BME280::TransportErr::OTHER,
+                                            result);
   }
 }
 
@@ -48,35 +55,40 @@ inline BME280::Status mapWireResult(uint8_t result, const char* context) {
  * @param len Number of bytes
  * @param timeoutMs Timeout requested by the driver (advisory only)
  * @param user Pointer to TwoWire instance
- * @return Status OK on success, I2C error on failure
+ * This callback performs exactly one physical transaction and never retries or
+ * recovers the bus.
+ *
+ * @return Terminal transport result with exact counts on success
  */
-inline BME280::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
-                                uint32_t timeoutMs, void* user) {
+inline BME280::TransportResult wireWrite(uint8_t addr, const uint8_t* data,
+                                         size_t len, uint32_t timeoutMs,
+                                         void* user) {
   (void)timeoutMs;
 
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
-    return BME280::Status::Error(BME280::Err::INVALID_CONFIG, "Wire instance is null");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -1);
   }
   if (!data || len == 0) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM, "Invalid I2C write params");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -2);
   }
 
   // Check for oversized writes (ESP32 Wire buffer is 128 bytes)
   if (len > 128) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM, "Write exceeds I2C buffer",
-                                 static_cast<int32_t>(len));
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER,
+                                          static_cast<int32_t>(len));
   }
 
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
-    return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C write incomplete",
-                                  static_cast<int32_t>(written));
+    // No bus attempt has occurred; detail records bytes accepted by Wire.
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER,
+                                          static_cast<int32_t>(written));
   }
 
   uint8_t result = wire->endTransmission(true);  // Send STOP
-  return mapWireResult(result, "I2C write failed");
+  return mapWireResult(result, len);
 }
 
 /**
@@ -92,54 +104,62 @@ inline BME280::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
  * @param rxLen RX length
  * @param timeoutMs Timeout requested by the driver (advisory only)
  * @param user Pointer to TwoWire instance
- * @return Status OK on success, I2C error on failure
+ * `endTransmission(false)` retains the pointer write without a STOP and the
+ * following `requestFrom()` completes one combined repeated-start transaction.
+ * The callback never retries or recovers the bus.
+ *
+ * @return Terminal transport result with exact counts on success
  */
-inline BME280::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
-                                    uint8_t* rx, size_t rxLen, uint32_t timeoutMs,
-                                    void* user) {
+inline BME280::TransportResult wireWriteRead(uint8_t addr, const uint8_t* tx,
+                                             size_t txLen, uint8_t* rx,
+                                             size_t rxLen, uint32_t timeoutMs,
+                                             void* user) {
   (void)timeoutMs;
 
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
-    return BME280::Status::Error(BME280::Err::INVALID_CONFIG, "Wire instance is null");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -1);
   }
   if ((txLen > 0 && tx == nullptr) || (rxLen > 0 && rx == nullptr)) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM, "Invalid I2C read params");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -2);
   }
   if (txLen == 0 || rxLen == 0) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM, "I2C read length invalid");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -3);
   }
   if (txLen > 128 || rxLen > 128) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM, "I2C read exceeds buffer");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -4);
   }
 
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {
-    return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C write incomplete",
-                                 static_cast<int32_t>(written));
+    // No bus attempt has occurred; detail records bytes accepted by Wire.
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER,
+                                          static_cast<int32_t>(written));
   }
 
   uint8_t result = wire->endTransmission(false);  // Repeated start
   if (result != 0) {
-    return mapWireResult(result, "I2C write phase failed");
+    return mapWireResult(result, 0);
   }
 
   size_t read = wire->requestFrom(addr, static_cast<uint8_t>(rxLen));
   if (read != rxLen) {
-    return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C read length mismatch",
-                                  static_cast<int32_t>(read));
+    // Wire exposes the combined operation's received byte count but not its
+    // underlying error. Preserve the exact counts so the core reports
+    // I2C_SHORT_TRANSFER instead of inventing an address/data-NACK cause.
+    return BME280::TransportResult{BME280::TransportErr::OK, 0, txLen, read};
   }
 
   for (size_t i = 0; i < rxLen; ++i) {
     if (wire->available()) {
       rx[i] = static_cast<uint8_t>(wire->read());
     } else {
-      return BME280::Status::Error(BME280::Err::I2C_ERROR, "I2C data not available");
+      return BME280::TransportResult{BME280::TransportErr::OK, 0, txLen, i};
     }
   }
 
-  return BME280::Status::Ok();
+  return BME280::TransportResult::Complete(txLen, rxLen);
 }
 
 /**
@@ -153,7 +173,9 @@ inline BME280::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLe
  */
 inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50) {
 #if defined(ARDUINO_ARCH_ESP32)
-  // Toggle SCL to release any stuck slave
+  // Bus recovery belongs to explicit application setup. Transport callbacks
+  // above never invoke this procedure or retry a transaction.
+  // Toggle SCL to release any stuck slave.
   pinMode(scl, OUTPUT);
   pinMode(sda, INPUT_PULLUP);
   for (int i = 0; i < 9; i++) {

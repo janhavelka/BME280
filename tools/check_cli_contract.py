@@ -131,6 +131,32 @@ def main() -> int:
     if re.search(r"\bcfg\b", text) is None and re.search(r"\bsettings\b", text) is None:
         fail("either 'cfg' or 'settings' command must be present")
 
+    for token in (
+        "startResyncJob",
+        "startRecoveryJob",
+        "startSoftResetJob",
+        "cancelJob",
+        "CancelReason::OWNER_REQUEST",
+        "CancelReason::DEADLINE_EXPIRED",
+        'pollJob(millis(), 0U)',
+        '"Boundary: %s\\n"',
+        '"Job ID: %lu\\n"',
+        '"Job phase: %s\\n"',
+        '"Terminal state: %s\\n"',
+        '"Conversion state: %s\\n"',
+        '"Phase deadline active: %s\\n"',
+        '"Phase deadline ms: %lu\\n"',
+        '"Callbacks used: %u\\n"',
+        "BME280::toString(result.status.code)",
+    ):
+        if token not in text:
+            fail(f"staged-job CLI contract missing token: {token}")
+
+    if not re.search(r'action == "resync"\)\s*\{\s*return device\.startResyncJob\(\);', text):
+        fail("job resync must map to non-reset startResyncJob()")
+    if not re.search(r'action == "reset"\)\s*\{\s*return device\.startSoftResetJob\(\);', text):
+        fail("job reset must map to explicit startSoftResetJob()")
+
     print("CLI contract PASSED")
     return 0
 

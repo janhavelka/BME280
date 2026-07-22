@@ -18,7 +18,6 @@ FORBIDDEN_IDF_TOKENS = [
     "IdfArduinoCompat",
     "ArduinoCompat",
     "TwoWire",
-    "String",
     "Serial",
     "examples/01_basic_bringup_cli/main.cpp",
     "setup();",
@@ -28,6 +27,7 @@ FORBIDDEN_IDF_TOKENS = [
 FORBIDDEN_IDF_PATTERNS = {
     "millis() shim or call": re.compile(r"\bmillis\s*\("),
     "Arduino delay() call": re.compile(r"\bdelay\s*\("),
+    "Arduino String type": re.compile(r"\bString\b"),
 }
 
 REQUIRED_IDF_TOKENS = [
@@ -167,12 +167,62 @@ def main() -> int:
         "Total:",
         "=== Job Status ===",
         "Job kind:",
+        "Job ID:",
+        "Job phase:",
         "Job state:",
+        "Terminal state:",
+        "Conversion state:",
+        "Phase deadline active:",
+        "Phase deadline ms:",
+        "Callbacks used:",
         "Instructions:",
         "Driver:",
     ):
         if token not in idf:
             fail(f"IDF CLI output contract missing token: {token}")
+
+    for token in (
+        "startResyncJob",
+        "startRecoveryJob",
+        "startSoftResetJob",
+        "cancelJob",
+        "CancelReason::OWNER_REQUEST",
+        "CancelReason::DEADLINE_EXPIRED",
+        "pollJob(currentMs(), 0U)",
+        "BME280::toString(result.status.code)",
+    ):
+        if token not in idf:
+            fail(f"IDF staged-job contract missing token: {token}")
+
+    if not re.search(
+        r'std::strcmp\(action, "resync"\) == 0\)\s*\{\s*return device\.startResyncJob\(\);',
+        idf,
+    ):
+        fail("IDF job resync must map to non-reset startResyncJob()")
+    if not re.search(
+        r'std::strcmp\(action, "reset"\) == 0\)\s*\{\s*return device\.startSoftResetJob\(\);',
+        idf,
+    ):
+        fail("IDF job reset must map to explicit startSoftResetJob()")
+
+    ordered_job_labels = (
+        '"Boundary: %s\\n"',
+        '"Job ID: %lu\\n"',
+        '"Job kind: %s\\n"',
+        '"Job phase: %s\\n"',
+        '"Job state: %s\\n"',
+        '"Terminal state: %s\\n"',
+        '"Status: %s (code=%u, detail=%ld)\\n"',
+        '"Conversion state: %s\\n"',
+        '"Phase deadline active: %s\\n"',
+        '"Phase deadline ms: %lu\\n"',
+        '"Callbacks used: %u\\n"',
+        '"Instructions: %u\\n"',
+    )
+    for source, label in ((arduino, "Arduino"), (idf, "IDF")):
+        positions = [source.find(token) for token in ordered_job_labels]
+        if any(position < 0 for position in positions) or positions != sorted(positions):
+            fail(f"{label} staged-job output fields are missing or out of contract order")
 
     manifest = read(ROOT / "idf_component.yml")
     for token in ("esp32s2", "esp32s3", "idf:"):

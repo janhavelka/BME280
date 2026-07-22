@@ -25,6 +25,187 @@ new immutable revision, then replace the direct BME280 protocol in `I2cTask`
 with one narrow owner-private adapter. Do not rewrite the Bosch protocol in the
 firmware, and do not hide the current gaps in adapter checks.
 
+## Implementation re-audit baseline - 2026-07-19
+
+This implementation pass started from the following exact repository state:
+
+| Repository | Starting revision and worktree |
+| --- | --- |
+| BME280 | `0aabd587e088117142f2b7e7c3b7b90ee4a778a3`; clean working tree; branch `hardening/tunnelmonitor-suitability-reaudit` created for this work |
+| TunnelMonitor-node | `602114ea6c723e31c41f0eb7cd8ac2b56a46d40e`; branch `prompt-44b-sequence`; preserved modified `.vscode/extensions.json` and untracked `docs/reports/i2c_library_latest_branch_audit_revalidation_20260718.md` |
+
+After the repository fetch, the TunnelMonitor remote branch advanced beyond
+the audited revision to `3317b5f`. The local checkout was intentionally left at
+`602114ea` so this pass continued against the requested immutable baseline and
+did not disturb its dirty working tree.
+
+The lead ran these software baseline checks before implementation:
+
+| Check | Baseline result |
+| --- | --- |
+| Native suite | PASS, 136/136 |
+| Core timing, CLI, HIL contract, and ESP-IDF example guards | PASS |
+| Release metadata | PASS, version `1.7.0` |
+| HIL parser | PASS |
+| PlatformIO ESP32-S3 build | PASS, 22,584 bytes RAM and 394,318 bytes flash |
+| PlatformIO ESP32-S2 build | PASS, 37,000 bytes RAM and 383,705 bytes flash |
+| Doxygen | PASS with Doxygen 1.15 |
+| Local ESP-IDF build | NOT RUN; `idf.py` was unavailable |
+| New physical HIL | NOT RUN |
+
+The source re-audit retained the following pre-implementation dispositions:
+
+| Findings | 2026-07-19 disposition |
+| --- | --- |
+| H-01 through H-11 | Confirmed; pending implementation and focused regression tests |
+| S-01 | Confirmed; configuration/conversion timing remains coupled to the transport timeout; pending implementation |
+| S-02 | Confirmed; cooperative operation and health timestamps still use two time inputs; pending implementation |
+| S-03 | Partially confirmed; retain the deliberately narrow coefficient checks and add the scoped erased humidity-block check |
+| S-04 | Confirmed; PlatformIO core and build-platform resolution remain broadly specified; pending exact pinning |
+
+This table is a baseline disposition, not a completion claim. Final status must
+be recorded only after the corresponding code, tests, documentation, and
+release checks have completed.
+
+### Implementation progress
+
+The first core-state chunk resolves H-01, H-02, H-10, and the scoped S-03
+humidity check. Raw decoding and compensation now use candidate storage and
+commit one `SampleEnvelope` only after complete validation. Typed configuration
+and calibration state, configuration generations, sample sequences, and
+zero-I2C device-state invalidation prevent uncertain settings or coefficients
+from being used for a new measurement. A successful staged resynchronization
+preserves the prior sample only as generation-stale diagnostic evidence.
+
+The focused native regressions cover last-good preservation after raw-sentinel
+and pressure-divisor failures, zero-I2C `RESYNC_REQUIRED` admission, generation
+and sequence provenance, invalidation/reload behavior, and erased humidity
+calibration with humidity-enabled and humidity-skipped configurations. The
+native suite passed 142/142 after this chunk. Remaining findings stay open
+until their later implementation chunks and final full validation.
+
+S-04 is also resolved in build policy: PlatformIO Core is pinned to 6.1.19 in
+CI, the ESP32 platform is pinned to the qualified pioarduino 54.03.20 release,
+and the native platform is pinned to 1.2.1. With those pins active, the native
+suite passed 142/142 and both ESP32-S3 and ESP32-S2 PlatformIO builds passed.
+This is build evidence only; it does not add local ESP-IDF or hardware-runtime
+evidence.
+
+The ownership and lifecycle chunk resolves H-03, H-05, and H-06. A staged job
+now has exclusive hardware access: every synchronous public operation that can
+reach the transport returns `BUSY` without a callback while a job is running or
+waiting. Health states and counters remain observable, but `OFFLINE` no longer
+overrides an explicit owner-directed transaction or recovery policy. `end()` is
+now an idempotent, zero-I2C unbind that cancels local work and clears callbacks,
+cached device state, samples, and health history; putting the sensor to sleep is
+an explicit fallible hardware operation, not hidden teardown behavior. Native
+regressions cover the hardware-API admission matrix, passive OFFLINE history,
+zero-I2C repeated teardown, and transport rebinding. The native suite passed
+143/143, and the core-timing, CLI, HIL-contract, and ESP-IDF-example guards also
+passed after this chunk.
+
+The cooperative control/timing chunk has the following implementation
+disposition. This is source-and-focused-regression progress, not final release,
+ESP-IDF, TunnelMonitor, or hardware validation:
+
+| Finding | 2026-07-19 implementation disposition |
+| --- | --- |
+| H-03 | Resolved in the library core: a running/waiting staged job exclusively owns hardware-facing entry points; conflicting fallible calls return typed `BUSY`, and `tick()` performs no I2C. |
+| H-04 | Resolved in the library core: every accepted job has a nonzero identity and public phase/progress data; zero-I2C cancellation records owner-request or external-deadline reason. Natural terminal results are returned by the completing poll, while cancellation is retained for exactly one poll and blocks later hardware until retrieved. |
+| H-05 | Resolved in the library core: `OFFLINE` remains observable but no longer gates an explicit owner-directed operation. |
+| H-06 | Resolved in the library core: `end()` is idempotent zero-I2C unbind/teardown. |
+| H-07 | Resolved in the library and shipped adapters: callbacks return terminal-only `TransportResult`, success requires exact byte counts, write-read requires one combined repeated-start transaction, and callbacks are contractually one physical attempt with no retry or bus recovery. Definite address/data NACK, timeout, bus, short-transfer, and other failures remain distinct. |
+| H-08 | Resolved in the library core: `startResyncJob()` and legacy `startRecoveryJob()` perform non-reset resync; `startSoftResetJob()` is the separate explicit reset operation. |
+| H-09 | Resolved in the library core: `ConversionState` represents trigger ambiguity, cancellation preserves it when a trigger may have reached the chip, and the next forced job reconciles status before issuing another trigger. Steady forced sampling no longer rewrites `ctrl_hum`. |
+| S-01 | Resolved in configuration: `conversionReadyTimeoutMs` is separate from per-transfer `i2cTimeoutMs`; short wrap-safe timeouts are range-checked. |
+| S-02 | Resolved in cooperative timing: `pollJob(nowMs, ...)` and `tick(nowMs)` provide the time context for their chip phases and health updates; synchronous calls use the optional hook, and validity flags identify unavailable timestamps. |
+
+The job result now distinguishes its internal chip-phase deadline from the
+application's original end-to-end deadline. TunnelMonitor would still have to
+retain the latter across queueing and polling and call
+`cancelJob(DEADLINE_EXPIRED)` when it expires. Per-poll callback budgets and
+fixed NVM/measuring poll caps bound library work, but do not establish or renew
+an owner deadline.
+
+H-11 is resolved in the library core. Persistent `Status` values retain only
+typed code and numeric detail; construction, copying, and assignment derive
+`msg` from the library-owned exhaustive `toString(Err)`. Transport adapters can
+no longer return a driver `Status` or inject borrowed text. Focused tests cover
+temporary-message mutation across direct copies and persistent driver, job, and
+snapshot fields.
+
+After the H-07/H-11 transport checkpoint, the native suite passed 158/158; the
+core-timing, CLI, HIL-contract, and ESP-IDF-example guards passed; Doxygen 1.15
+completed without warnings; and the pinned ESP32-S3/S2 Arduino builds passed at
+22,696/37,096 bytes RAM and 394,662/383,633 bytes flash respectively. Final
+integration review, release qualification, local ESP-IDF validation,
+TunnelMonitor adapter validation, and physical HIL remain separate gates. These
+are software checks only, not hardware or local ESP-IDF evidence.
+
+The remaining public-surface chunk adds a compact `SensorSettings` value and
+zero-I2C `startApplySettingsJob()` while reusing the existing APPLY_CONFIG
+runner. Pure validation rejects invalid enum/channel combinations. An untouched
+failed/cancelled apply restores prior cached settings; once a config write
+succeeds or may have reached the chip, desired settings remain observable with
+`RESYNC_REQUIRED`. Exact Bosch microsecond timing, rounded scheduler timing,
+checked TunnelMonitor-unit conversions, chip-ID checks, exhaustive public enum
+strings, and typed nonzero `BusyReason` details are fixed-memory helpers. The
+duplicate `CalibrationRaw::h1` field/read is removed: `tp[25]` already contains
+register `0xA1`, so the diagnostic read is exactly two bursts.
+
+The final native suite passed 179/179, including the settings write-stage
+failure/cancellation matrix, identity/calibration provenance failures, checked
+extreme-trim compensation overflow, helper boundaries, conservative public POD
+layout/size contracts, exact two-burst calibration behavior, and legacy
+cached-config apply. Updated CLI/HIL guards and 25 HIL parser tests passed. The
+pinned sequential Arduino builds passed on ESP32-S3 at 22,688 bytes RAM and
+399,126 bytes flash and ESP32-S2 at 37,104 bytes RAM and 388,173 bytes flash.
+An ASan/UBSan CI environment is configured. It was not runnable locally because
+the installed MinGW toolchain lacks `libasan` and `libubsan`; no local sanitizer
+success is claimed.
+
+### Final implementation disposition
+
+This table supersedes the pre-implementation disposition for the 2.0.0 release
+candidate. “Resolved” means the repository contract, implementation, and native
+regression exist; it does not claim remote CI, ESP-IDF runtime, physical HIL, or
+TunnelMonitor product integration.
+
+| Finding | Severity / affected contract | Resolution and current evidence | Final status |
+| --- | --- | --- | --- |
+| H-01 | Release gate: sample/cache integrity | Raw, compensated, `t_fine`, timestamp, sequence, and generation use candidate storage and one atomic commit. Raw sentinel, pressure-divisor, partial-read, and compensation failures preserve the exact prior envelope. | Resolved in library; native regression passed. |
+| H-02 | Release gate: settings truth and sample provenance | `ConfigSyncState`, dirty cause, generation tagging, staged calibration commit, and stale classification block measurement while uncertain. Accepted apply jobs cancel older synchronous tracking, and `tick()` cannot commit old-settings data after a state change. | Resolved in library; native regression passed. |
+| H-03 | Release gate: single hardware owner | One admission gate rejects every conflicting hardware-facing synchronous API with typed `BUSY`; `tick()` performs no I2C while a job runs/waits. | Resolved in library; full admission-matrix regression passed. |
+| H-04 | Release gate: deadline/cancellation/result correlation | Nonzero `jobId`, public kind/phase/state/deadline/callback data, zero-I2C owner/deadline cancellation, and exactly-once terminal retrieval prevent stale attribution. The HIL runner correlates one identity and the exact retained terminal across the whole cancellation sequence. | Resolved in library/CLI/parser; native and parser regressions passed. |
+| H-05 | Integration contract: owner retains health/recovery policy | `OFFLINE` is passive diagnostic state and never vetoes an explicit transaction; counters/timestamps remain observable. | Resolved in library; offline-operation regressions passed. |
+| H-06 | Release gate: teardown ownership | `end()` is idempotent zero-I2C unbind; sleep/reset remain explicit fallible operations. | Resolved in library; repeated teardown/rebind regression passed. |
+| H-07 | Release gate: transport terminality and exact transfer | Callbacks return terminal-only `TransportResult`, make one physical attempt, report exact counts, and require combined repeated-start reads. Short, address/data NACK, timeout, bus, and other causes map centrally without retry. | Resolved in core and Arduino/IDF adapters; mapping/count/attempt regressions and target builds passed. |
+| H-08 | Release gate: reset policy | Resync verifies identity/NVM/calibration/config without reset; soft reset is separately named and sends exactly `0xE0,0xB6`. | Resolved in library/CLI/HIL contract; payload/no-reset regressions passed. |
+| H-09 | Release gate: ambiguous forced trigger | Unknown-after-trigger-error state survives failure/cancel; the next force reconciles `status.measuring` before any new trigger. Steady force writes no redundant `ctrl_hum`. | Resolved in library; ambiguity/reconciliation/callback-order regressions passed. |
+| H-10 | Integration contract: calibration/device replacement | Zero-I2C invalidation and observed chip-ID/calibration changes require a complete identity/calibration/config resync before measurement. Synchronous and staged candidates commit only after full configuration success; failed replacement detection leaves prior bytes inaccessible rather than operational. | Resolved in general library; hotplug policy remains with the application owner. |
+| H-11 | Release gate: persistent status ownership and typed causes | Stored statuses derive canonical text from exhaustive library `toString`; borrowed text is ignored/recanonicalized. `BusyReason` and other public state enums are typed/stringable. | Resolved in library; borrowed-storage and persistent snapshot regressions passed. |
+| S-01 | Secondary: timeout separation | Per-transfer `i2cTimeoutMs` and chip `conversionReadyTimeoutMs` are independent. Conversion grace reserves the maximum 1,114 ms mutable base interval so composed deadlines remain in the signed wrap-safe half range. | Resolved; invalid/boundary and forced-timeout regressions passed. |
+| S-02 | Secondary: coherent monotonic context | `pollJob(nowMs, ...)` and `tick(nowMs)` supply the authoritative call context; synchronous calls use the optional hook and expose timestamp validity. | Resolved; explicit-time and no-hook regressions passed. |
+| S-03 | Secondary: narrow calibration validation | Mandatory T1/P1 checks remain narrow; erased all-zero/all-`0xFF` humidity blocks fail only when humidity is enabled. | Resolved; enabled/skipped humidity regressions passed. |
+| S-04 | Secondary: reproducible build inputs | PlatformIO Core 6.1.19, native platform 1.2.1, and pioarduino ESP32 platform 54.03.20 are exact pinned; Arduino 3.2.0 and IDF libraries 5.4.0 resolved in recorded builds. | Resolved in repository build policy; local S2/S3 builds passed. |
+
+No writable NVM, calibration programming, or factory-trim API exists, so the
+rare destructive-operation requirements are intentionally out of surface
+rather than hidden behind an unbounded helper. Raw calibration inspection is
+two fixed bursts. The public operation classes are therefore: pure/zero-I2C
+admission and helpers, cooperative bounded jobs, and explicitly documented
+synchronous compatibility/diagnostic calls.
+
+TunnelMonitor source changes are not authorized by its current architecture
+authority. `docs/guidelines/dependency_policy.md:32-41,114`,
+`docs/guidelines/i2c_peripherals.md:477-486`, and
+`docs/guidelines/decisions.md:107` in TunnelMonitor-node still defer the BME280
+library and retain direct owner-private ENV protocol as the implemented
+baseline. A later scoped TunnelMonitor decision must authorize the integration
+and select an exact immutable BME280 release before firmware source,
+configuration, dependency, or test changes are made. This does not block the
+general-purpose library hardening in this repository.
+
 ## Audit basis
 
 The audit used these exact revisions:
@@ -854,18 +1035,22 @@ level.
 
 ## Final assessment
 
-BME280 v1.7.0 is the right codebase to harden. Its staged job engine,
-calibration parsing, coherent data burst, fixed-point compensation, fixed
-memory, and transport-neutral design are strong and should replace the direct
-chip math in TunnelMonitor after the focused refactor.
+The 2.0.0 release candidate closes the library-side state truth, bounded owner
+operation, cancellation, identity, health-policy, transport, reset/resync,
+calibration lifecycle, and persistent-error findings. It remains a general
+chip library: TunnelMonitor candidate selection, original 64-bit request
+deadline, retries, bus recovery, aggregate health, public result mapping, fan
+policy, and unit acceptance stay outside it.
 
-The remaining gaps are state truth and owner integration, not basic Bosch
-protocol support. Fix the core cache commit, configuration generation,
-operation exclusivity, cancellation, health gating, and recovery semantics in
-the library. Then integrate it as a private passive leaf while `I2cTask` retains
-candidate selection, deadlines, retry policy, health, and public result mapping.
+TunnelMonitor source was intentionally not changed. Its current authoritative
+dependency and I2C-peripheral decisions still retain the direct owner-private
+BME protocol and require a later scoped decision before introducing this
+dependency. That decision must select the exact tagged 2.0.0 release commit and
+authorize one private `I2cTask` adapter plus deletion of the duplicate direct
+protocol; it must not create another application-side state machine.
 
-After those changes, exact pinning, and real ESP32-S3 shared-bus and enclosure
-qualification, the library should be suitable for a platformized
-TunnelMonitor. It should not replace the current direct BME280 path before those
-gates are complete.
+Library publication still requires remote CI on the exact release commit before
+tagging. Product integration still requires native adapter tests and real
+ESP32-S3 shared-bus/hotplug/fault/enclosure HIL. Those external gates, not an
+unresolved general-library finding, are why the current TunnelMonitor direct
+path must remain in place for now.

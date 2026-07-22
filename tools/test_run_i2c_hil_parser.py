@@ -35,6 +35,40 @@ def probe_spec() -> run_i2c_hil.CommandSpec:
     raise AssertionError("default HIL command list is missing probe")
 
 
+def job_result_output(
+    *,
+    boundary: str,
+    job_id: int,
+    kind: str,
+    phase: str,
+    state: str,
+    status: str,
+    status_code: int,
+    terminal: bool,
+    callbacks: int,
+    deadline_active: bool = False,
+    deadline_ms: int = 0,
+) -> str:
+    return (
+        "=== Job Status ===\n"
+        f"Boundary: {boundary}\n"
+        f"Job ID: {job_id}\n"
+        f"Job kind: {kind}\n"
+        f"Job phase: {phase}\n"
+        f"Job state: {state}\n"
+        f"Terminal state: {'true' if terminal else 'false'}\n"
+        f"Status: {status} (code={status_code}, detail=0)\n"
+        "Conversion state: IDLE\n"
+        f"Phase deadline active: {'true' if deadline_active else 'false'}\n"
+        f"Phase deadline ms: {deadline_ms}\n"
+        f"Callbacks used: {callbacks}\n"
+        f"Instructions: {callbacks}\n"
+        "Driver: READY\n"
+        "Hardware config dirty: false\n"
+        "Consecutive failures: 0\n"
+    )
+
+
 class HilCalibClassificationTest(unittest.TestCase):
     def test_complete_calib_output_passes(self) -> None:
         spec = calib_spec()
@@ -306,15 +340,20 @@ class HilCalibClassificationTest(unittest.TestCase):
         self.assertEqual(
             [
                 "job status",
+                "job start init",
                 "job poll 1",
+                "job cancel deadline",
+                "job poll 0",
+                "job poll 0",
                 "job init 1",
                 "job apply 1",
                 "job force 1",
                 "raw",
                 "comp",
-                "job recover 1",
+                "job resync 1",
                 "cfg",
                 "status",
+                "job reset 1",
                 "job force 3",
                 "drv",
             ],
@@ -333,6 +372,7 @@ class HilCalibClassificationTest(unittest.TestCase):
             "Job kind: FORCED_MEASUREMENT\n"
             "Job state: DONE\n"
             "Status: OK (code=0, detail=0)\n"
+            "Callbacks used: 1\n"
             "Instructions: 1\n"
             "Driver: READY\n"
             "Consecutive failures: 0\n"
@@ -345,7 +385,7 @@ class HilCalibClassificationTest(unittest.TestCase):
 
     def test_job_zero_consecutive_failures_validator_fails_nonzero(self) -> None:
         spec = run_i2c_hil.CommandSpec(
-            command="job recover 1",
+            command="job resync 1",
             purpose="job parser test",
             expected=("Job Status",),
             validators=(run_i2c_hil.VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES,),
@@ -354,6 +394,7 @@ class HilCalibClassificationTest(unittest.TestCase):
             "=== Job Status ===\n"
             "Job state: DONE\n"
             "Status: OK (code=0, detail=0)\n"
+            "Callbacks used: 1\n"
             "Instructions: 1\n"
             "Driver: READY\n"
             "Consecutive failures: 1\n"
@@ -375,6 +416,7 @@ class HilCalibClassificationTest(unittest.TestCase):
             "=== Job Status ===\n"
             "Job state: DONE\n"
             "Status: OK (code=0, detail=0)\n"
+            "Callbacks used: 2\n"
             "Instructions: 2\n"
             "Driver: READY\n"
             "Consecutive failures: 0\n"
@@ -384,6 +426,163 @@ class HilCalibClassificationTest(unittest.TestCase):
 
         self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
         self.assertIn("budget was 1", reason)
+
+    def test_staged_cancel_zero_budget_exactly_once_fixtures(self) -> None:
+        cases = (
+            (
+                "job start init",
+                (run_i2c_hil.VALIDATOR_JOB_RESULT_FIELDS, run_i2c_hil.VALIDATOR_JOB_START_RUNNING),
+                job_result_output(
+                    boundary="START", job_id=17, kind="INIT", phase="INIT_READ_CHIP_ID",
+                    state="RUNNING", status="IN_PROGRESS", status_code=12,
+                    terminal=False, callbacks=0,
+                ),
+            ),
+            (
+                "job poll 1",
+                (
+                    run_i2c_hil.VALIDATOR_JOB_RESULT_FIELDS,
+                    run_i2c_hil.VALIDATOR_JOB_ONE_CALLBACK,
+                    run_i2c_hil.VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
+                ),
+                job_result_output(
+                    boundary="POLL", job_id=17, kind="INIT", phase="NVM_POLL",
+                    state="RUNNING", status="IN_PROGRESS", status_code=12,
+                    terminal=False, callbacks=1, deadline_active=True, deadline_ms=1234,
+                ),
+            ),
+            (
+                "job cancel deadline",
+                (run_i2c_hil.VALIDATOR_JOB_RESULT_FIELDS, run_i2c_hil.VALIDATOR_JOB_CANCEL_TIMED_OUT),
+                job_result_output(
+                    boundary="CANCEL", job_id=17, kind="INIT", phase="NVM_POLL",
+                    state="TIMED_OUT", status="DEADLINE_EXPIRED", status_code=20,
+                    terminal=True, callbacks=0,
+                ),
+            ),
+            (
+                "job poll 0",
+                (
+                    run_i2c_hil.VALIDATOR_JOB_RESULT_FIELDS,
+                    run_i2c_hil.VALIDATOR_JOB_TIMED_OUT_RETRIEVAL,
+                    run_i2c_hil.VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
+                ),
+                job_result_output(
+                    boundary="POLL", job_id=17, kind="INIT", phase="NVM_POLL",
+                    state="TIMED_OUT", status="DEADLINE_EXPIRED", status_code=20,
+                    terminal=True, callbacks=0,
+                ),
+            ),
+            (
+                "job poll 0",
+                (
+                    run_i2c_hil.VALIDATOR_JOB_RESULT_FIELDS,
+                    run_i2c_hil.VALIDATOR_JOB_IDLE_NO_RESULT,
+                    run_i2c_hil.VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
+                ),
+                job_result_output(
+                    boundary="POLL", job_id=0, kind="NONE", phase="NONE",
+                    state="IDLE", status="OK", status_code=0,
+                    terminal=False, callbacks=0,
+                ),
+            ),
+        )
+        for command, validators, output in cases:
+            with self.subTest(command=command, state=run_i2c_hil.extract_parsed_evidence(output).get("job_state")):
+                spec = run_i2c_hil.CommandSpec(
+                    command=command,
+                    purpose="staged cancellation fixture",
+                    expected=("Job Status",),
+                    validators=validators,
+                )
+                result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+                self.assertEqual(run_i2c_hil.RESULT_PASS, result, reason)
+
+    def test_staged_cancel_sequence_correlates_identity_and_terminal(self) -> None:
+        outputs = (
+            job_result_output(
+                boundary="START", job_id=17, kind="INIT", phase="INIT_READ_CHIP_ID",
+                state="RUNNING", status="IN_PROGRESS", status_code=12,
+                terminal=False, callbacks=0,
+            ),
+            job_result_output(
+                boundary="POLL", job_id=17, kind="INIT", phase="NVM_POLL",
+                state="RUNNING", status="IN_PROGRESS", status_code=12,
+                terminal=False, callbacks=1, deadline_active=True, deadline_ms=1234,
+            ),
+            job_result_output(
+                boundary="CANCEL", job_id=17, kind="INIT", phase="NVM_POLL",
+                state="TIMED_OUT", status="DEADLINE_EXPIRED", status_code=20,
+                terminal=True, callbacks=0,
+            ),
+            job_result_output(
+                boundary="POLL", job_id=17, kind="INIT", phase="NVM_POLL",
+                state="TIMED_OUT", status="DEADLINE_EXPIRED", status_code=20,
+                terminal=True, callbacks=0,
+            ),
+            job_result_output(
+                boundary="POLL", job_id=0, kind="NONE", phase="NONE",
+                state="IDLE", status="OK", status_code=0,
+                terminal=False, callbacks=0,
+            ),
+        )
+        commands = (
+            "job start init", "job poll 1", "job cancel deadline",
+            "job poll 0", "job poll 0",
+        )
+        rows = [
+            {
+                "command": command,
+                "group": "job-api",
+                "serial_result": run_i2c_hil.RESULT_PASS,
+                "classification_reason": "",
+                "parsed_evidence": run_i2c_hil.extract_parsed_evidence(output),
+            }
+            for command, output in zip(commands, outputs)
+        ]
+
+        self.assertEqual(0, run_i2c_hil.reclassify_job_api_correlation(rows))
+        self.assertTrue(all(row["serial_result"] == run_i2c_hil.RESULT_PASS for row in rows))
+
+    def test_staged_cancel_sequence_rejects_mismatched_identity_and_terminal(self) -> None:
+        def rows_with_evidence() -> list[dict]:
+            base = (
+                ("job start init", "START", 17, "INIT_READ_CHIP_ID", "RUNNING", "IN_PROGRESS", 12, False, 0),
+                ("job poll 1", "POLL", 17, "NVM_POLL", "RUNNING", "IN_PROGRESS", 12, False, 1),
+                ("job cancel deadline", "CANCEL", 17, "NVM_POLL", "TIMED_OUT", "DEADLINE_EXPIRED", 20, True, 0),
+                ("job poll 0", "POLL", 17, "NVM_POLL", "TIMED_OUT", "DEADLINE_EXPIRED", 20, True, 0),
+                ("job poll 0", "POLL", 0, "NONE", "IDLE", "OK", 0, False, 0),
+            )
+            return [
+                {
+                    "command": command,
+                    "group": "job-api",
+                    "serial_result": run_i2c_hil.RESULT_PASS,
+                    "classification_reason": "",
+                    "parsed_evidence": run_i2c_hil.extract_parsed_evidence(
+                        job_result_output(
+                            boundary=boundary, job_id=job_id,
+                            kind="NONE" if job_id == 0 else "INIT", phase=phase,
+                            state=state, status=status, status_code=status_code,
+                            terminal=terminal, callbacks=callbacks,
+                        )
+                    ),
+                }
+                for command, boundary, job_id, phase, state, status,
+                status_code, terminal, callbacks in base
+            ]
+
+        identity_rows = rows_with_evidence()
+        identity_rows[1]["parsed_evidence"]["job_id"] = 18
+        self.assertEqual(1, run_i2c_hil.reclassify_job_api_correlation(identity_rows))
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, identity_rows[3]["serial_result"])
+        self.assertIn("IDs differ", identity_rows[3]["classification_reason"])
+
+        terminal_rows = rows_with_evidence()
+        terminal_rows[3]["parsed_evidence"]["job_phase"] = "CALIB_TP"
+        self.assertEqual(1, run_i2c_hil.reclassify_job_api_correlation(terminal_rows))
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, terminal_rows[3]["serial_result"])
+        self.assertIn("job_phase", terminal_rows[3]["classification_reason"])
 
     def test_require_pass_and_fail_on_review_exit_codes(self) -> None:
         self.assertEqual(

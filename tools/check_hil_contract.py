@@ -180,6 +180,10 @@ def main() -> int:
     assert_contains(runner_text, "--fail-on-review", RUNNER)
     assert_contains(runner_text, "VALIDATOR_JOB_DONE_OR_FAILED", RUNNER)
     assert_contains(runner_text, "VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED", RUNNER)
+    assert_contains(runner_text, "VALIDATOR_JOB_CANCEL_TIMED_OUT", RUNNER)
+    assert_contains(runner_text, "VALIDATOR_JOB_TIMED_OUT_RETRIEVAL", RUNNER)
+    assert_contains(runner_text, "VALIDATOR_JOB_IDLE_NO_RESULT", RUNNER)
+    assert_contains(runner_text, "reclassify_job_api_correlation", RUNNER)
 
     destructive_args = runner_args(include_destructive=True)
     destructive_sequence = [spec.command for spec in runner.build_command_sequence(destructive_args)[0]]
@@ -209,25 +213,39 @@ def main() -> int:
     job_args = runner_args(include_job_api=True)
     expected_job_sequence = [
         "job status",
+        "job start init",
         "job poll 1",
+        "job cancel deadline",
+        "job poll 0",
+        "job poll 0",
         "job init 1",
         "job apply 1",
         "job force 1",
         "raw",
         "comp",
-        "job recover 1",
+        "job resync 1",
         "cfg",
         "status",
+        "job reset 1",
         "job force 3",
         "drv",
     ]
     job_specs = [spec for spec in runner.build_command_sequence(job_args)[0] if spec.group == "job-api"]
-    if [spec.command for spec in job_specs] != expected_job_sequence:
+    actual_job_sequence = [spec.command for spec in job_specs]
+    if actual_job_sequence != expected_job_sequence:
         fail("--include-job-api sequence does not include the expected job-api command order")
     if not any(runner.VALIDATOR_JOB_DONE_OR_FAILED in spec.validators for spec in job_specs):
         fail("job-api commands must validate terminal job state")
     if not any(runner.VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED in spec.validators for spec in job_specs):
         fail("job-api commands must validate instruction budgets")
+    if not any(runner.VALIDATOR_JOB_CANCEL_TIMED_OUT in spec.validators for spec in job_specs):
+        fail("job-api commands must validate deadline cancellation")
+    if not any(runner.VALIDATOR_JOB_TIMED_OUT_RETRIEVAL in spec.validators for spec in job_specs):
+        fail("job-api commands must validate zero-budget terminal retrieval")
+    if not any(runner.VALIDATOR_JOB_IDLE_NO_RESULT in spec.validators for spec in job_specs):
+        fail("job-api commands must validate exactly-once terminal retrieval")
+    if actual_job_sequence.index("job resync 1") >= actual_job_sequence.index("job reset 1"):
+        fail("job-api sequence must exercise non-reset resync separately before explicit reset")
 
     fault_args = runner_args(include_fault_tests=True)
     _, fault_manual = runner.build_command_sequence(fault_args)

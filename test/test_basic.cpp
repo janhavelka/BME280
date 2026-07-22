@@ -2,6 +2,7 @@
 /// @brief Native contract tests for BME280 lifecycle and health behavior.
 
 #include <unity.h>
+#include <cstring>
 #include <type_traits>
 
 #include "Arduino.h"
@@ -33,19 +34,28 @@ struct FakeBus {
 
   int readErrorRemaining = 0;
   int writeErrorRemaining = 0;
+  uint32_t failReadOnCall = 0;
   uint32_t failWriteOnCall = 0;
-  Status readError = Status::Error(Err::I2C_ERROR, "forced read error", -1);
-  Status writeError = Status::Error(Err::I2C_ERROR, "forced write error", -2);
+  uint32_t failWriteAfterEffectOnCall = 0;
+  TransportResult readError =
+      TransportResult::Error(TransportErr::OTHER, -1);
+  TransportResult writeError =
+      TransportResult::Error(TransportErr::OTHER, -2);
   uint8_t lastWriteReg = 0;
   uint8_t lastWriteValue = 0;
   uint8_t writeRegLog[64] = {};
   uint8_t writeValueLog[64] = {};
   uint8_t writeLogLen = 0;
+  uint8_t readRegLog[64] = {};
+  size_t readLengthLog[64] = {};
+  uint8_t readLogLen = 0;
   bool failReadRegEnabled = false;
   uint8_t failReadReg = 0;
   uint32_t failReadRegRemaining = 0;
   uint8_t lastReadReg = 0;
+  size_t lastReadTxLen = 0;
   size_t lastReadLen = 0;
+  size_t lastWriteLen = 0;
   uint32_t lastReadTimeoutMs = 0;
   uint32_t lastWriteTimeoutMs = 0;
 
@@ -73,16 +83,17 @@ struct FakeBus {
   }
 };
 
-Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeoutMs,
-                 void* user) {
+TransportResult fakeWrite(uint8_t addr, const uint8_t* data, size_t len,
+                          uint32_t timeoutMs, void* user) {
   FakeBus* bus = static_cast<FakeBus*>(user);
   bus->writeCalls++;
   bus->lastWriteTimeoutMs = timeoutMs;
+  bus->lastWriteLen = len;
   if (addr != bus->deviceAddress) {
-    return Status::Error(Err::I2C_NACK_ADDR, "fake address nack", addr);
+    return TransportResult::Error(TransportErr::NACK_ADDRESS, addr);
   }
   if (data == nullptr || len == 0) {
-    return Status::Error(Err::INVALID_PARAM, "invalid fake write args");
+    return TransportResult::Error(TransportErr::OTHER, -3);
   }
   if (bus->failWriteOnCall != 0 && bus->writeCalls == bus->failWriteOnCall) {
     bus->failWriteOnCall = 0;
@@ -91,6 +102,12 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeout
   if (bus->writeErrorRemaining > 0) {
     bus->writeErrorRemaining--;
     return bus->writeError;
+  }
+  const bool failAfterEffect =
+      bus->failWriteAfterEffectOnCall != 0 &&
+      bus->writeCalls == bus->failWriteAfterEffectOnCall;
+  if (failAfterEffect) {
+    bus->failWriteAfterEffectOnCall = 0;
   }
   const uint8_t startReg = data[0];
   for (size_t i = 1; i < len; ++i) {
@@ -104,19 +121,28 @@ Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len, uint32_t timeout
       bus->writeLogLen++;
     }
   }
-  return Status::Ok();
+  if (failAfterEffect) {
+    return bus->writeError;
+  }
+  return TransportResult::Complete(len);
 }
 
-Status fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen, uint8_t* rxData,
-                     size_t rxLen, uint32_t timeoutMs, void* user) {
+TransportResult fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
+                              uint8_t* rxData, size_t rxLen,
+                              uint32_t timeoutMs, void* user) {
   FakeBus* bus = static_cast<FakeBus*>(user);
   bus->readCalls++;
   bus->lastReadTimeoutMs = timeoutMs;
+  bus->lastReadTxLen = txLen;
   if (addr != bus->deviceAddress) {
-    return Status::Error(Err::I2C_NACK_ADDR, "fake address nack", addr);
+    return TransportResult::Error(TransportErr::NACK_ADDRESS, addr);
   }
   if (txData == nullptr || txLen == 0 || (rxLen > 0 && rxData == nullptr)) {
-    return Status::Error(Err::INVALID_PARAM, "invalid fake write-read args");
+    return TransportResult::Error(TransportErr::OTHER, -4);
+  }
+  if (bus->failReadOnCall != 0 && bus->readCalls == bus->failReadOnCall) {
+    bus->failReadOnCall = 0;
+    return bus->readError;
   }
   if (bus->readErrorRemaining > 0) {
     bus->readErrorRemaining--;
@@ -126,6 +152,11 @@ Status fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen, uint8_t*
   const uint8_t reg = txData[0];
   bus->lastReadReg = reg;
   bus->lastReadLen = rxLen;
+  if (bus->readLogLen < sizeof(bus->readRegLog)) {
+    bus->readRegLog[bus->readLogLen] = reg;
+    bus->readLengthLog[bus->readLogLen] = rxLen;
+    bus->readLogLen++;
+  }
   if (bus->failReadRegEnabled && reg == bus->failReadReg) {
     bus->failReadRegEnabled = false;
     return bus->readError;
@@ -178,8 +209,51 @@ Status fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen, uint8_t*
     }
   }
 
-  return Status::Ok();
+  return TransportResult::Complete(txLen, rxLen);
 }
+
+static_assert(std::is_same<I2cWriteFn, decltype(&fakeWrite)>::value,
+              "write callback must return TransportResult");
+static_assert(std::is_same<I2cWriteReadFn, decltype(&fakeWriteRead)>::value,
+              "write-read callback must return TransportResult");
+static_assert(!std::is_constructible<TransportResult, Status>::value,
+              "driver Status must not be accepted as a transport result");
+static_assert(!std::is_convertible<Status, TransportResult>::value,
+              "driver Status must not convert to a transport result");
+static_assert(std::is_standard_layout<TransportResult>::value,
+              "transport result must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<TransportResult>::value,
+              "transport result must remain trivially copyable");
+static_assert(sizeof(TransportResult) <= 32,
+              "transport result grew beyond a conservative fixed-memory cap");
+static_assert(std::is_standard_layout<SensorSettings>::value,
+              "sensor settings must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<SensorSettings>::value,
+              "sensor settings must remain trivially copyable");
+static_assert(sizeof(SensorSettings) <= 16,
+              "sensor settings must remain compact");
+static_assert(std::is_standard_layout<RawSample>::value,
+              "raw sample must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<RawSample>::value,
+              "raw sample must remain trivially copyable");
+static_assert(sizeof(RawSample) <= 32,
+              "raw sample grew beyond a conservative fixed-memory cap");
+static_assert(std::is_standard_layout<CompensatedSample>::value,
+              "compensated sample must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<CompensatedSample>::value,
+              "compensated sample must remain trivially copyable");
+static_assert(sizeof(CompensatedSample) <= 32,
+              "compensated sample grew beyond a conservative fixed-memory cap");
+static_assert(std::is_standard_layout<SampleEnvelope>::value,
+              "sample envelope must have a portable fixed layout");
+static_assert(std::is_trivially_copyable<SampleEnvelope>::value,
+              "sample envelope must remain trivially copyable");
+static_assert(sizeof(SampleEnvelope) <= 96,
+              "sample envelope grew beyond a conservative fixed-memory cap");
+static_assert(std::is_standard_layout<JobPollResult>::value,
+              "job result must have a portable fixed layout");
+static_assert(sizeof(JobPollResult) <= 128,
+              "job result grew beyond a conservative fixed-memory cap");
 
 uint32_t fakeNowMs(void* user) {
   return static_cast<FakeBus*>(user)->nowMs;
@@ -193,23 +267,69 @@ Config makeConfig(FakeBus& bus) {
   cfg.nowMs = fakeNowMs;
   cfg.timeUser = &bus;
   cfg.i2cTimeoutMs = 10;
+  cfg.conversionReadyTimeoutMs = 20;
   cfg.offlineThreshold = 3;
   cfg.mode = Mode::FORCED;
   return cfg;
+}
+
+SensorSettings makeDesiredSettings() {
+  SensorSettings settings;
+  settings.osrsT = Oversampling::X2;
+  settings.osrsP = Oversampling::X4;
+  settings.osrsH = Oversampling::X8;
+  settings.filter = Filter::X16;
+  settings.standby = Standby::MS_20;
+  settings.mode = Mode::NORMAL;
+  return settings;
 }
 
 uint32_t totalBusCalls(const FakeBus& bus) {
   return bus.readCalls + bus.writeCalls;
 }
 
-JobPollResult pollWithBudget(BME280::BME280& dev, FakeBus& bus,
-                             uint8_t maxInstructions) {
+uint32_t countWritesToRegSince(const FakeBus& bus, uint8_t reg,
+                               uint8_t startIndex) {
+  uint32_t count = 0;
+  for (uint8_t i = startIndex; i < bus.writeLogLen; ++i) {
+    if (bus.writeRegLog[i] == reg) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+JobPollResult pollAtWithBudget(BME280::BME280& dev, FakeBus& bus,
+                               uint32_t nowMs, uint8_t maxInstructions) {
   const uint32_t callsBefore = totalBusCalls(bus);
-  JobPollResult result = dev.pollJob(bus.nowMs, maxInstructions);
+  JobPollResult result = dev.pollJob(nowMs, maxInstructions);
   const uint32_t callsAfter = totalBusCalls(bus);
   TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(result.instructionsUsed),
                            callsAfter - callsBefore);
+  TEST_ASSERT_EQUAL_UINT8(result.instructionsUsed, result.callbacksUsed);
   TEST_ASSERT_TRUE(result.instructionsUsed <= maxInstructions);
+  return result;
+}
+
+JobPollResult pollWithBudget(BME280::BME280& dev, FakeBus& bus,
+                             uint8_t maxInstructions) {
+  return pollAtWithBudget(dev, bus, bus.nowMs, maxInstructions);
+}
+
+JobPollResult pollUntilPhase(BME280::BME280& dev, FakeBus& bus,
+                             JobPhase target, uint16_t maxPolls = 32) {
+  JobPollResult result{};
+  for (uint16_t i = 0; i < maxPolls; ++i) {
+    if (dev.jobPhase() == target) {
+      return result;
+    }
+    result = pollWithBudget(dev, bus, 1);
+    if (result.state == JobState::FAILED || result.state == JobState::DONE ||
+        result.state == JobState::CANCELLED || result.state == JobState::TIMED_OUT) {
+      break;
+    }
+  }
+  TEST_FAIL_MESSAGE("job did not reach requested phase");
   return result;
 }
 
@@ -225,6 +345,52 @@ JobPollResult pollUntilTerminal(BME280::BME280& dev, FakeBus& bus,
   }
   TEST_FAIL_MESSAGE("job did not reach terminal state");
   return result;
+}
+
+void advanceJobPastCalibrationValidation(BME280::BME280& dev, FakeBus& bus,
+                                         JobKind expectedKind) {
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  const uint8_t readLogStart = bus.readLogLen;
+  const JobPhase expectedPhases[] = {
+      JobPhase::NVM_POLL,
+      JobPhase::CALIB_TP,
+      JobPhase::CALIB_H,
+      JobPhase::APPLY_CTRL_MEAS_SLEEP,
+  };
+  for (size_t i = 0; i < sizeof(expectedPhases) /
+                              sizeof(expectedPhases[0]); ++i) {
+    const JobPollResult result = pollWithBudget(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expectedKind),
+                            static_cast<uint8_t>(result.kind));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::RUNNING),
+                            static_cast<uint8_t>(result.state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expectedPhases[i]),
+                            static_cast<uint8_t>(result.phase));
+    TEST_ASSERT_EQUAL_UINT8(1u, result.callbacksUsed);
+  }
+
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 4u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT8(readLogStart + 4u, bus.readLogLen);
+  const uint8_t expectedRegs[] = {
+      cmd::REG_CHIP_ID,
+      cmd::REG_STATUS,
+      cmd::REG_CALIB_TP_START,
+      cmd::REG_CALIB_H_START,
+  };
+  const size_t expectedLengths[] = {
+      1u,
+      1u,
+      cmd::REG_CALIB_TP_LEN,
+      cmd::REG_CALIB_H_LEN,
+  };
+  for (size_t i = 0; i < sizeof(expectedRegs) / sizeof(expectedRegs[0]); ++i) {
+    TEST_ASSERT_EQUAL_HEX8(expectedRegs[i], bus.readRegLog[readLogStart + i]);
+    TEST_ASSERT_EQUAL_UINT32(
+        static_cast<uint32_t>(expectedLengths[i]),
+        static_cast<uint32_t>(bus.readLengthLog[readLogStart + i]));
+  }
 }
 
 Config makeConfigNoNowMs(FakeBus& bus) {
@@ -287,6 +453,31 @@ void setPressureDenominatorZeroCalibration(FakeBus& bus) {
   putS16(bus, cmd::REG_DIG_P7_LSB, 0);
   putS16(bus, cmd::REG_DIG_P8_LSB, 0);
   putS16(bus, cmd::REG_DIG_P9_LSB, 0);
+  bus.reg[cmd::REG_DIG_H1] = 75;
+  putS16(bus, cmd::REG_DIG_H2_LSB, 362);
+  bus.reg[cmd::REG_DIG_H3] = 0;
+  setH4H5(bus, 325, 50);
+  bus.reg[cmd::REG_DIG_H6] = static_cast<uint8_t>(30);
+}
+
+void setExtremeSignedOverflowCalibration(FakeBus& bus) {
+  putLe16(bus, cmd::REG_DIG_T1_LSB, 1);
+  putS16(bus, cmd::REG_DIG_T2_LSB, 32767);
+  putS16(bus, cmd::REG_DIG_T3_LSB, 32767);
+  putLe16(bus, cmd::REG_DIG_P1_LSB, 1);
+  putS16(bus, cmd::REG_DIG_P2_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P3_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P4_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P5_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P6_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P7_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P8_LSB, 0);
+  putS16(bus, cmd::REG_DIG_P9_LSB, 0);
+  bus.reg[cmd::REG_DIG_H1] = 255;
+  putS16(bus, cmd::REG_DIG_H2_LSB, 32767);
+  bus.reg[cmd::REG_DIG_H3] = 255;
+  setH4H5(bus, 2047, 2047);
+  bus.reg[cmd::REG_DIG_H6] = static_cast<uint8_t>(127);
 }
 
 void setRawBurstBytes(FakeBus& bus,
@@ -328,6 +519,161 @@ void captureForcedSample(BME280::BME280& dev, FakeBus& bus) {
   dev.tick(bus.nowMs);
 }
 
+void assertRawSampleEqual(const RawSample& expected, const RawSample& actual) {
+  TEST_ASSERT_EQUAL_INT32(expected.adcT, actual.adcT);
+  TEST_ASSERT_EQUAL_INT32(expected.adcP, actual.adcP);
+  TEST_ASSERT_EQUAL_INT32(expected.adcH, actual.adcH);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.temperatureValid),
+                          static_cast<uint8_t>(actual.temperatureValid));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.pressureValid),
+                          static_cast<uint8_t>(actual.pressureValid));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.humidityValid),
+                          static_cast<uint8_t>(actual.humidityValid));
+}
+
+void assertCompensatedSampleEqual(const CompensatedSample& expected,
+                                  const CompensatedSample& actual) {
+  TEST_ASSERT_EQUAL_INT32(expected.tempC_x100, actual.tempC_x100);
+  TEST_ASSERT_EQUAL_UINT32(expected.pressurePa, actual.pressurePa);
+  TEST_ASSERT_EQUAL_UINT32(expected.humidityPct_x1024,
+                           actual.humidityPct_x1024);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.temperatureValid),
+                          static_cast<uint8_t>(actual.temperatureValid));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.pressureValid),
+                          static_cast<uint8_t>(actual.pressureValid));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.humidityValid),
+                          static_cast<uint8_t>(actual.humidityValid));
+}
+
+void assertSampleEnvelopeEqual(const SampleEnvelope& expected,
+                               const SampleEnvelope& actual) {
+  assertRawSampleEqual(expected.rawSample, actual.rawSample);
+  assertCompensatedSampleEqual(expected.compensatedSample,
+                               actual.compensatedSample);
+  TEST_ASSERT_EQUAL_INT32(expected.tFine, actual.tFine);
+  TEST_ASSERT_EQUAL_UINT32(expected.timestampMs, actual.timestampMs);
+  TEST_ASSERT_EQUAL_UINT32(expected.sampleSequence, actual.sampleSequence);
+  TEST_ASSERT_EQUAL_UINT32(expected.configGeneration, actual.configGeneration);
+}
+
+void assertSensorSettingsEqual(const SensorSettings& expected,
+                               const SensorSettings& actual) {
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.osrsT),
+                          static_cast<uint8_t>(actual.osrsT));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.osrsP),
+                          static_cast<uint8_t>(actual.osrsP));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.osrsH),
+                          static_cast<uint8_t>(actual.osrsH));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.filter),
+                          static_cast<uint8_t>(actual.filter));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.standby),
+                          static_cast<uint8_t>(actual.standby));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected.mode),
+                          static_cast<uint8_t>(actual.mode));
+}
+
+void assertKnownEnumString(const char* actual, const char* unknown) {
+  TEST_ASSERT_NOT_NULL(actual);
+  TEST_ASSERT_NOT_NULL(unknown);
+  TEST_ASSERT_FALSE(std::strcmp(actual, unknown) == 0);
+}
+
+void assertCalibrationEqual(const Calibration& expected,
+                            const Calibration& actual) {
+  TEST_ASSERT_EQUAL_UINT16(expected.digT1, actual.digT1);
+  TEST_ASSERT_EQUAL_INT16(expected.digT2, actual.digT2);
+  TEST_ASSERT_EQUAL_INT16(expected.digT3, actual.digT3);
+  TEST_ASSERT_EQUAL_UINT16(expected.digP1, actual.digP1);
+  TEST_ASSERT_EQUAL_INT16(expected.digP2, actual.digP2);
+  TEST_ASSERT_EQUAL_INT16(expected.digP3, actual.digP3);
+  TEST_ASSERT_EQUAL_INT16(expected.digP4, actual.digP4);
+  TEST_ASSERT_EQUAL_INT16(expected.digP5, actual.digP5);
+  TEST_ASSERT_EQUAL_INT16(expected.digP6, actual.digP6);
+  TEST_ASSERT_EQUAL_INT16(expected.digP7, actual.digP7);
+  TEST_ASSERT_EQUAL_INT16(expected.digP8, actual.digP8);
+  TEST_ASSERT_EQUAL_INT16(expected.digP9, actual.digP9);
+  TEST_ASSERT_EQUAL_UINT8(expected.digH1, actual.digH1);
+  TEST_ASSERT_EQUAL_INT16(expected.digH2, actual.digH2);
+  TEST_ASSERT_EQUAL_UINT8(expected.digH3, actual.digH3);
+  TEST_ASSERT_EQUAL_INT16(expected.digH4, actual.digH4);
+  TEST_ASSERT_EQUAL_INT16(expected.digH5, actual.digH5);
+  TEST_ASSERT_EQUAL_INT8(expected.digH6, actual.digH6);
+}
+
+void assertMeasurementBlockedByResyncWithoutI2c(BME280::BME280& dev,
+                                                FakeBus& bus) {
+  const uint32_t callsBefore = totalBusCalls(bus);
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(st.code));
+  st = dev.startForcedMeasurementJob();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(st.code));
+  dev.tick(bus.nowMs + dev.estimateMeasurementTimeMs());
+  Measurement measurement{};
+  st = dev.getMeasurement(measurement);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+}
+
+void assertBusy(const Status& status) {
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
+                          static_cast<uint8_t>(status.code));
+}
+
+void assertBusyReason(const Status& status, BusyReason reason) {
+  assertBusy(status);
+  TEST_ASSERT_EQUAL_INT32(static_cast<int32_t>(reason), status.detail);
+}
+
+void assertRepresentativeHardwareApisBusy(BME280::BME280& dev, FakeBus& bus,
+                                           const Config& beginConfig) {
+  const uint32_t callsBefore = totalBusCalls(bus);
+  uint8_t value = 0;
+  assertBusy(dev.probe());
+  assertBusy(dev.readStatus(value));
+  assertBusy(dev.setMode(Mode::SLEEP));
+  assertBusy(dev.requestMeasurement());
+  assertBusy(dev.begin(beginConfig));
+  TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+}
+
+void assertAllHardwareApisBusy(BME280::BME280& dev, FakeBus& bus,
+                               const Config& beginConfig) {
+  const uint32_t callsBefore = totalBusCalls(bus);
+  uint8_t value = 0;
+  uint8_t readBuffer[2] = {};
+  const uint8_t writeBuffer[2] = {0x12, 0x34};
+  bool measuring = false;
+  CalibrationRaw calibrationRaw{};
+
+  assertBusy(dev.probe());
+  assertBusy(dev.recover());
+  assertBusy(dev.requestMeasurement());
+  assertBusy(dev.readCalibrationRaw(calibrationRaw));
+  assertBusy(dev.setMode(Mode::SLEEP));
+  assertBusy(dev.setOversamplingT(Oversampling::X2));
+  assertBusy(dev.setOversamplingP(Oversampling::X2));
+  assertBusy(dev.setOversamplingH(Oversampling::X2));
+  assertBusy(dev.setFilter(Filter::X2));
+  assertBusy(dev.setStandby(Standby::MS_250));
+  assertBusy(dev.softReset());
+  assertBusy(dev.readChipId(value));
+  assertBusy(dev.readStatus(value));
+  assertBusy(dev.readCtrlHum(value));
+  assertBusy(dev.readCtrlMeas(value));
+  assertBusy(dev.readConfig(value));
+  assertBusy(dev.isMeasuring(measuring));
+  assertBusy(dev.readRegisters(cmd::REG_STATUS, readBuffer, sizeof(readBuffer)));
+  assertBusy(dev.writeRegisters(cmd::REG_CONFIG, writeBuffer, sizeof(writeBuffer)));
+  assertBusy(dev.readRegister(cmd::REG_CHIP_ID, value));
+  assertBusy(dev.writeRegister(cmd::REG_CONFIG, 0));
+  assertBusy(dev.begin(beginConfig));
+
+  TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+}
+
 }  // namespace
 
 void setUp() {
@@ -364,6 +710,589 @@ void test_status_in_progress() {
   TEST_ASSERT_TRUE(st.inProgress());
 }
 
+void test_transport_result_contract_is_terminal_only() {
+  const TransportResult writeDone = TransportResult::Complete(2);
+  TEST_ASSERT_TRUE(writeDone.ok());
+  TEST_ASSERT_EQUAL_UINT32(2u, static_cast<uint32_t>(writeDone.writeCount));
+  TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(writeDone.readCount));
+
+  const TransportResult combinedDone = TransportResult::Complete(1, 8);
+  TEST_ASSERT_TRUE(combinedDone.ok());
+  TEST_ASSERT_EQUAL_UINT32(1u,
+                           static_cast<uint32_t>(combinedDone.writeCount));
+  TEST_ASSERT_EQUAL_UINT32(8u,
+                           static_cast<uint32_t>(combinedDone.readCount));
+
+  const TransportResult timeout =
+      TransportResult::Error(TransportErr::TIMEOUT, -180, 1, 3);
+  TEST_ASSERT_FALSE(timeout.ok());
+  TEST_ASSERT_EQUAL_STRING("TIMEOUT", toString(timeout.code));
+  TEST_ASSERT_EQUAL_INT32(-180, timeout.detail);
+}
+
+void test_status_copy_assignment_and_persistent_fields_use_canonical_messages() {
+  char borrowed[] = "borrowed message";
+  Status source{Err::I2C_BUS, -181, borrowed};
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_BUS), source.msg);
+
+  source.msg = borrowed;
+  Status copied(source);
+  Status assigned;
+  assigned = source;
+  borrowed[0] = 'X';
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_BUS), copied.msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_BUS), assigned.msg);
+  TEST_ASSERT_EQUAL_STRING("I2C_BUS", copied.msg);
+  TEST_ASSERT_EQUAL_STRING("I2C_BUS", assigned.msg);
+
+  FakeBus configBus;
+  BME280::BME280 configDev;
+  TEST_ASSERT_TRUE(configDev.begin(makeConfig(configBus)).ok());
+  configBus.writeError =
+      TransportResult{TransportErr::OK, -182, 1, 0};
+  configBus.failWriteAfterEffectOnCall = configBus.writeCalls + 1u;
+  Status returned = configDev.writeRegister(cmd::REG_CONFIG, 0xA0);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(returned.code));
+  char returnedBorrowed[] = "returned borrowed";
+  returned.msg = returnedBorrowed;
+  SettingsSnapshot configSnapshot{};
+  TEST_ASSERT_TRUE(configDev.getSettings(configSnapshot).ok());
+  returnedBorrowed[0] = 'X';
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_SHORT_TRANSFER),
+                        configDev.lastError().msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_SHORT_TRANSFER),
+                        configDev.hardwareConfigDirtyError().msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::I2C_SHORT_TRANSFER),
+                        configSnapshot.hardwareConfigDirtyError.msg);
+
+  FakeBus jobBus;
+  BME280::BME280 jobDev;
+  TEST_ASSERT_TRUE(jobDev.begin(makeConfig(jobBus)).ok());
+  Status started = jobDev.startForcedMeasurementJob();
+  TEST_ASSERT_TRUE(started.inProgress());
+  char jobBorrowed[] = "job borrowed";
+  started.msg = jobBorrowed;
+  const JobPollResult polled = jobDev.pollJob(jobBus.nowMs, 0);
+  SettingsSnapshot jobSnapshot{};
+  TEST_ASSERT_TRUE(jobDev.getSettings(jobSnapshot).ok());
+  jobBorrowed[0] = 'X';
+  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS), jobDev.jobStatus().msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS), polled.status.msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS),
+                        jobDev.lastMeasurementStatus().msg);
+  TEST_ASSERT_EQUAL_PTR(toString(Err::IN_PROGRESS),
+                        jobSnapshot.lastMeasurementStatus.msg);
+}
+
+void test_successful_transport_callbacks_report_exact_counts_once() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t writesBefore = bus.writeCalls;
+  Status st = dev.writeRegister(0xA0, 0x5A);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(writesBefore + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(2u, static_cast<uint32_t>(bus.lastWriteLen));
+
+  const uint32_t readsBefore = bus.readCalls;
+  uint8_t values[2] = {};
+  st = dev.readRegisters(0xA0, values, sizeof(values));
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 1u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(bus.lastReadTxLen));
+  TEST_ASSERT_EQUAL_UINT32(2u, static_cast<uint32_t>(bus.lastReadLen));
+  TEST_ASSERT_EQUAL_HEX8(0x5A, values[0]);
+}
+
+void test_short_ok_counts_map_to_short_transfer_without_retry() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  uint32_t callsBefore = bus.writeCalls;
+  bus.failWriteOnCall = callsBefore + 1u;
+  bus.writeError = TransportResult{TransportErr::OK, -183, 1, 0};
+  Status st = dev.writeRegister(0xA0, 0x5A);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-183, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 1u, bus.writeCalls);
+
+  uint8_t value = 0xA5;
+  callsBefore = bus.readCalls;
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = 0xA0;
+  bus.readError = TransportResult{TransportErr::OK, -184, 0, 1};
+  st = dev.readRegister(0xA0, value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-184, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 1u, bus.readCalls);
+  TEST_ASSERT_EQUAL_HEX8(0xA5, value);
+
+  uint8_t values[2] = {0xA5, 0x5A};
+  callsBefore = bus.readCalls;
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = 0xA0;
+  bus.readError = TransportResult{TransportErr::OK, -185, 1, 1};
+  st = dev.readRegisters(0xA0, values, sizeof(values));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-185, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 1u, bus.readCalls);
+  TEST_ASSERT_EQUAL_HEX8(0xA5, values[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x5A, values[1]);
+}
+
+void test_every_transport_error_maps_detail_and_nack_remap_is_presence_only() {
+  struct MappingCase {
+    TransportErr transport;
+    Err driver;
+  };
+  const MappingCase cases[] = {
+      {TransportErr::NACK_ADDRESS, Err::I2C_NACK_ADDR},
+      {TransportErr::NACK_DATA, Err::I2C_NACK_DATA},
+      {TransportErr::TIMEOUT, Err::I2C_TIMEOUT},
+      {TransportErr::BUS, Err::I2C_BUS},
+      {TransportErr::OTHER, Err::I2C_ERROR},
+  };
+
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    const int32_t detail = static_cast<int32_t>(-190 -
+        static_cast<int32_t>(i));
+    const uint32_t readsBefore = bus.readCalls;
+    bus.failReadRegEnabled = true;
+    bus.failReadReg = 0xA0;
+    bus.readError = TransportResult::Error(cases[i].transport, detail);
+    uint8_t value = 0;
+    const Status st = dev.readRegister(0xA0, value);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(cases[i].driver),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(detail, st.detail);
+    TEST_ASSERT_EQUAL_UINT32(readsBefore + 1u, bus.readCalls);
+  }
+
+  FakeBus presenceBus;
+  BME280::BME280 presenceDev;
+  TEST_ASSERT_TRUE(presenceDev.begin(makeConfig(presenceBus)).ok());
+  const uint32_t readsBefore = presenceBus.readCalls;
+  presenceBus.readErrorRemaining = 1;
+  presenceBus.readError =
+      TransportResult::Error(TransportErr::NACK_ADDRESS, -199);
+  const Status presence = presenceDev.probe();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+                          static_cast<uint8_t>(presence.code));
+  TEST_ASSERT_EQUAL_INT32(-199, presence.detail);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 1u, presenceBus.readCalls);
+}
+
+void test_mutating_short_transfer_marks_dirty_or_trigger_ambiguous() {
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    bus.writeError = TransportResult{TransportErr::OK, -200, 1, 0};
+    bus.failWriteAfterEffectOnCall = writesBefore + 1u;
+    const Status st = dev.writeRegister(cmd::REG_CONFIG, 0xA0);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(-200, st.detail);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore + 1u, bus.writeCalls);
+    TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                            static_cast<uint8_t>(
+                                dev.hardwareConfigDirtyError().code));
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    bus.writeError = TransportResult{TransportErr::OK, -201, 1, 0};
+    bus.failWriteAfterEffectOnCall = writesBefore + 1u;
+    const Status st = dev.requestMeasurement();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(-201, st.detail);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore + 1u, bus.writeCalls);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR),
+        static_cast<uint8_t>(dev.conversionState()));
+  }
+}
+
+void test_partial_raw_read_preserves_committed_sample() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+  SampleEnvelope before{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+
+  setRawSample(bus, 415148, 520000, 31000);
+  TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = cmd::REG_DATA_START;
+  bus.readError = TransportResult{
+      TransportErr::OK, -202, 1, cmd::DATA_LEN - 1u};
+  const uint32_t readsBefore = bus.readCalls;
+  bus.nowMs += dev.estimateMeasurementTimeMs();
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 2u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER),
+                          static_cast<uint8_t>(
+                              dev.lastMeasurementStatus().code));
+  TEST_ASSERT_EQUAL_INT32(-202, dev.lastMeasurementStatus().detail);
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+
+  SampleEnvelope after{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+  assertSampleEnvelopeEqual(before, after);
+}
+
+void test_sensor_settings_defaults_and_exhaustive_validation_are_pure() {
+  const SensorSettings defaults{};
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
+                          static_cast<uint8_t>(defaults.osrsT));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
+                          static_cast<uint8_t>(defaults.osrsP));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
+                          static_cast<uint8_t>(defaults.osrsH));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Filter::OFF),
+                          static_cast<uint8_t>(defaults.filter));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Standby::MS_125),
+                          static_cast<uint8_t>(defaults.standby));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::FORCED),
+                          static_cast<uint8_t>(defaults.mode));
+  TEST_ASSERT_TRUE(validateSettings(defaults).ok());
+
+  for (uint16_t raw = 6; raw <= 0xFF; ++raw) {
+    SensorSettings settings = defaults;
+    settings.osrsT = static_cast<Oversampling>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+    settings = defaults;
+    settings.osrsP = static_cast<Oversampling>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+    settings = defaults;
+    settings.osrsH = static_cast<Oversampling>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+  }
+  for (uint16_t raw = 5; raw <= 0xFF; ++raw) {
+    SensorSettings settings = defaults;
+    settings.filter = static_cast<Filter>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+  }
+  for (uint16_t raw = 8; raw <= 0xFF; ++raw) {
+    SensorSettings settings = defaults;
+    settings.standby = static_cast<Standby>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+  }
+  for (uint16_t raw = 0; raw <= 0xFF; ++raw) {
+    if (raw == static_cast<uint8_t>(Mode::SLEEP) ||
+        raw == static_cast<uint8_t>(Mode::FORCED) ||
+        raw == static_cast<uint8_t>(Mode::NORMAL)) {
+      continue;
+    }
+    SensorSettings settings = defaults;
+    settings.mode = static_cast<Mode>(raw);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                            static_cast<uint8_t>(
+                                validateSettings(settings).code));
+  }
+
+  SensorSettings settings = defaults;
+  settings.osrsT = Oversampling::SKIP;
+  settings.osrsP = Oversampling::X1;
+  settings.osrsH = Oversampling::SKIP;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(
+                              validateSettings(settings).code));
+  settings.osrsP = Oversampling::SKIP;
+  settings.osrsH = Oversampling::X1;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(
+                              validateSettings(settings).code));
+  settings.osrsH = Oversampling::SKIP;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(
+                              validateSettings(settings).code));
+  settings.osrsT = Oversampling::X1;
+  TEST_ASSERT_TRUE(validateSettings(settings).ok());
+}
+
+void test_pure_measurement_time_helpers_match_bosch_boundaries() {
+  SensorSettings settings{};
+  TEST_ASSERT_EQUAL_UINT32(9300u, estimateMeasurementTimeUs(settings));
+  TEST_ASSERT_EQUAL_UINT32(11u, estimateMeasurementTimeMs(settings));
+
+  settings.osrsT = Oversampling::X1;
+  settings.osrsP = Oversampling::SKIP;
+  settings.osrsH = Oversampling::SKIP;
+  TEST_ASSERT_TRUE(validateSettings(settings).ok());
+  TEST_ASSERT_EQUAL_UINT32(3550u, estimateMeasurementTimeUs(settings));
+  TEST_ASSERT_EQUAL_UINT32(5u, estimateMeasurementTimeMs(settings));
+
+  settings.osrsT = Oversampling::X16;
+  settings.osrsP = Oversampling::X16;
+  settings.osrsH = Oversampling::X16;
+  TEST_ASSERT_EQUAL_UINT32(112800u, estimateMeasurementTimeUs(settings));
+  TEST_ASSERT_EQUAL_UINT32(114u, estimateMeasurementTimeMs(settings));
+
+  SensorSettings invalid = settings;
+  invalid.osrsT = static_cast<Oversampling>(0x80);
+  TEST_ASSERT_EQUAL_UINT32(0u, estimateMeasurementTimeUs(invalid));
+  TEST_ASSERT_EQUAL_UINT32(0u, estimateMeasurementTimeMs(invalid));
+
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.osrsT = settings.osrsT;
+  cfg.osrsP = settings.osrsP;
+  cfg.osrsH = settings.osrsH;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_EQUAL_UINT32(estimateMeasurementTimeUs(settings),
+                           dev.estimateMeasurementTimeUs());
+  TEST_ASSERT_EQUAL_UINT32(estimateMeasurementTimeMs(settings),
+                           dev.estimateMeasurementTimeMs());
+}
+
+void test_checked_fixed_point_unit_conversions_preserve_output_on_overflow() {
+  int32_t output = 123456;
+  TEST_ASSERT_TRUE(temperatureX100ToMilliC(0, output).ok());
+  TEST_ASSERT_EQUAL_INT32(0, output);
+  TEST_ASSERT_TRUE(temperatureX100ToMilliC(2534, output).ok());
+  TEST_ASSERT_EQUAL_INT32(25340, output);
+  TEST_ASSERT_TRUE(temperatureX100ToMilliC(-4000, output).ok());
+  TEST_ASSERT_EQUAL_INT32(-40000, output);
+  TEST_ASSERT_TRUE(temperatureX100ToMilliC(INT32_MAX / 10, output).ok());
+  TEST_ASSERT_EQUAL_INT32((INT32_MAX / 10) * 10, output);
+  output = 7654321;
+  Status st = temperatureX100ToMilliC(INT32_MAX / 10 + 1, output);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::COMPENSATION_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(7654321, output);
+  st = temperatureX100ToMilliC(INT32_MIN / 10 - 1, output);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::COMPENSATION_ERROR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(7654321, output);
+
+  TEST_ASSERT_TRUE(humidityX1024ToMilliPercent(0, output).ok());
+  TEST_ASSERT_EQUAL_INT32(0, output);
+  TEST_ASSERT_TRUE(humidityX1024ToMilliPercent(1024, output).ok());
+  TEST_ASSERT_EQUAL_INT32(1000, output);
+  TEST_ASSERT_TRUE(humidityX1024ToMilliPercent(102400, output).ok());
+  TEST_ASSERT_EQUAL_INT32(100000, output);
+  output = 7654321;
+  st = humidityX1024ToMilliPercent(102401u, output);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(7654321, output);
+  st = humidityX1024ToMilliPercent(UINT32_MAX, output);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(7654321, output);
+}
+
+void test_chip_id_helper_is_exhaustive() {
+  for (uint16_t value = 0; value <= 0xFF; ++value) {
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(value == cmd::CHIP_ID_BME280),
+        static_cast<uint8_t>(isBme280ChipId(static_cast<uint8_t>(value))));
+  }
+}
+
+void test_all_enum_to_string_overloads_cover_values_and_invalid_fallbacks() {
+  for (uint8_t value = static_cast<uint8_t>(Err::OK);
+       value <= static_cast<uint8_t>(Err::I2C_SHORT_TRANSFER); ++value) {
+    assertKnownEnumString(toString(static_cast<Err>(value)), "UNKNOWN_ERROR");
+  }
+  for (uint8_t value = static_cast<uint8_t>(TransportErr::OK);
+       value <= static_cast<uint8_t>(TransportErr::OTHER); ++value) {
+    assertKnownEnumString(toString(static_cast<TransportErr>(value)),
+                          "UNKNOWN_TRANSPORT_ERROR");
+  }
+  for (uint8_t value = static_cast<uint8_t>(Oversampling::SKIP);
+       value <= static_cast<uint8_t>(Oversampling::X16); ++value) {
+    assertKnownEnumString(toString(static_cast<Oversampling>(value)),
+                          "UNKNOWN_OVERSAMPLING");
+  }
+  assertKnownEnumString(toString(Mode::SLEEP), "UNKNOWN_MODE");
+  assertKnownEnumString(toString(Mode::FORCED), "UNKNOWN_MODE");
+  assertKnownEnumString(toString(Mode::NORMAL), "UNKNOWN_MODE");
+  for (uint8_t value = static_cast<uint8_t>(Filter::OFF);
+       value <= static_cast<uint8_t>(Filter::X16); ++value) {
+    assertKnownEnumString(toString(static_cast<Filter>(value)),
+                          "UNKNOWN_FILTER");
+  }
+  for (uint8_t value = static_cast<uint8_t>(Standby::MS_0_5);
+       value <= static_cast<uint8_t>(Standby::MS_20); ++value) {
+    assertKnownEnumString(toString(static_cast<Standby>(value)),
+                          "UNKNOWN_STANDBY");
+  }
+  for (uint8_t value = static_cast<uint8_t>(DriverState::UNINIT);
+       value <= static_cast<uint8_t>(DriverState::OFFLINE); ++value) {
+    assertKnownEnumString(toString(static_cast<DriverState>(value)),
+                          "UNKNOWN_DRIVER_STATE");
+  }
+  for (uint8_t value = static_cast<uint8_t>(JobKind::NONE);
+       value <= static_cast<uint8_t>(JobKind::SOFT_RESET); ++value) {
+    assertKnownEnumString(toString(static_cast<JobKind>(value)),
+                          "UNKNOWN_JOB_KIND");
+  }
+  for (uint8_t value = static_cast<uint8_t>(JobState::IDLE);
+       value <= static_cast<uint8_t>(JobState::TIMED_OUT); ++value) {
+    assertKnownEnumString(toString(static_cast<JobState>(value)),
+                          "UNKNOWN_JOB_STATE");
+  }
+  for (uint8_t value = static_cast<uint8_t>(CancelReason::OWNER_REQUEST);
+       value <= static_cast<uint8_t>(CancelReason::DEADLINE_EXPIRED); ++value) {
+    assertKnownEnumString(toString(static_cast<CancelReason>(value)),
+                          "UNKNOWN_CANCEL_REASON");
+  }
+  for (uint8_t value = static_cast<uint8_t>(ConversionState::IDLE);
+       value <= static_cast<uint8_t>(
+                    ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR); ++value) {
+    assertKnownEnumString(toString(static_cast<ConversionState>(value)),
+                          "UNKNOWN_CONVERSION_STATE");
+  }
+  for (int32_t value = static_cast<int32_t>(BusyReason::NONE);
+       value <= static_cast<int32_t>(BusyReason::JOB_STATE_MACHINE_STALLED);
+       ++value) {
+    assertKnownEnumString(toString(static_cast<BusyReason>(value)),
+                          "UNKNOWN_BUSY_REASON");
+  }
+  for (uint8_t value = static_cast<uint8_t>(JobPhase::NONE);
+       value <= static_cast<uint8_t>(JobPhase::COMPLETE); ++value) {
+    assertKnownEnumString(toString(static_cast<JobPhase>(value)),
+                          "UNKNOWN_JOB_PHASE");
+  }
+  for (uint8_t value = static_cast<uint8_t>(SampleFreshness::NONE);
+       value <= static_cast<uint8_t>(
+                    SampleFreshness::STALE_AFTER_CONFIG_CHANGE); ++value) {
+    assertKnownEnumString(toString(static_cast<SampleFreshness>(value)),
+                          "UNKNOWN_SAMPLE_FRESHNESS");
+  }
+  for (uint8_t value = static_cast<uint8_t>(ConfigSyncState::SYNCHRONIZED);
+       value <= static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED); ++value) {
+    assertKnownEnumString(toString(static_cast<ConfigSyncState>(value)),
+                          "UNKNOWN_CONFIG_SYNC_STATE");
+  }
+  for (uint8_t value = static_cast<uint8_t>(CalibrationState::INVALID);
+       value <= static_cast<uint8_t>(CalibrationState::VALID); ++value) {
+    assertKnownEnumString(toString(static_cast<CalibrationState>(value)),
+                          "UNKNOWN_CALIBRATION_STATE");
+  }
+
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_ERROR", toString(static_cast<Err>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_TRANSPORT_ERROR",
+                           toString(static_cast<TransportErr>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_OVERSAMPLING",
+                           toString(static_cast<Oversampling>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_MODE", toString(static_cast<Mode>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_FILTER",
+                           toString(static_cast<Filter>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_STANDBY",
+                           toString(static_cast<Standby>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_DRIVER_STATE",
+                           toString(static_cast<DriverState>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_JOB_KIND",
+                           toString(static_cast<JobKind>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_JOB_STATE",
+                           toString(static_cast<JobState>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_CANCEL_REASON",
+                           toString(static_cast<CancelReason>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_CONVERSION_STATE",
+                           toString(static_cast<ConversionState>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_BUSY_REASON",
+                           toString(static_cast<BusyReason>(-1)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_JOB_PHASE",
+                           toString(static_cast<JobPhase>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_SAMPLE_FRESHNESS",
+                           toString(static_cast<SampleFreshness>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_CONFIG_SYNC_STATE",
+                           toString(static_cast<ConfigSyncState>(0xFF)));
+  TEST_ASSERT_EQUAL_STRING("UNKNOWN_CALIBRATION_STATE",
+                           toString(static_cast<CalibrationState>(0xFF)));
+}
+
+void test_busy_statuses_use_typed_nonzero_reasons() {
+  const BusyReason reasons[] = {
+      BusyReason::STAGED_JOB_ACTIVE,
+      BusyReason::TERMINAL_RESULT_PENDING,
+      BusyReason::MEASUREMENT_ACTIVE,
+      BusyReason::DEVICE_MEASURING,
+      BusyReason::NVM_UPDATE,
+      BusyReason::INVALID_JOB_STATE,
+      BusyReason::JOB_STATE_MACHINE_STALLED,
+  };
+  for (size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); ++i) {
+    TEST_ASSERT_NOT_EQUAL(0, static_cast<int32_t>(reasons[i]));
+    for (size_t j = i + 1; j < sizeof(reasons) / sizeof(reasons[0]); ++j) {
+      TEST_ASSERT_NOT_EQUAL(static_cast<int32_t>(reasons[i]),
+                            static_cast<int32_t>(reasons[j]));
+    }
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    TEST_ASSERT_TRUE(dev.startApplyConfigJob().inProgress());
+    uint8_t status = 0;
+    assertBusyReason(dev.readStatus(status), BusyReason::STAGED_JOB_ACTIVE);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(
+                                dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+    assertBusyReason(dev.startForcedMeasurementJob(),
+                     BusyReason::TERMINAL_RESULT_PENDING);
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+    assertBusyReason(dev.requestMeasurement(), BusyReason::MEASUREMENT_ACTIVE);
+    assertBusyReason(dev.startForcedMeasurementJob(),
+                     BusyReason::MEASUREMENT_ACTIVE);
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_MEASURING;
+    assertBusyReason(dev.setFilter(Filter::X2),
+                     BusyReason::DEVICE_MEASURING);
+  }
+
+  {
+    FakeBus bus;
+    bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
+    BME280::BME280 dev;
+    assertBusyReason(dev.begin(makeConfig(bus)), BusyReason::NVM_UPDATE);
+  }
+}
+
 void test_config_defaults() {
   Config cfg;
   TEST_ASSERT_NULL(cfg.i2cWrite);
@@ -371,6 +1300,7 @@ void test_config_defaults() {
   TEST_ASSERT_EQUAL_HEX8(0x76, cfg.i2cAddress);
   TEST_ASSERT_EQUAL_UINT16(50, cfg.i2cTimeoutMs);
   TEST_ASSERT_EQUAL_UINT32(10u, cfg.nvmReadyTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT32(20u, cfg.conversionReadyTimeoutMs);
   TEST_ASSERT_EQUAL_UINT8(5, cfg.offlineThreshold);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1), static_cast<uint8_t>(cfg.osrsT));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1), static_cast<uint8_t>(cfg.osrsP));
@@ -419,6 +1349,7 @@ void test_get_settings_snapshot() {
   TEST_ASSERT_EQUAL_HEX8(0x77, snap.i2cAddress);
   TEST_ASSERT_EQUAL_UINT32(10u, snap.i2cTimeoutMs);
   TEST_ASSERT_EQUAL_UINT32(10u, snap.nvmReadyTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT32(20u, snap.conversionReadyTimeoutMs);
   TEST_ASSERT_EQUAL_UINT8(3u, snap.offlineThreshold);
   TEST_ASSERT_TRUE(snap.hasNowMsHook);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::NORMAL), static_cast<uint8_t>(snap.mode));
@@ -434,6 +1365,8 @@ void test_get_settings_snapshot() {
                           static_cast<uint8_t>(snap.standby));
   TEST_ASSERT_FALSE(snap.measurementRequested);
   TEST_ASSERT_FALSE(snap.measurementReady);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConversionState::IDLE),
+                          static_cast<uint8_t>(snap.conversionState));
   TEST_ASSERT_TRUE(snap.lastMeasurementStatus.ok());
   TEST_ASSERT_FALSE(snap.hasSample);
   TEST_ASSERT_FALSE(snap.hardwareConfigDirty);
@@ -443,6 +1376,8 @@ void test_get_settings_snapshot() {
   TEST_ASSERT_EQUAL_INT32(0, snap.tFine);
   TEST_ASSERT_EQUAL_INT32(0, snap.rawSample.adcT);
   TEST_ASSERT_EQUAL_UINT32(0u, snap.compSample.pressurePa);
+  TEST_ASSERT_FALSE(snap.lastOkTimeValid);
+  TEST_ASSERT_FALSE(snap.lastErrorTimeValid);
 }
 
 void test_begin_rejects_missing_callbacks() {
@@ -468,16 +1403,114 @@ void test_begin_rejects_zero_nvm_timeout() {
 }
 
 void test_begin_rejects_oversized_nvm_timeout_without_i2c() {
-  FakeBus bus;
-  BME280::BME280 dev;
-  Config cfg = makeConfig(bus);
-  cfg.nvmReadyTimeoutMs = 0x80000000UL;
+  const uint32_t invalidValues[] = {0x7FFFFFFFUL, 0x80000000UL};
+  for (size_t i = 0; i < 2; ++i) {
+    FakeBus bus;
+    BME280::BME280 dev;
+    Config cfg = makeConfig(bus);
+    cfg.nvmReadyTimeoutMs = invalidValues[i];
 
-  Status st = dev.begin(cfg);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
-                          static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_UINT32(0u, totalBusCalls(bus));
-  TEST_ASSERT_FALSE(dev.isInitialized());
+    const Status st = dev.begin(cfg);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_UINT32(0u, totalBusCalls(bus));
+    TEST_ASSERT_FALSE(dev.isInitialized());
+  }
+}
+
+void test_begin_rejects_invalid_conversion_timeout_without_i2c() {
+  const uint32_t invalidValues[] = {0u, 0x7FFFFFFFUL, 0x80000000UL};
+  for (size_t i = 0; i < 3; ++i) {
+    FakeBus bus;
+    BME280::BME280 dev;
+    Config cfg = makeConfig(bus);
+    cfg.conversionReadyTimeoutMs = invalidValues[i];
+
+    const Status st = dev.begin(cfg);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_UINT32(0u, totalBusCalls(bus));
+    TEST_ASSERT_FALSE(dev.isInitialized());
+  }
+}
+
+void test_conversion_ready_timeout_respects_wrap_safe_interval_boundaries() {
+  SensorSettings cases[2] = {};
+  cases[0] = SensorSettings{};
+  cases[0].mode = Mode::FORCED;
+  cases[1].osrsT = Oversampling::X16;
+  cases[1].osrsP = Oversampling::X16;
+  cases[1].osrsH = Oversampling::X16;
+  cases[1].filter = Filter::X16;
+  cases[1].standby = Standby::MS_1000;
+  cases[1].mode = Mode::NORMAL;
+  TEST_ASSERT_EQUAL_UINT32(11u, estimateMeasurementTimeMs(cases[0]));
+  TEST_ASSERT_EQUAL_UINT32(114u, estimateMeasurementTimeMs(cases[1]));
+  const uint32_t globalWorstCaseInterval =
+      estimateMeasurementTimeMs(cases[1]) + 1000u;
+  TEST_ASSERT_EQUAL_UINT32(1114u, globalWorstCaseInterval);
+
+  for (size_t i = 0; i < 2; ++i) {
+    const uint32_t largestAccepted =
+        static_cast<uint32_t>(INT32_MAX) - globalWorstCaseInterval;
+    const uint32_t firstRejected = largestAccepted + 1u;
+    TEST_ASSERT_EQUAL_UINT64(
+        static_cast<uint64_t>(INT32_MAX),
+        static_cast<uint64_t>(largestAccepted) + globalWorstCaseInterval);
+    TEST_ASSERT_EQUAL_UINT64(
+        static_cast<uint64_t>(INT32_MAX) + 1u,
+        static_cast<uint64_t>(firstRejected) + globalWorstCaseInterval);
+
+    FakeBus acceptedBus;
+    Config accepted = makeConfig(acceptedBus);
+    accepted.osrsT = cases[i].osrsT;
+    accepted.osrsP = cases[i].osrsP;
+    accepted.osrsH = cases[i].osrsH;
+    accepted.filter = cases[i].filter;
+    accepted.standby = cases[i].standby;
+    accepted.mode = cases[i].mode;
+    accepted.conversionReadyTimeoutMs = largestAccepted;
+    BME280::BME280 acceptedDev;
+    TEST_ASSERT_TRUE(acceptedDev.begin(accepted).ok());
+    TEST_ASSERT_EQUAL_UINT32(largestAccepted,
+                             acceptedDev.getConfig().conversionReadyTimeoutMs);
+
+    FakeBus rejectedBus;
+    Config rejected = makeConfig(rejectedBus);
+    rejected.osrsT = cases[i].osrsT;
+    rejected.osrsP = cases[i].osrsP;
+    rejected.osrsH = cases[i].osrsH;
+    rejected.filter = cases[i].filter;
+    rejected.standby = cases[i].standby;
+    rejected.mode = cases[i].mode;
+    rejected.conversionReadyTimeoutMs = firstRejected;
+    BME280::BME280 rejectedDev;
+    const Status rejectedStatus = (i == 0)
+        ? rejectedDev.begin(rejected)
+        : rejectedDev.startInitJob(rejected);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                            static_cast<uint8_t>(rejectedStatus.code));
+    TEST_ASSERT_EQUAL_UINT32(0u, totalBusCalls(rejectedBus));
+    TEST_ASSERT_FALSE(rejectedDev.isInitialized());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::IDLE),
+                            static_cast<uint8_t>(rejectedDev.jobState()));
+  }
+}
+
+void test_begin_rejects_invalid_i2c_timeout_without_i2c() {
+  const uint32_t invalidValues[] = {0u, 0x7FFFFFFFUL, 0x80000000UL};
+  for (size_t i = 0; i < 3; ++i) {
+    FakeBus bus;
+    BME280::BME280 dev;
+    Config cfg = makeConfig(bus);
+    cfg.i2cTimeoutMs = invalidValues[i];
+
+    const Status st = dev.begin(cfg);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_UINT32(0u, totalBusCalls(bus));
+    TEST_ASSERT_FALSE(dev.isInitialized());
+  }
 }
 
 void test_begin_rejects_invalid_oversampling_combination() {
@@ -547,6 +1580,8 @@ void test_invalid_begin_after_success_resets_default_runtime() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastErrorMs());
+  TEST_ASSERT_FALSE(dev.lastOkTimeValid());
+  TEST_ASSERT_FALSE(dev.lastErrorTimeValid());
   TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
   TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
 
@@ -556,6 +1591,7 @@ void test_invalid_begin_after_success_resets_default_runtime() {
   TEST_ASSERT_EQUAL_HEX8(0x76, stored.i2cAddress);
   TEST_ASSERT_EQUAL_UINT32(50u, stored.i2cTimeoutMs);
   TEST_ASSERT_EQUAL_UINT32(10u, stored.nvmReadyTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT32(20u, stored.conversionReadyTimeoutMs);
   TEST_ASSERT_EQUAL_UINT8(5u, stored.offlineThreshold);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::FORCED),
                           static_cast<uint8_t>(stored.mode));
@@ -600,6 +1636,8 @@ void test_begin_success_sets_ready_without_health_counts() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+  TEST_ASSERT_FALSE(dev.lastOkTimeValid());
+  TEST_ASSERT_FALSE(dev.lastErrorTimeValid());
 }
 
 void test_begin_passes_configured_i2c_timeout_to_transport() {
@@ -621,7 +1659,7 @@ void test_begin_starts_new_health_session_and_resets_counters() {
 
   bus.nowMs = 1234;
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "tracked status timeout", -70);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -70);
   uint8_t status = 0;
   Status st = dev.readStatus(status);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
@@ -629,6 +1667,7 @@ void test_begin_starts_new_health_session_and_resets_counters() {
   TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(1u, dev.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT32(1234u, dev.lastErrorMs());
+  TEST_ASSERT_TRUE(dev.lastErrorTimeValid());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
 
@@ -642,6 +1681,8 @@ void test_begin_starts_new_health_session_and_resets_counters() {
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastErrorMs());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+  TEST_ASSERT_FALSE(dev.lastErrorTimeValid());
+  TEST_ASSERT_FALSE(dev.lastOkTimeValid());
   TEST_ASSERT_TRUE(dev.lastError().ok());
 }
 
@@ -869,6 +1910,366 @@ void test_apply_config_job_checks_not_measuring_after_sleep_write() {
   TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
 }
 
+void test_apply_settings_job_validation_and_start_are_zero_callback() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const SensorSettings prior = dev.sensorSettings();
+
+  SensorSettings invalid = makeDesiredSettings();
+  invalid.osrsT = static_cast<Oversampling>(0x80);
+  uint32_t callsBefore = totalBusCalls(bus);
+  Status st = dev.startApplySettingsJob(invalid);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::IDLE),
+                          static_cast<uint8_t>(dev.jobState()));
+  assertSensorSettingsEqual(prior, dev.sensorSettings());
+
+  const SensorSettings desired = makeDesiredSettings();
+  callsBefore = totalBusCalls(bus);
+  st = dev.startApplySettingsJob(desired);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::APPLY_CONFIG),
+                          static_cast<uint8_t>(dev.jobKind()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::APPLY_WAIT_IDLE),
+                          static_cast<uint8_t>(dev.jobPhase()));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::UPDATE_IN_PROGRESS),
+      static_cast<uint8_t>(dev.configSyncState()));
+  assertSensorSettingsEqual(desired, dev.sensorSettings());
+
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                          static_cast<uint8_t>(
+                              dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+  (void)pollWithBudget(dev, bus, 0);
+  assertSensorSettingsEqual(prior, dev.sensorSettings());
+}
+
+void test_apply_settings_job_applies_order_and_advances_generation_once() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+  SampleEnvelope oldSample{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(oldSample).ok());
+  const uint32_t generationBefore = dev.configGeneration();
+  const uint8_t writeLogStart = bus.writeLogLen;
+  const uint32_t callsBeforeStart = totalBusCalls(bus);
+  const SensorSettings desired = makeDesiredSettings();
+
+  TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+  const uint32_t jobId = dev.jobId();
+  const JobPollResult result = pollUntilTerminal(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT32(jobId, result.jobId);
+  TEST_ASSERT_TRUE(result.status.ok());
+  TEST_ASSERT_EQUAL_UINT32(generationBefore + 1u, dev.configGeneration());
+  assertSensorSettingsEqual(desired, dev.sensorSettings());
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::SYNCHRONIZED),
+      static_cast<uint8_t>(dev.configSyncState()));
+
+  TEST_ASSERT_EQUAL_UINT8(writeLogStart + 4u, bus.writeLogLen);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CTRL_MEAS,
+                         bus.writeRegLog[writeLogStart]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG,
+                         bus.writeRegLog[writeLogStart + 1u]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CTRL_HUM,
+                         bus.writeRegLog[writeLogStart + 2u]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CTRL_MEAS,
+                         bus.writeRegLog[writeLogStart + 3u]);
+  const uint8_t expectedSleep = static_cast<uint8_t>(
+      (static_cast<uint8_t>(desired.osrsT) << cmd::BIT_CTRL_MEAS_OSRS_T) |
+      (static_cast<uint8_t>(desired.osrsP) << cmd::BIT_CTRL_MEAS_OSRS_P));
+  const uint8_t expectedConfig = static_cast<uint8_t>(
+      (static_cast<uint8_t>(desired.standby) << cmd::BIT_CONFIG_T_SB) |
+      (static_cast<uint8_t>(desired.filter) << cmd::BIT_CONFIG_FILTER));
+  const uint8_t expectedHum = static_cast<uint8_t>(
+      static_cast<uint8_t>(desired.osrsH) << cmd::BIT_CTRL_HUM_OSRS_H);
+  const uint8_t expectedFinal = static_cast<uint8_t>(
+      expectedSleep |
+      (static_cast<uint8_t>(desired.mode) << cmd::BIT_CTRL_MEAS_MODE));
+  TEST_ASSERT_EQUAL_HEX8(expectedSleep,
+                         bus.writeValueLog[writeLogStart]);
+  TEST_ASSERT_EQUAL_HEX8(expectedConfig,
+                         bus.writeValueLog[writeLogStart + 1u]);
+  TEST_ASSERT_EQUAL_HEX8(expectedHum,
+                         bus.writeValueLog[writeLogStart + 2u]);
+  TEST_ASSERT_EQUAL_HEX8(expectedFinal,
+                         bus.writeValueLog[writeLogStart + 3u]);
+
+  SampleEnvelope retained{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+  assertSampleEnvelopeEqual(oldSample, retained);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_CHANGE),
+      static_cast<uint8_t>(dev.sampleFreshness()));
+  const JobPollResult idle = pollWithBudget(dev, bus, 0);
+  TEST_ASSERT_EQUAL_UINT32(0u, idle.jobId);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::IDLE),
+                          static_cast<uint8_t>(idle.state));
+}
+
+void test_apply_settings_cancel_and_failure_before_write_restore_prior_state() {
+  const SensorSettings desired = makeDesiredSettings();
+
+  {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    const SensorSettings prior = dev.sensorSettings();
+    const ConfigSyncState priorSync = dev.configSyncState();
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint32_t callsBefore = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+    const uint32_t jobId = dev.jobId();
+    TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(
+                                dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+    TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+    assertSensorSettingsEqual(prior, dev.sensorSettings());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(priorSync),
+                            static_cast<uint8_t>(dev.configSyncState()));
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    const JobPollResult terminal = pollWithBudget(dev, bus, 0);
+    TEST_ASSERT_EQUAL_UINT32(jobId, terminal.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::CANCELLED),
+                            static_cast<uint8_t>(terminal.state));
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
+
+  {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    const SensorSettings prior = dev.sensorSettings();
+    const ConfigSyncState priorSync = dev.configSyncState();
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+    const uint32_t jobId = dev.jobId();
+    bus.failReadRegEnabled = true;
+    bus.failReadReg = cmd::REG_STATUS;
+    bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -210);
+    const JobPollResult failed = pollWithBudget(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                            static_cast<uint8_t>(failed.state));
+    TEST_ASSERT_EQUAL_UINT32(jobId, failed.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                            static_cast<uint8_t>(failed.status.code));
+    TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+    assertSensorSettingsEqual(prior, dev.sensorSettings());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(priorSync),
+                            static_cast<uint8_t>(dev.configSyncState()));
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
+}
+
+void test_apply_settings_cancel_after_each_exposed_write_keeps_desired_dirty() {
+  const SensorSettings desired = makeDesiredSettings();
+  const JobPhase phasesAfterWrite[] = {
+      JobPhase::APPLY_WAIT_AFTER_SLEEP,
+      JobPhase::APPLY_CTRL_HUM,
+      JobPhase::APPLY_CTRL_MEAS,
+  };
+
+  for (size_t i = 0; i < sizeof(phasesAfterWrite) /
+                              sizeof(phasesAfterWrite[0]); ++i) {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+    const uint32_t jobId = dev.jobId();
+    (void)pollUntilPhase(dev, bus, phasesAfterWrite[i]);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore + static_cast<uint32_t>(i) + 1u,
+                             bus.writeCalls);
+    const uint32_t callsBeforeCancel = totalBusCalls(bus);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(
+                                dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeCancel, totalBusCalls(bus));
+    assertSensorSettingsEqual(desired, dev.sensorSettings());
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+        static_cast<uint8_t>(dev.configSyncState()));
+    TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    const JobPollResult terminal = pollWithBudget(dev, bus, 0);
+    TEST_ASSERT_EQUAL_UINT32(jobId, terminal.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::CANCELLED),
+                            static_cast<uint8_t>(terminal.state));
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
+}
+
+void test_apply_settings_failure_at_each_write_keeps_desired_dirty() {
+  const SensorSettings desired = makeDesiredSettings();
+  for (uint32_t failingWrite = 1; failingWrite <= 4; ++failingWrite) {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint32_t writesBefore = bus.writeCalls;
+    TEST_ASSERT_TRUE(dev.startApplySettingsJob(desired).inProgress());
+    const uint32_t jobId = dev.jobId();
+    const int32_t detail = -220 - static_cast<int32_t>(failingWrite);
+    bus.failWriteOnCall = writesBefore + failingWrite;
+    bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, detail);
+    const JobPollResult failed = pollUntilTerminal(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                            static_cast<uint8_t>(failed.state));
+    TEST_ASSERT_EQUAL_UINT32(jobId, failed.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                            static_cast<uint8_t>(failed.status.code));
+    TEST_ASSERT_EQUAL_INT32(detail, failed.status.detail);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore + failingWrite, bus.writeCalls);
+    assertSensorSettingsEqual(desired, dev.sensorSettings());
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+        static_cast<uint8_t>(dev.configSyncState()));
+    TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+    TEST_ASSERT_EQUAL_INT32(detail, dev.hardwareConfigDirtyError().detail);
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
+}
+
+void test_apply_jobs_cancel_pending_sync_measurement_before_generation_change() {
+  for (uint8_t typedSettings = 0; typedSettings < 2; ++typedSettings) {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    SampleEnvelope priorSample{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(priorSample).ok());
+    const uint32_t generationBefore = dev.configGeneration();
+
+    setRawSample(bus, 416000, 520000, 31000);
+    TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+    SettingsSnapshot snapshot{};
+    TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+    TEST_ASSERT_TRUE(snapshot.measurementRequested);
+    const uint32_t callsBeforeStart = totalBusCalls(bus);
+
+    Status start;
+    if (typedSettings == 0) {
+      start = dev.startApplyConfigJob();
+    } else {
+      SensorSettings desired = dev.sensorSettings();
+      desired.filter = Filter::X2;
+      desired.standby = Standby::MS_250;
+      start = dev.startApplySettingsJob(desired);
+    }
+    TEST_ASSERT_TRUE(start.inProgress());
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+    TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+    TEST_ASSERT_FALSE(snapshot.measurementRequested);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(
+                                snapshot.lastMeasurementStatus.code));
+
+    const JobPollResult result = pollUntilTerminal(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
+                            static_cast<uint8_t>(result.state));
+    TEST_ASSERT_EQUAL_UINT32(generationBefore + 1u,
+                             dev.configGeneration());
+    const uint32_t callsBeforeTick = totalBusCalls(bus);
+    bus.nowMs += 2000u;
+    dev.tick(bus.nowMs);
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeTick, totalBusCalls(bus));
+    TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+    TEST_ASSERT_FALSE(snapshot.measurementRequested);
+    SampleEnvelope retained{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+    assertSampleEnvelopeEqual(priorSample, retained);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_CHANGE),
+        static_cast<uint8_t>(dev.sampleFreshness()));
+  }
+}
+
+void test_tick_clears_pending_measurement_when_setter_marks_resync_required() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+  SampleEnvelope priorSample{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(priorSample).ok());
+
+  setRawSample(bus, 416000, 520000, 31000);
+  TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+  bus.failWriteOnCall = bus.writeCalls + 1u;
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -234);
+  const Status setter = dev.setFilter(Filter::X2);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(setter.code));
+  TEST_ASSERT_EQUAL_INT32(-234, setter.detail);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+      static_cast<uint8_t>(dev.configSyncState()));
+  SettingsSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+  TEST_ASSERT_TRUE(snapshot.measurementRequested);
+
+  const uint32_t callsBeforeTick = totalBusCalls(bus);
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeTick, totalBusCalls(bus));
+  TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+  TEST_ASSERT_FALSE(snapshot.measurementRequested);
+  TEST_ASSERT_FALSE(snapshot.measurementReady);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(
+                              snapshot.lastMeasurementStatus.code));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR),
+      static_cast<uint8_t>(snapshot.conversionState));
+  SampleEnvelope retained{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+  assertSampleEnvelopeEqual(priorSample, retained);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+      static_cast<uint8_t>(dev.sampleFreshness()));
+}
+
 void test_init_job_success_clears_existing_dirty_state() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -907,16 +2308,16 @@ void test_recovery_job_success_clears_existing_dirty_state() {
   TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
 }
 
-void test_recovery_job_failure_after_reset_marks_dirty() {
+void test_soft_reset_job_failure_after_reset_marks_dirty() {
   FakeBus bus;
   BME280::BME280 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "recovery nvm timeout", -93);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -93);
 
-  Status st = dev.startRecoveryJob();
+  Status st = dev.startSoftResetJob();
   TEST_ASSERT_TRUE(st.inProgress());
   const JobPollResult result = pollWithBudget(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
@@ -947,6 +2348,16 @@ void test_missing_now_ms_fallback_is_framework_neutral() {
   Status st = dev.recover();
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+  TEST_ASSERT_FALSE(dev.lastOkTimeValid());
+
+  bus.readErrorRemaining = 1;
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -175);
+  uint8_t status = 0;
+  st = dev.readStatus(status);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.lastErrorMs());
+  TEST_ASSERT_FALSE(dev.lastErrorTimeValid());
 }
 
 void test_begin_without_now_ms_uses_framework_neutral_fallback() {
@@ -962,6 +2373,7 @@ void test_begin_without_now_ms_uses_framework_neutral_fallback() {
   st = dev.setMode(Mode::NORMAL);
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+  TEST_ASSERT_FALSE(dev.lastOkTimeValid());
 }
 
 void test_request_measurement_requires_now_ms_hook() {
@@ -990,7 +2402,7 @@ void test_probe_transport_fault_is_preserved_and_does_not_update_health() {
   const DriverState beforeState = dev.state();
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced probe error", -7);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -7);
   Status st = dev.probe();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                           static_cast<uint8_t>(st.code));
@@ -1011,7 +2423,7 @@ void test_probe_address_nack_maps_to_device_not_found_without_health_update() {
   const DriverState beforeState = dev.state();
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "forced probe nack", 2);
+  bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, 2);
   Status st = dev.probe();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
                           static_cast<uint8_t>(st.code));
@@ -1028,7 +2440,7 @@ void test_probe_address_nack_maps_to_device_not_found() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "forced address nack", -17);
+  bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, -17);
   Status st = dev.probe();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
                           static_cast<uint8_t>(st.code));
@@ -1045,13 +2457,24 @@ void test_probe_preserves_non_address_transport_errors_without_health_update() {
   const uint32_t beforeSuccess = dev.totalSuccess();
   const DriverState beforeState = dev.state();
 
-  const Err errors[] = {Err::I2C_TIMEOUT, Err::I2C_BUS, Err::I2C_NACK_DATA, Err::I2C_ERROR};
-  for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+  struct MappingCase {
+    TransportErr transport;
+    Err driver;
+  };
+  const MappingCase cases[] = {
+      {TransportErr::TIMEOUT, Err::I2C_TIMEOUT},
+      {TransportErr::BUS, Err::I2C_BUS},
+      {TransportErr::NACK_DATA, Err::I2C_NACK_DATA},
+      {TransportErr::OTHER, Err::I2C_ERROR},
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     bus.readErrorRemaining = 1;
-    bus.readError = Status::Error(errors[i], "forced probe transport error",
-                                  static_cast<int32_t>(-60 - static_cast<int32_t>(i)));
+    bus.readError = TransportResult::Error(
+        cases[i].transport,
+        static_cast<int32_t>(-60 - static_cast<int32_t>(i)));
     Status st = dev.probe();
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(errors[i]), static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(cases[i].driver),
+                            static_cast<uint8_t>(st.code));
     TEST_ASSERT_EQUAL_INT32(static_cast<int32_t>(-60 - static_cast<int32_t>(i)), st.detail);
     TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
     TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
@@ -1133,7 +2556,7 @@ void test_begin_rejects_wrong_chip_id() {
 void test_begin_address_nack_maps_to_device_not_found() {
   FakeBus bus;
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "chip id address nack", -22);
+  bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, -22);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -1149,7 +2572,7 @@ void test_begin_address_nack_after_chip_id_maps_to_device_not_found() {
     FakeBus bus;
     bus.failReadReg = cmd::REG_STATUS;
     bus.failReadRegRemaining = 1;
-    bus.readError = Status::Error(Err::I2C_NACK_ADDR, "nvm address nack", -23);
+    bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, -23);
     BME280::BME280 dev;
 
     Status st = dev.begin(makeConfig(bus));
@@ -1163,7 +2586,7 @@ void test_begin_address_nack_after_chip_id_maps_to_device_not_found() {
     FakeBus bus;
     bus.failReadRegEnabled = true;
     bus.failReadReg = cmd::REG_CALIB_TP_START;
-    bus.readError = Status::Error(Err::I2C_NACK_ADDR, "calibration address nack", -24);
+    bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, -24);
     BME280::BME280 dev;
 
     Status st = dev.begin(makeConfig(bus));
@@ -1176,7 +2599,7 @@ void test_begin_address_nack_after_chip_id_maps_to_device_not_found() {
   {
     FakeBus bus;
     bus.failWriteOnCall = 1;
-    bus.writeError = Status::Error(Err::I2C_NACK_ADDR, "config address nack", -25);
+    bus.writeError = TransportResult::Error(TransportErr::NACK_ADDRESS, -25);
     BME280::BME280 dev;
 
     Status st = dev.begin(makeConfig(bus));
@@ -1190,7 +2613,7 @@ void test_begin_address_nack_after_chip_id_maps_to_device_not_found() {
 void test_begin_preserves_timeout_transport_error() {
   FakeBus bus;
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "chip id timeout", -21);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -21);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -1201,16 +2624,26 @@ void test_begin_preserves_timeout_transport_error() {
 }
 
 void test_begin_preserves_chip_id_bus_and_data_errors() {
-  const Err errors[] = {Err::I2C_BUS, Err::I2C_NACK_DATA, Err::I2C_ERROR};
-  for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+  struct MappingCase {
+    TransportErr transport;
+    Err driver;
+  };
+  const MappingCase cases[] = {
+      {TransportErr::BUS, Err::I2C_BUS},
+      {TransportErr::NACK_DATA, Err::I2C_NACK_DATA},
+      {TransportErr::OTHER, Err::I2C_ERROR},
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     FakeBus bus;
     bus.readErrorRemaining = 1;
-    bus.readError = Status::Error(errors[i], "chip id transport error",
-                                  static_cast<int32_t>(-70 - static_cast<int32_t>(i)));
+    bus.readError = TransportResult::Error(
+        cases[i].transport,
+        static_cast<int32_t>(-70 - static_cast<int32_t>(i)));
     BME280::BME280 dev;
 
     Status st = dev.begin(makeConfig(bus));
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(errors[i]), static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(cases[i].driver),
+                            static_cast<uint8_t>(st.code));
     TEST_ASSERT_EQUAL_INT32(static_cast<int32_t>(-70 - static_cast<int32_t>(i)), st.detail);
     TEST_ASSERT_FALSE(dev.isInitialized());
   }
@@ -1222,7 +2655,7 @@ void test_recover_failure_updates_health_once() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced recover error", -8);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -8);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
@@ -1240,7 +2673,7 @@ void test_recover_success_returns_ready() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced recover error", -9);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -9);
   (void)dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
@@ -1259,19 +2692,56 @@ void test_recover_success_returns_ready() {
 
 void test_recover_chip_id_mismatch_updates_health() {
   FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
   BME280::BME280 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+
+  Calibration priorCalibration{};
+  TEST_ASSERT_TRUE(dev.getCalibration(priorCalibration).ok());
+  SampleEnvelope priorSample{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(priorSample).ok());
 
   bus.chipId = 0x61;
-  Status st = dev.recover();
+  const uint32_t readsBefore = bus.readCalls;
+  const Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CHIP_ID_MISMATCH),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(0x61, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 1u, bus.readCalls);
   TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(1u, dev.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CHIP_ID_MISMATCH),
                           static_cast<uint8_t>(dev.lastError().code));
+
+  SettingsSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                          static_cast<uint8_t>(snapshot.calibrationState));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+      static_cast<uint8_t>(snapshot.configSyncState));
+  TEST_ASSERT_TRUE(snapshot.hardwareConfigDirty);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::CHIP_ID_MISMATCH),
+      static_cast<uint8_t>(snapshot.hardwareConfigDirtyError.code));
+  TEST_ASSERT_EQUAL_INT32(0x61, snapshot.hardwareConfigDirtyError.detail);
+  assertCalibrationEqual(priorCalibration, snapshot.calibration);
+
+  Calibration unavailable{};
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(
+                              dev.getCalibration(unavailable).code));
+  SampleEnvelope retained{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+  assertSampleEnvelopeEqual(priorSample, retained);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+      static_cast<uint8_t>(dev.sampleFreshness()));
+  assertMeasurementBlockedByResyncWithoutI2c(dev, bus);
 }
 
 void test_recover_preserves_transport_error_code() {
@@ -1280,7 +2750,7 @@ void test_recover_preserves_transport_error_code() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_NACK_ADDR, "forced recover nack", 7);
+  bus.readError = TransportResult::Error(TransportErr::NACK_ADDRESS, 7);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
                           static_cast<uint8_t>(st.code));
@@ -1327,6 +2797,41 @@ void test_humidity_oversampling_writes_ctrl_hum_then_ctrl_meas() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X4),
                           static_cast<uint8_t>(osrs));
   TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+}
+
+void test_humidity_latch_address_nack_after_ctrl_hum_marks_resync_required() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const uint32_t writesBefore = bus.writeCalls;
+  const uint8_t writeLogStart = bus.writeLogLen;
+  bus.failWriteOnCall = writesBefore + 2u;
+  bus.writeError =
+      TransportResult::Error(TransportErr::NACK_ADDRESS, -233);
+
+  const Status st = dev.setOversamplingH(Oversampling::X4);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-233, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore + 2u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT8(writeLogStart + 1u, bus.writeLogLen);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CTRL_HUM,
+                         bus.writeRegLog[writeLogStart]);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Oversampling::X4),
+      bus.writeValueLog[writeLogStart] & cmd::MASK_CTRL_HUM_OSRS_H);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+      static_cast<uint8_t>(dev.configSyncState()));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                          static_cast<uint8_t>(
+                              dev.hardwareConfigDirtyError().code));
+  TEST_ASSERT_EQUAL_INT32(-233, dev.hardwareConfigDirtyError().detail);
+  Oversampling cached = Oversampling::SKIP;
+  TEST_ASSERT_TRUE(dev.getOversamplingH(cached).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
+                          static_cast<uint8_t>(cached));
 }
 
 void test_config_change_in_normal_mode_sleeps_writes_config_and_restores() {
@@ -1402,7 +2907,7 @@ void test_config_change_failure_at_sleep_step_marks_dirty() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "sleep write timeout", -41);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -41);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1416,7 +2921,7 @@ void test_config_change_failure_at_config_step_marks_dirty_after_restore() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 2u;
-  bus.writeError = Status::Error(Err::I2C_NACK_DATA, "config write nack", -42);
+  bus.writeError = TransportResult::Error(TransportErr::NACK_DATA, -42);
   Status st = dev.setStandby(Standby::MS_250);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
@@ -1433,7 +2938,7 @@ void test_humidity_ctrl_hum_failure_marks_dirty_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "ctrl_hum bus error", -43);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -43);
   Status st = dev.setOversamplingH(Oversampling::X4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -1447,7 +2952,7 @@ void test_recover_apply_config_first_write_failure_marks_dirty() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "apply sleep timeout", -44);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -44);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1481,7 +2986,7 @@ void test_partial_config_restore_failure_marks_hardware_dirty() {
 
   const uint32_t failCall = bus.writeCalls + 3u;  // sleep write, config write, restore write
   bus.failWriteOnCall = failCall;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "restore failed", -31);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -31);
 
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
@@ -1504,7 +3009,7 @@ void test_dirty_state_clears_after_successful_recover_resync() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 3u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "restore bus error", -32);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -32);
   Status st = dev.setStandby(Standby::MS_250);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS), static_cast<uint8_t>(st.code));
   TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
@@ -1585,7 +3090,7 @@ void test_diagnostic_config_write_failure_preserves_error_and_marks_dirty() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "diagnostic write timeout", -52);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -52);
   Status st = dev.writeRegister(cmd::REG_CONFIG, 0xA0);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1625,7 +3130,7 @@ void test_recover_preserves_cached_sample_until_successful_resync_then_invalidat
   TEST_ASSERT_TRUE(dev.getCompensatedSample(compBefore).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 3u;  // sleep write, config write, restore write
-  bus.writeError = Status::Error(Err::I2C_BUS, "make dirty before recover", -35);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -35);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -1634,7 +3139,7 @@ void test_recover_preserves_cached_sample_until_successful_resync_then_invalidat
   TEST_ASSERT_TRUE(dev.hasSample());
 
   bus.failWriteOnCall = bus.writeCalls + 2u;  // recover sleep write succeeds, config write fails
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "recover resync timeout", -36);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -36);
   st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1670,7 +3175,7 @@ void test_recover_preserves_cached_sample_until_successful_resync_then_invalidat
                           static_cast<uint8_t>(st.code));
 }
 
-void test_recovery_job_failure_preserves_cached_sample_until_successful_resync() {
+void test_resync_job_failure_preserves_cached_sample_until_successful_resync() {
   FakeBus bus;
   setBoschSyntheticCalibration(bus);
   setRawSample(bus, 415148, 519888, 30000);
@@ -1680,35 +3185,38 @@ void test_recovery_job_failure_preserves_cached_sample_until_successful_resync()
   captureForcedSample(dev, bus);
   TEST_ASSERT_TRUE(dev.hasSample());
   const uint32_t sampleTimestamp = dev.sampleTimestampMs();
-  RawSample rawBefore{};
-  TEST_ASSERT_TRUE(dev.getRawSample(rawBefore).ok());
+  const uint32_t generationBefore = dev.configGeneration();
+  SampleEnvelope sampleBefore{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(sampleBefore).ok());
 
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "recovery nvm timeout", -126);
-  TEST_ASSERT_TRUE(dev.startRecoveryJob().inProgress());
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -126);
+  TEST_ASSERT_TRUE(dev.startResyncJob().inProgress());
   JobPollResult result = pollWithBudget(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
                           static_cast<uint8_t>(result.state));
-  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
   TEST_ASSERT_TRUE(dev.hasSample());
   TEST_ASSERT_EQUAL_UINT32(sampleTimestamp, dev.sampleTimestampMs());
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::FRESH),
                           static_cast<uint8_t>(dev.sampleFreshness()));
 
-  RawSample rawAfter{};
-  TEST_ASSERT_TRUE(dev.getRawSample(rawAfter).ok());
-  TEST_ASSERT_EQUAL_INT32(rawBefore.adcT, rawAfter.adcT);
-  TEST_ASSERT_EQUAL_INT32(rawBefore.adcP, rawAfter.adcP);
-  TEST_ASSERT_EQUAL_INT32(rawBefore.adcH, rawAfter.adcH);
+  SampleEnvelope sampleAfterFailure{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(sampleAfterFailure).ok());
+  assertSampleEnvelopeEqual(sampleBefore, sampleAfterFailure);
 
   TEST_ASSERT_TRUE(dev.startRecoveryJob().inProgress());
   result = pollUntilTerminal(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
                           static_cast<uint8_t>(result.state));
   TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
-  TEST_ASSERT_FALSE(dev.hasSample());
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::NONE),
+  TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_TRUE(dev.configGeneration() > generationBefore);
+  SampleEnvelope sampleAfterRecovery{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(sampleAfterRecovery).ok());
+  assertSampleEnvelopeEqual(sampleBefore, sampleAfterRecovery);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_CHANGE),
                           static_cast<uint8_t>(dev.sampleFreshness()));
 }
 
@@ -1718,7 +3226,7 @@ void test_invalid_begin_does_not_clear_existing_dirty_state() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 3u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "restore bus error", -34);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -34);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS), static_cast<uint8_t>(st.code));
   TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
@@ -1738,7 +3246,7 @@ void test_apply_config_partial_failure_marks_dirty_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 2u;  // ctrl_meas sleep succeeds, config write fails
-  bus.writeError = Status::Error(Err::I2C_NACK_DATA, "config write nack", -33);
+  bus.writeError = TransportResult::Error(TransportErr::NACK_DATA, -33);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
@@ -1754,7 +3262,7 @@ void test_soft_reset_write_timeout_marks_dirty_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "reset write timeout", -80);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -80);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1771,7 +3279,7 @@ void test_soft_reset_write_address_nack_preserves_error_without_dirty_state() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 1u;
-  bus.writeError = Status::Error(Err::I2C_NACK_ADDR, "reset address nack", -91);
+  bus.writeError = TransportResult::Error(TransportErr::NACK_ADDRESS, -91);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
                           static_cast<uint8_t>(st.code));
@@ -1803,7 +3311,7 @@ void test_begin_nvm_transport_error_preserved() {
   FakeBus bus;
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 300;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "nvm status timeout", -81);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -81);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -1818,7 +3326,7 @@ void test_begin_calibration_read_failure_preserves_transport_error() {
   FakeBus bus;
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CALIB_TP_START;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "begin calibration nack", -89);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -89);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -1831,7 +3339,7 @@ void test_begin_calibration_read_failure_preserves_transport_error() {
 void test_begin_apply_config_failure_marks_dirty_and_stays_uninitialized() {
   FakeBus bus;
   bus.failWriteOnCall = 1;
-  bus.writeError = Status::Error(Err::I2C_BUS, "begin apply bus error", -90);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -90);
   BME280::BME280 dev;
 
   Status st = dev.begin(makeConfig(bus));
@@ -1849,7 +3357,7 @@ void test_soft_reset_nvm_transport_error_preserved_and_marks_dirty() {
 
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 300;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "nvm status data nack", -82);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -82);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
@@ -1869,7 +3377,7 @@ void test_soft_reset_nvm_status_transport_error_preserves_detail() {
   bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "first nvm status timeout", -92);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -92);
 
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
@@ -1888,14 +3396,12 @@ void test_soft_reset_calibration_read_failure_marks_dirty() {
   FakeBus bus;
   BME280::BME280 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
-  Calibration before{};
-  TEST_ASSERT_TRUE(dev.getCalibration(before).ok());
 
   setBoschSyntheticCalibration(bus);
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CALIB_H_START;
-  bus.readError = Status::Error(Err::I2C_BUS, "reset calibration bus error", -83);
+  bus.readError = TransportResult::Error(TransportErr::BUS, -83);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -1906,10 +3412,8 @@ void test_soft_reset_calibration_read_failure_marks_dirty() {
                           static_cast<uint8_t>(dev.state()));
 
   Calibration after{};
-  TEST_ASSERT_TRUE(dev.getCalibration(after).ok());
-  TEST_ASSERT_EQUAL_UINT16(before.digT1, after.digT1);
-  TEST_ASSERT_EQUAL_INT16(before.digT2, after.digT2);
-  TEST_ASSERT_EQUAL_UINT16(before.digP1, after.digP1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(dev.getCalibration(after).code));
 }
 
 void test_soft_reset_invalid_calibration_marks_dirty_and_records_health_failure() {
@@ -1938,7 +3442,7 @@ void test_soft_reset_apply_config_failure_marks_dirty_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 2u;  // reset write succeeds, apply sleep write fails
-  bus.writeError = Status::Error(Err::I2C_TIMEOUT, "reset apply timeout", -84);
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -84);
   Status st = dev.softReset();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -1952,7 +3456,7 @@ void test_soft_reset_success_reloads_calibration_and_clears_dirty() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.failWriteOnCall = bus.writeCalls + 3u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "make dirty before reset", -85);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -85);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -2018,7 +3522,7 @@ void test_recover_nvm_transport_error_updates_health_and_preserves_error() {
 
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 300;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "recover nvm timeout", -86);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -86);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -2031,19 +3535,193 @@ void test_recover_nvm_transport_error_updates_health_and_preserves_error() {
 
 void test_recover_invalid_calibration_records_health_failure() {
   FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
   BME280::BME280 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+
+  Calibration priorCalibration{};
+  TEST_ASSERT_TRUE(dev.getCalibration(priorCalibration).ok());
+  SampleEnvelope priorSample{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(priorSample).ok());
 
   bus.reg[cmd::REG_DIG_T1_LSB] = 0;
   bus.reg[cmd::REG_DIG_T1_MSB] = 0;
 
-  Status st = dev.recover();
+  const uint32_t writesBefore = bus.writeCalls;
+  const Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
                           static_cast<uint8_t>(dev.lastError().code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
+
+  SettingsSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                          static_cast<uint8_t>(snapshot.calibrationState));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+      static_cast<uint8_t>(snapshot.configSyncState));
+  TEST_ASSERT_TRUE(snapshot.hardwareConfigDirty);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                          static_cast<uint8_t>(
+                              snapshot.hardwareConfigDirtyError.code));
+  assertCalibrationEqual(priorCalibration, snapshot.calibration);
+  TEST_ASSERT_NOT_EQUAL_UINT16(0u, snapshot.calibration.digT1);
+
+  Calibration unavailable{};
+  const Calibration unavailableBefore = unavailable;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(
+                              dev.getCalibration(unavailable).code));
+  assertCalibrationEqual(unavailableBefore, unavailable);
+  SampleEnvelope retained{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+  assertSampleEnvelopeEqual(priorSample, retained);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+      static_cast<uint8_t>(dev.sampleFreshness()));
+  assertMeasurementBlockedByResyncWithoutI2c(dev, bus);
+}
+
+void test_recover_changed_tp_then_h_failure_invalidates_calibration() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+
+  Calibration priorCalibration{};
+  TEST_ASSERT_TRUE(dev.getCalibration(priorCalibration).ok());
+  SampleEnvelope priorSample{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(priorSample).ok());
+  putLe16(bus, cmd::REG_DIG_T1_LSB, 0x4321);
+  bus.reg[cmd::REG_DIG_H1] = 0xA5;
+  bus.failReadRegEnabled = true;
+  bus.failReadReg = cmd::REG_CALIB_H_START;
+  bus.readError = TransportResult::Error(TransportErr::BUS, -187);
+
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  const Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-187, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 4u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CALIB_H_START, bus.lastReadReg);
+
+  SettingsSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                          static_cast<uint8_t>(snapshot.calibrationState));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+      static_cast<uint8_t>(snapshot.configSyncState));
+  TEST_ASSERT_TRUE(snapshot.hardwareConfigDirty);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(
+                              snapshot.hardwareConfigDirtyError.code));
+  TEST_ASSERT_EQUAL_INT32(-187, snapshot.hardwareConfigDirtyError.detail);
+  assertCalibrationEqual(priorCalibration, snapshot.calibration);
+  TEST_ASSERT_NOT_EQUAL_UINT16(0x4321, snapshot.calibration.digT1);
+  TEST_ASSERT_NOT_EQUAL_UINT8(0xA5, snapshot.calibration.digH1);
+
+  Calibration unavailable{};
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(
+                              dev.getCalibration(unavailable).code));
+  SampleEnvelope retained{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+  assertSampleEnvelopeEqual(priorSample, retained);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+      static_cast<uint8_t>(dev.sampleFreshness()));
+  assertMeasurementBlockedByResyncWithoutI2c(dev, bus);
+}
+
+void test_recover_changed_candidate_apply_readiness_failure_stays_private() {
+  for (uint8_t outcome = 0; outcome < 2; ++outcome) {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+
+    Calibration priorCalibration{};
+    TEST_ASSERT_TRUE(dev.getCalibration(priorCalibration).ok());
+    SampleEnvelope priorSample{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(priorSample).ok());
+    putLe16(bus, cmd::REG_DIG_T1_LSB, 0x4321);
+    putLe16(bus, cmd::REG_DIG_P1_LSB, 0x5678);
+
+    const uint32_t readsBefore = bus.readCalls;
+    const uint32_t statusReadsBefore = bus.statusReadCalls;
+    const uint32_t writesBefore = bus.writeCalls;
+    if (outcome == 0) {
+      bus.measuringOnStatusReadCall = statusReadsBefore + 2u;
+    } else {
+      bus.failReadOnCall = readsBefore + 5u;
+      bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -188);
+    }
+
+    const Status st = dev.recover();
+    const Err expectedError = outcome == 0 ? Err::BUSY : Err::I2C_TIMEOUT;
+    const int32_t expectedDetail = outcome == 0
+        ? static_cast<int32_t>(BusyReason::DEVICE_MEASURING)
+        : -188;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expectedError),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_INT32(expectedDetail, st.detail);
+    TEST_ASSERT_EQUAL_UINT32(readsBefore + 5u, bus.readCalls);
+    TEST_ASSERT_EQUAL_UINT32(
+        statusReadsBefore + (outcome == 0 ? 2u : 1u),
+        bus.statusReadCalls);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+
+    SettingsSnapshot snapshot{};
+    TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                            static_cast<uint8_t>(snapshot.calibrationState));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+        static_cast<uint8_t>(snapshot.configSyncState));
+    TEST_ASSERT_TRUE(snapshot.hardwareConfigDirty);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(expectedError),
+        static_cast<uint8_t>(snapshot.hardwareConfigDirtyError.code));
+    TEST_ASSERT_EQUAL_INT32(expectedDetail,
+                            snapshot.hardwareConfigDirtyError.detail);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expectedError),
+                            static_cast<uint8_t>(dev.lastError().code));
+    TEST_ASSERT_EQUAL_INT32(expectedDetail, dev.lastError().detail);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(
+                                snapshot.lastMeasurementStatus.code));
+    assertCalibrationEqual(priorCalibration, snapshot.calibration);
+    TEST_ASSERT_NOT_EQUAL_UINT16(0x4321, snapshot.calibration.digT1);
+    TEST_ASSERT_NOT_EQUAL_UINT16(0x5678, snapshot.calibration.digP1);
+
+    Calibration unavailable{};
+    const Calibration unavailableBefore = unavailable;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(
+                                dev.getCalibration(unavailable).code));
+    assertCalibrationEqual(unavailableBefore, unavailable);
+    SampleEnvelope retained{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+    assertSampleEnvelopeEqual(priorSample, retained);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+        static_cast<uint8_t>(dev.sampleFreshness()));
+    assertMeasurementBlockedByResyncWithoutI2c(dev, bus);
+  }
 }
 
 void test_set_mode_forced_does_not_trigger_conversion() {
@@ -2070,62 +3748,73 @@ void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
   const uint8_t byte = 0x55;
 
   Wire._setEndTransmissionResult(2);
-  Status st = transport::wireWrite(0x76, &byte, 1, 123, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+  TransportResult st = transport::wireWrite(0x76, &byte, 1, 123, &Wire);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::NACK_ADDRESS),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(2, st.detail);
   TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
 
   Wire._setEndTransmissionResult(3);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::NACK_DATA),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(3, st.detail);
   TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
 
   Wire._setEndTransmissionResult(4);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::BUS),
                           static_cast<uint8_t>(st.code));
 
   Wire._setEndTransmissionResult(5);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::TIMEOUT),
                           static_cast<uint8_t>(st.code));
 
   Wire._setEndTransmissionResult(1);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(1, st.detail);
 }
 
 void test_example_transport_validates_params_and_handles_write_read() {
   const uint8_t tx = 0x00;
   uint8_t rx = 0;
 
-  Status st = transport::wireWrite(0x76, nullptr, 1, 50, nullptr);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+  TransportResult st = transport::wireWrite(0x76, nullptr, 1, 50, nullptr);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-1, st.detail);
 
   st = transport::wireWrite(0x76, &tx, 0, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-2, st.detail);
 
   st = transport::wireWriteRead(0x76, nullptr, 1, &rx, 1, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-2, st.detail);
 
   st = transport::wireWriteRead(0x76, &tx, 1, nullptr, 1, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-2, st.detail);
 
   Wire._setEndTransmissionResult(0);
   Wire._setRequestFromResult(1);
   st = transport::wireWriteRead(0x76, &tx, 1, &rx, 1, 50, &Wire);
   TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(st.writeCount));
+  TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(st.readCount));
 
   Wire._setRequestFromResult(0);
   st = transport::wireWriteRead(0x76, &tx, 1, &rx, 1, 50, &Wire);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OK),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(st.writeCount));
+  TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(st.readCount));
 }
 
 void test_recover_reaches_offline_when_threshold_is_one() {
@@ -2136,7 +3825,7 @@ void test_recover_reaches_offline_when_threshold_is_one() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced timeout", -10);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -10);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
@@ -2144,7 +3833,7 @@ void test_recover_reaches_offline_when_threshold_is_one() {
   TEST_ASSERT_FALSE(dev.isOnline());
 }
 
-void test_offline_latches_public_register_read_without_i2c() {
+void test_offline_history_does_not_block_public_register_read() {
   FakeBus bus;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
@@ -2152,21 +3841,28 @@ void test_offline_latches_public_register_read_without_i2c() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -11);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -11);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
 
   const uint32_t readsBefore = bus.readCalls;
+  const uint32_t successesBefore = dev.totalSuccess();
+  const uint32_t failuresBefore = dev.totalFailures();
   uint8_t value = 0;
   st = dev.readRegister(cmd::REG_CHIP_ID, value);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY), static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_STRING("Driver is offline; call recover()", st.msg);
-  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX8(cmd::CHIP_ID_BME280, value);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 1u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(successesBefore + 1u, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(failuresBefore, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
 }
 
-void test_offline_typed_config_setters_do_not_mark_dirty_without_i2c() {
+void test_offline_history_does_not_block_typed_config_setters() {
   FakeBus bus;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
@@ -2174,7 +3870,7 @@ void test_offline_typed_config_setters_do_not_mark_dirty_without_i2c() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -111);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -111);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR), static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
@@ -2182,16 +3878,23 @@ void test_offline_typed_config_setters_do_not_mark_dirty_without_i2c() {
   TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
 
   const uint32_t callsBefore = totalBusCalls(bus);
+  const uint32_t successesBefore = dev.totalSuccess();
+  const uint32_t failuresBefore = dev.totalFailures();
   st = dev.setMode(Mode::SLEEP);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(st.ok());
   st = dev.setOversamplingT(Oversampling::X2);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(st.ok());
   st = dev.setOversamplingP(Oversampling::X2);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(st.ok());
   st = dev.setOversamplingH(Oversampling::X2);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(st.ok());
 
-  TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 5u, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT32(successesBefore + 5u, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(failuresBefore, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
   TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
 }
 
@@ -2203,7 +3906,7 @@ void test_probe_works_while_offline_without_clearing_latch() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -87);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -87);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
@@ -2224,7 +3927,7 @@ void test_successful_recover_from_offline_clears_latch_and_allows_i2c() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -88);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -88);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
@@ -2242,7 +3945,7 @@ void test_successful_recover_from_offline_clears_latch_and_allows_i2c() {
   TEST_ASSERT_GREATER_THAN_UINT32(readsBefore, bus.readCalls);
 }
 
-void test_failed_recover_from_offline_keeps_latch_after_intermediate_success() {
+void test_failed_recover_from_offline_reports_current_health_observation() {
   FakeBus bus;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
@@ -2251,28 +3954,32 @@ void test_failed_recover_from_offline_keeps_latch_after_intermediate_success() {
 
   for (uint8_t i = 0; i < cfg.offlineThreshold; ++i) {
     bus.readErrorRemaining = 1;
-    bus.readError = Status::Error(Err::I2C_ERROR, "forced offline", -12);
+    bus.readError = TransportResult::Error(TransportErr::OTHER, -12);
     (void)dev.recover();
   }
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
 
   bus.writeErrorRemaining = 1;
-  bus.writeError = Status::Error(Err::I2C_ERROR, "recover apply failed", -13);
+  bus.writeError = TransportResult::Error(TransportErr::OTHER, -13);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
                           static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
-  TEST_ASSERT_TRUE(dev.consecutiveFailures() >= cfg.offlineThreshold);
+  TEST_ASSERT_EQUAL_UINT8(1u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(cfg.offlineThreshold) + 1u,
+                           dev.totalFailures());
 
   const uint32_t readsBefore = bus.readCalls;
   uint8_t value = 0;
   st = dev.readRegister(cmd::REG_CHIP_ID, value);
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
-                          static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_STRING("Driver is offline; call recover()", st.msg);
-  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX8(cmd::CHIP_ID_BME280, value);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 1u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
 }
 
 void test_recovery_job_from_offline_clears_latch_and_allows_i2c() {
@@ -2283,7 +3990,7 @@ void test_recovery_job_from_offline_clears_latch_and_allows_i2c() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "force staged offline", -120);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -120);
   Status st = dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
@@ -2310,14 +4017,14 @@ void test_recovery_job_from_offline_failure_reasserts_offline_latch() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "force staged offline", -121);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -121);
   (void)dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CHIP_ID;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "recovery chip timeout", -122);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -122);
   Status st = dev.startRecoveryJob();
   TEST_ASSERT_TRUE(st.inProgress());
   const JobPollResult result = pollUntilTerminal(dev, bus, 4);
@@ -2331,7 +4038,7 @@ void test_recovery_job_from_offline_failure_reasserts_offline_latch() {
   TEST_ASSERT_TRUE(dev.consecutiveFailures() >= cfg.offlineThreshold);
 }
 
-void test_recovery_job_from_offline_does_not_report_ready_until_complete() {
+void test_recovery_job_from_offline_updates_health_before_job_completion() {
   FakeBus bus;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
@@ -2339,23 +4046,25 @@ void test_recovery_job_from_offline_does_not_report_ready_until_complete() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "force staged offline", -125);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -125);
   (void)dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_TRUE(dev.consecutiveFailures() >= cfg.offlineThreshold);
 
   TEST_ASSERT_TRUE(dev.startRecoveryJob().inProgress());
   JobPollResult result = pollWithBudget(dev, bus, 1);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::RUNNING),
                           static_cast<uint8_t>(result.state));
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
                           static_cast<uint8_t>(dev.state()));
 
   result = pollWithBudget(dev, bus, 1);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::RUNNING),
                           static_cast<uint8_t>(result.state));
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
                           static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
 
   const uint32_t readsBefore = bus.readCalls;
   uint8_t value = 0;
@@ -2371,7 +4080,7 @@ void test_recovery_job_from_offline_does_not_report_ready_until_complete() {
                           static_cast<uint8_t>(dev.state()));
 }
 
-void test_non_recovery_job_still_blocked_while_offline() {
+void test_offline_history_does_not_block_staged_measurement_job() {
   FakeBus bus;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
@@ -2379,22 +4088,28 @@ void test_non_recovery_job_still_blocked_while_offline() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   bus.readErrorRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_ERROR, "force staged offline", -123);
+  bus.readError = TransportResult::Error(TransportErr::OTHER, -123);
   (void)dev.recover();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
                           static_cast<uint8_t>(dev.state()));
 
   const uint32_t callsBefore = totalBusCalls(bus);
+  const uint32_t successesBefore = dev.totalSuccess();
+  const uint32_t failuresBefore = dev.totalFailures();
   Status st = dev.startForcedMeasurementJob();
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
-                          static_cast<uint8_t>(st.code));
-  st = dev.startApplyConfigJob();
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
-                          static_cast<uint8_t>(st.code));
-  st = dev.requestMeasurement();
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
-                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(st.inProgress());
   TEST_ASSERT_EQUAL_UINT32(callsBefore, totalBusCalls(bus));
+
+  const JobPollResult result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::WAITING),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(1u, result.instructionsUsed);
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 1u, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT32(successesBefore + 1u, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(failuresBefore, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
 }
 
 void test_forced_measurement_timing_wraparound_reaches_ready() {
@@ -2469,7 +4184,7 @@ void test_sample_freshness_stale_after_failed_refresh() {
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_STATUS;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "refresh status timeout", -70);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -70);
   Status st = dev.requestMeasurement();
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(st.code));
@@ -2488,7 +4203,7 @@ void test_sample_freshness_stale_when_hardware_config_dirty() {
 
   captureForcedSample(dev, bus);
   bus.failWriteOnCall = bus.writeCalls + 3u;
-  bus.writeError = Status::Error(Err::I2C_BUS, "restore bus error", -71);
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -71);
   Status st = dev.setFilter(Filter::X2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(st.code));
@@ -2585,7 +4300,7 @@ void test_tick_raw_read_failure_records_measurement_status() {
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_DATA_START;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "forced raw burst nack", -55);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -55);
   bus.nowMs += dev.estimateMeasurementTimeMs();
   dev.tick(bus.nowMs);
 
@@ -2608,7 +4323,8 @@ void test_tick_stuck_measuring_times_out_without_raw_read() {
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
   cfg.mode = Mode::FORCED;
-  cfg.i2cTimeoutMs = 10;
+  cfg.i2cTimeoutMs = 2;
+  cfg.conversionReadyTimeoutMs = 10;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   Status st = dev.requestMeasurement();
@@ -2616,7 +4332,8 @@ void test_tick_stuck_measuring_times_out_without_raw_read() {
                           static_cast<uint8_t>(st.code));
 
   bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_MEASURING;
-  bus.nowMs += dev.estimateMeasurementTimeMs() + cfg.i2cTimeoutMs + 1U;
+  bus.nowMs += dev.estimateMeasurementTimeMs() +
+               cfg.conversionReadyTimeoutMs + 1U;
   dev.tick(bus.nowMs);
 
   TEST_ASSERT_FALSE(dev.measurementReady());
@@ -2790,12 +4507,27 @@ void test_read_calibration_raw_uses_register_bytes_and_preserves_error() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   CalibrationRaw raw{};
+  const uint32_t readsBefore = bus.readCalls;
+  const uint8_t readLogStart = bus.readLogLen;
   TEST_ASSERT_TRUE(dev.readCalibrationRaw(raw).ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 2u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT8(readLogStart + 2u, bus.readLogLen);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CALIB_TP_START,
+                         bus.readRegLog[readLogStart]);
+  TEST_ASSERT_EQUAL_UINT32(
+      cmd::REG_CALIB_TP_LEN,
+      static_cast<uint32_t>(bus.readLengthLog[readLogStart]));
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CALIB_H_START,
+                         bus.readRegLog[readLogStart + 1u]);
+  TEST_ASSERT_EQUAL_UINT32(
+      cmd::REG_CALIB_H_LEN,
+      static_cast<uint32_t>(bus.readLengthLog[readLogStart + 1u]));
   TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_T1_LSB],
                           raw.tp[cmd::REG_DIG_T1_LSB - cmd::REG_CALIB_TP_START]);
   TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_P9_MSB],
                           raw.tp[cmd::REG_DIG_P9_MSB - cmd::REG_CALIB_TP_START]);
-  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H1], raw.h1);
+  TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H1],
+                          raw.tp[cmd::REG_DIG_H1 - cmd::REG_CALIB_TP_START]);
   TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H4_MSB],
                           raw.h[cmd::REG_DIG_H4_MSB - cmd::REG_CALIB_H_START]);
   TEST_ASSERT_EQUAL_UINT8(bus.reg[cmd::REG_DIG_H4_H5],
@@ -2805,11 +4537,13 @@ void test_read_calibration_raw_uses_register_bytes_and_preserves_error() {
 
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CALIB_H_START;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "forced h calib nack", -31);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -31);
+  const uint32_t readsBeforeFailure = bus.readCalls;
   Status st = dev.readCalibrationRaw(raw);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_INT32(-31, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(readsBeforeFailure + 2u, bus.readCalls);
 }
 
 void test_raw_burst_reconstructs_20_and_16_bit_samples() {
@@ -2841,6 +4575,10 @@ void test_compensation_matches_datasheet_derived_synthetic_vector() {
   BME280::BME280 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
+  Calibration calibration{};
+  TEST_ASSERT_TRUE(dev.getCalibration(calibration).ok());
+  TEST_ASSERT_EQUAL_INT16(-10685, calibration.digP2);
+
   captureForcedSample(dev, bus);
   TEST_ASSERT_TRUE(dev.measurementReady());
 
@@ -2862,6 +4600,48 @@ void test_compensation_matches_datasheet_derived_synthetic_vector() {
   TEST_ASSERT_TRUE(measurement.temperatureValid);
   TEST_ASSERT_TRUE(measurement.pressureValid);
   TEST_ASSERT_TRUE(measurement.humidityValid);
+}
+
+void test_checked_humidity_overflow_preserves_last_good_sample_envelope() {
+  FakeBus bus;
+  setExtremeSignedOverflowCalibration(bus);
+  setRawSample(bus, cmd::RAW_PRESSURE_SKIPPED, 0, 30000);
+  Config cfg = makeConfig(bus);
+  cfg.osrsP = Oversampling::SKIP;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  Calibration calibration{};
+  TEST_ASSERT_TRUE(dev.getCalibration(calibration).ok());
+  TEST_ASSERT_EQUAL_UINT16(1u, calibration.digT1);
+  TEST_ASSERT_EQUAL_UINT16(1u, calibration.digP1);
+  TEST_ASSERT_EQUAL_INT16(32767, calibration.digT2);
+  TEST_ASSERT_EQUAL_INT16(32767, calibration.digT3);
+  TEST_ASSERT_EQUAL_INT16(32767, calibration.digH2);
+  TEST_ASSERT_EQUAL_INT16(2047, calibration.digH4);
+  TEST_ASSERT_EQUAL_INT16(2047, calibration.digH5);
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_TRUE(dev.lastMeasurementStatus().ok());
+  SampleEnvelope before{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+
+  setRawSample(bus, cmd::RAW_PRESSURE_SKIPPED, 1048575, 30000);
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::COMPENSATION_ERROR),
+                          static_cast<uint8_t>(
+                              dev.lastMeasurementStatus().code));
+  TEST_ASSERT_EQUAL_STRING(toString(Err::COMPENSATION_ERROR),
+                           dev.lastMeasurementStatus().msg);
+  TEST_ASSERT_TRUE(dev.hasSample());
+
+  SampleEnvelope after{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+  assertSampleEnvelopeEqual(before, after);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(SampleFreshness::STALE_AFTER_ERROR),
+      static_cast<uint8_t>(dev.sampleFreshness()));
 }
 
 void test_humidity_compensation_clamps_low_and_high() {
@@ -2932,21 +4712,35 @@ void test_forced_measurement_job_budget_and_raw_fixed_outputs() {
   Config cfg = makeConfig(bus);
   cfg.mode = Mode::FORCED;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  const uint8_t writeLogStart = bus.writeLogLen;
 
   Status st = dev.startForcedMeasurementJob();
   TEST_ASSERT_TRUE(st.inProgress());
+  const uint32_t jobId = dev.jobId();
+  TEST_ASSERT_NOT_EQUAL(0u, jobId);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
                           static_cast<uint8_t>(dev.lastMeasurementStatus().code));
-  TEST_ASSERT_EQUAL_STRING("Measurement job started", dev.lastMeasurementStatus().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS),
+                           dev.lastMeasurementStatus().msg);
 
-  JobPollResult result = pollWithBudget(dev, bus, 1);
+  JobPollResult result = pollWithBudget(dev, bus, 0);
+  TEST_ASSERT_EQUAL_UINT32(jobId, result.jobId);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::FORCE_TRIGGER),
+                          static_cast<uint8_t>(result.phase));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::RUNNING),
                           static_cast<uint8_t>(result.state));
-  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CTRL_HUM, bus.lastWriteReg);
+  TEST_ASSERT_FALSE(result.phaseDeadlineActive);
 
   result = pollWithBudget(dev, bus, 1);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::WAITING),
                           static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT32(jobId, result.jobId);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::FORCED_MEASUREMENT),
+                          static_cast<uint8_t>(result.kind));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::FORCE_WAIT_TIME),
+                          static_cast<uint8_t>(result.phase));
+  TEST_ASSERT_TRUE(result.phaseDeadlineActive);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CTRL_MEAS, bus.lastWriteReg);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::FORCED),
                           bus.reg[cmd::REG_CTRL_MEAS] & cmd::MASK_CTRL_MEAS_MODE);
 
@@ -2972,6 +4766,10 @@ void test_forced_measurement_job_budget_and_raw_fixed_outputs() {
                            static_cast<uint32_t>(bus.lastReadLen));
   TEST_ASSERT_TRUE(dev.measurementReady());
   TEST_ASSERT_TRUE(dev.lastMeasurementStatus().ok());
+  TEST_ASSERT_EQUAL_UINT32(
+      0u, countWritesToRegSince(bus, cmd::REG_CTRL_HUM, writeLogStart));
+  TEST_ASSERT_EQUAL_UINT32(
+      1u, countWritesToRegSince(bus, cmd::REG_CTRL_MEAS, writeLogStart));
 
   RawSample raw{};
   CompensatedSample comp{};
@@ -2996,15 +4794,16 @@ void test_forced_measurement_job_reports_in_progress_status() {
   TEST_ASSERT_TRUE(st.inProgress());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
                           static_cast<uint8_t>(dev.lastMeasurementStatus().code));
-  TEST_ASSERT_EQUAL_STRING("Measurement job started", dev.lastMeasurementStatus().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS),
+                           dev.lastMeasurementStatus().msg);
 
-  (void)pollWithBudget(dev, bus, 1);
   const JobPollResult result = pollWithBudget(dev, bus, 1);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::WAITING),
                           static_cast<uint8_t>(result.state));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::IN_PROGRESS),
                           static_cast<uint8_t>(dev.lastMeasurementStatus().code));
-  TEST_ASSERT_EQUAL_STRING("Measurement delay active", dev.lastMeasurementStatus().msg);
+  TEST_ASSERT_EQUAL_STRING(toString(Err::IN_PROGRESS),
+                           dev.lastMeasurementStatus().msg);
 }
 
 void test_forced_measurement_job_success_clears_last_measurement_status() {
@@ -3017,7 +4816,6 @@ void test_forced_measurement_job_success_clears_last_measurement_status() {
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
-  (void)pollWithBudget(dev, bus, 1);
   (void)pollWithBudget(dev, bus, 1);
   bus.nowMs += dev.estimateMeasurementTimeMs();
   const JobPollResult result = pollUntilTerminal(dev, bus, 4);
@@ -3037,12 +4835,11 @@ void test_forced_measurement_job_failure_preserves_last_measurement_status() {
 
   TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
   (void)pollWithBudget(dev, bus, 1);
-  (void)pollWithBudget(dev, bus, 1);
 
   bus.nowMs += dev.estimateMeasurementTimeMs();
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_DATA_START;
-  bus.readError = Status::Error(Err::I2C_NACK_DATA, "forced raw nack", -124);
+  bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -124);
   const JobPollResult result = pollUntilTerminal(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
                           static_cast<uint8_t>(result.state));
@@ -3061,7 +4858,6 @@ void test_forced_measurement_job_measuring_status_does_not_read_raw_same_poll() 
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
-  (void)pollWithBudget(dev, bus, 1);
   (void)pollWithBudget(dev, bus, 1);
 
   bus.nowMs += dev.estimateMeasurementTimeMs();
@@ -3090,12 +4886,11 @@ void test_forced_measurement_job_status_failure_clears_pending_state() {
 
   TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
   (void)pollWithBudget(dev, bus, 1);
-  (void)pollWithBudget(dev, bus, 1);
 
   bus.nowMs += dev.estimateMeasurementTimeMs();
   bus.failReadReg = cmd::REG_STATUS;
   bus.failReadRegRemaining = 1;
-  bus.readError = Status::Error(Err::I2C_TIMEOUT, "forced status timeout", -95);
+  bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -95);
   JobPollResult result = pollWithBudget(dev, bus, 2);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
                           static_cast<uint8_t>(result.state));
@@ -3108,8 +4903,13 @@ void test_forced_measurement_job_status_failure_clears_pending_state() {
   TEST_ASSERT_FALSE(snap.measurementReady);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
                           static_cast<uint8_t>(snap.lastMeasurementStatus.code));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR),
+      static_cast<uint8_t>(snap.conversionState));
 
   TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::FORCE_RECONCILE_STATUS),
+                          static_cast<uint8_t>(dev.jobPhase()));
 }
 
 void test_forced_measurement_job_stuck_measuring_times_out_without_raw_read() {
@@ -3119,11 +4919,11 @@ void test_forced_measurement_job_stuck_measuring_times_out_without_raw_read() {
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
   cfg.mode = Mode::FORCED;
-  cfg.i2cTimeoutMs = 10;
+  cfg.i2cTimeoutMs = 2;
+  cfg.conversionReadyTimeoutMs = 10;
   TEST_ASSERT_TRUE(dev.begin(cfg).ok());
 
   TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
-  (void)pollWithBudget(dev, bus, 1);
   (void)pollWithBudget(dev, bus, 1);
 
   bus.nowMs += dev.estimateMeasurementTimeMs();
@@ -3133,7 +4933,7 @@ void test_forced_measurement_job_stuck_measuring_times_out_without_raw_read() {
                           static_cast<uint8_t>(result.state));
   TEST_ASSERT_EQUAL_HEX8(cmd::REG_STATUS, bus.lastReadReg);
 
-  bus.nowMs += cfg.i2cTimeoutMs + 1U;
+  bus.nowMs += cfg.conversionReadyTimeoutMs + 1U;
   result = pollWithBudget(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
                           static_cast<uint8_t>(result.state));
@@ -3172,18 +4972,27 @@ void test_recovery_job_budget_and_full_sequence() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
                           static_cast<uint8_t>(result.state));
   TEST_ASSERT_TRUE(result.status.ok());
-  TEST_ASSERT_EQUAL_UINT32(10u, instructionsTotal);
-  TEST_ASSERT_EQUAL_UINT32(callsBefore + 10u, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT32(9u, instructionsTotal);
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 9u, totalBusCalls(bus));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
                           static_cast<uint8_t>(dev.state()));
 }
 
 void test_recovery_job_chip_id_mismatch_records_health_failure() {
   FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
   BME280::BME280 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+
+  Calibration priorCalibration{};
+  TEST_ASSERT_TRUE(dev.getCalibration(priorCalibration).ok());
+  SampleEnvelope priorSample{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(priorSample).ok());
 
   bus.chipId = 0x61;
+  const uint32_t callsBefore = totalBusCalls(bus);
   TEST_ASSERT_TRUE(dev.startRecoveryJob().inProgress());
   const JobPollResult result = pollUntilTerminal(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
@@ -3195,7 +5004,33 @@ void test_recovery_job_chip_id_mismatch_records_health_failure() {
                           static_cast<uint8_t>(dev.lastError().code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
                           static_cast<uint8_t>(dev.state()));
-  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 1u, totalBusCalls(bus));
+
+  SettingsSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                          static_cast<uint8_t>(snapshot.calibrationState));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+      static_cast<uint8_t>(snapshot.configSyncState));
+  TEST_ASSERT_TRUE(snapshot.hardwareConfigDirty);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::CHIP_ID_MISMATCH),
+      static_cast<uint8_t>(snapshot.hardwareConfigDirtyError.code));
+  TEST_ASSERT_EQUAL_INT32(0x61, snapshot.hardwareConfigDirtyError.detail);
+  assertCalibrationEqual(priorCalibration, snapshot.calibration);
+
+  Calibration unavailable{};
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(
+                              dev.getCalibration(unavailable).code));
+  SampleEnvelope retained{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+  assertSampleEnvelopeEqual(priorSample, retained);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+      static_cast<uint8_t>(dev.sampleFreshness()));
+  assertMeasurementBlockedByResyncWithoutI2c(dev, bus);
 }
 
 void test_recovery_job_nvm_busy_uses_one_status_read_per_poll() {
@@ -3235,7 +5070,7 @@ void test_recovery_job_nvm_timeout_records_health_failure() {
                           static_cast<uint8_t>(result.state));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
                           static_cast<uint8_t>(result.status.code));
-  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
                           static_cast<uint8_t>(dev.lastError().code));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
@@ -3253,21 +5088,297 @@ void test_recovery_job_failed_humidity_calibration_keeps_previous_coefficients()
   putLe16(bus, cmd::REG_DIG_P1_LSB, 0x5678);
   bus.failReadRegEnabled = true;
   bus.failReadReg = cmd::REG_CALIB_H_START;
-  bus.readError = Status::Error(Err::I2C_BUS, "recovery humidity calibration bus", -94);
+  bus.readError = TransportResult::Error(TransportErr::BUS, -94);
 
+  const uint32_t writesBefore = bus.writeCalls;
   TEST_ASSERT_TRUE(dev.startRecoveryJob().inProgress());
   const JobPollResult result = pollUntilTerminal(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
                           static_cast<uint8_t>(result.state));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
                           static_cast<uint8_t>(result.status.code));
+  TEST_ASSERT_EQUAL_INT32(-94, result.status.detail);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CALIB_H_START, bus.lastReadReg);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
 
-  Calibration after{};
-  TEST_ASSERT_TRUE(dev.getCalibration(after).ok());
-  TEST_ASSERT_EQUAL_UINT16(before.digT1, after.digT1);
-  TEST_ASSERT_EQUAL_UINT16(before.digP1, after.digP1);
-  TEST_ASSERT_EQUAL_INT16(before.digT2, after.digT2);
-  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  Calibration unavailable{};
+  const Calibration unavailableBefore = unavailable;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(
+                              dev.getCalibration(unavailable).code));
+  assertCalibrationEqual(unavailableBefore, unavailable);
+
+  SettingsSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                          static_cast<uint8_t>(snapshot.calibrationState));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+      static_cast<uint8_t>(snapshot.configSyncState));
+  TEST_ASSERT_TRUE(snapshot.hardwareConfigDirty);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(
+                              snapshot.hardwareConfigDirtyError.code));
+  TEST_ASSERT_EQUAL_INT32(-94, snapshot.hardwareConfigDirtyError.detail);
+  assertCalibrationEqual(before, snapshot.calibration);
+  TEST_ASSERT_NOT_EQUAL_UINT16(0x4321, snapshot.calibration.digT1);
+  TEST_ASSERT_NOT_EQUAL_UINT16(0x5678, snapshot.calibration.digP1);
+  assertMeasurementBlockedByResyncWithoutI2c(dev, bus);
+}
+
+void test_staged_init_keeps_candidate_calibration_private_until_config_commit() {
+  for (uint8_t outcome = 0; outcome < 2; ++outcome) {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    putLe16(bus, cmd::REG_DIG_T1_LSB, 0x4321);
+    putLe16(bus, cmd::REG_DIG_P1_LSB, 0x5678);
+    BME280::BME280 dev;
+    const Config cfg = makeConfig(bus);
+    const uint32_t callsBeforeStart = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startInitJob(cfg).inProgress());
+    const uint32_t jobId = dev.jobId();
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+
+    advanceJobPastCalibrationValidation(dev, bus, JobKind::INIT);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                            static_cast<uint8_t>(dev.calibrationState()));
+    Calibration unpublished{};
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                            static_cast<uint8_t>(
+                                dev.getCalibration(unpublished).code));
+
+    if (outcome == 0) {
+      const uint32_t callsBeforeCancel = totalBusCalls(bus);
+      TEST_ASSERT_EQUAL_UINT8(
+          static_cast<uint8_t>(Err::CANCELLED),
+          static_cast<uint8_t>(
+              dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+      TEST_ASSERT_EQUAL_UINT32(callsBeforeCancel, totalBusCalls(bus));
+      const JobPollResult terminal = pollWithBudget(dev, bus, 0);
+      TEST_ASSERT_EQUAL_UINT32(jobId, terminal.jobId);
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::CANCELLED),
+                              static_cast<uint8_t>(terminal.state));
+    } else {
+      const uint32_t writesBefore = bus.writeCalls;
+      bus.failWriteOnCall = writesBefore + 1u;
+      bus.writeError =
+          TransportResult::Error(TransportErr::NACK_ADDRESS, -231);
+      const JobPollResult failed = pollWithBudget(dev, bus, 1);
+      TEST_ASSERT_EQUAL_UINT32(jobId, failed.jobId);
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                              static_cast<uint8_t>(failed.state));
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                              static_cast<uint8_t>(failed.status.code));
+      TEST_ASSERT_EQUAL_INT32(-231, failed.status.detail);
+      TEST_ASSERT_EQUAL_UINT32(writesBefore + 1u, bus.writeCalls);
+    }
+
+    TEST_ASSERT_FALSE(dev.isInitialized());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                            static_cast<uint8_t>(dev.calibrationState()));
+    TEST_ASSERT_FALSE(dev.hasSample());
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
+}
+
+void test_staged_resync_changed_candidate_failure_keeps_private_bytes_and_stale_sample() {
+  for (uint8_t outcome = 0; outcome < 2; ++outcome) {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    Calibration priorCalibration{};
+    TEST_ASSERT_TRUE(dev.getCalibration(priorCalibration).ok());
+    SampleEnvelope priorSample{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(priorSample).ok());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::FRESH),
+                            static_cast<uint8_t>(dev.sampleFreshness()));
+
+    putLe16(bus, cmd::REG_DIG_T1_LSB, 0x4321);
+    putLe16(bus, cmd::REG_DIG_P1_LSB, 0x5678);
+    const uint32_t callsBeforeStart = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startResyncJob().inProgress());
+    const uint32_t jobId = dev.jobId();
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+    advanceJobPastCalibrationValidation(dev, bus, JobKind::RESYNC);
+
+    Calibration duringApply{};
+    TEST_ASSERT_TRUE(dev.getCalibration(duringApply).ok());
+    assertCalibrationEqual(priorCalibration, duringApply);
+    SampleEnvelope duringSample{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(duringSample).ok());
+    assertSampleEnvelopeEqual(priorSample, duringSample);
+    TEST_ASSERT_NOT_EQUAL(static_cast<uint8_t>(SampleFreshness::FRESH),
+                          static_cast<uint8_t>(dev.sampleFreshness()));
+
+    if (outcome == 0) {
+      const uint32_t callsBeforeCancel = totalBusCalls(bus);
+      TEST_ASSERT_EQUAL_UINT8(
+          static_cast<uint8_t>(Err::CANCELLED),
+          static_cast<uint8_t>(
+              dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+      TEST_ASSERT_EQUAL_UINT32(callsBeforeCancel, totalBusCalls(bus));
+      const JobPollResult terminal = pollWithBudget(dev, bus, 0);
+      TEST_ASSERT_EQUAL_UINT32(jobId, terminal.jobId);
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::CANCELLED),
+                              static_cast<uint8_t>(terminal.state));
+    } else {
+      const uint32_t writesBefore = bus.writeCalls;
+      bus.failWriteOnCall = writesBefore + 1u;
+      bus.writeError =
+          TransportResult::Error(TransportErr::NACK_ADDRESS, -232);
+      const JobPollResult failed = pollWithBudget(dev, bus, 1);
+      TEST_ASSERT_EQUAL_UINT32(jobId, failed.jobId);
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                              static_cast<uint8_t>(failed.state));
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+                              static_cast<uint8_t>(failed.status.code));
+      TEST_ASSERT_EQUAL_INT32(-232, failed.status.detail);
+      TEST_ASSERT_EQUAL_UINT32(writesBefore + 1u, bus.writeCalls);
+    }
+
+    Calibration unavailable{};
+    const Calibration unavailableBefore = unavailable;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(
+                                dev.getCalibration(unavailable).code));
+    assertCalibrationEqual(unavailableBefore, unavailable);
+    SampleEnvelope retained{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+    assertSampleEnvelopeEqual(priorSample, retained);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+        static_cast<uint8_t>(dev.sampleFreshness()));
+
+    SettingsSnapshot snapshot{};
+    TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                            static_cast<uint8_t>(snapshot.calibrationState));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+        static_cast<uint8_t>(snapshot.configSyncState));
+    TEST_ASSERT_TRUE(snapshot.hardwareConfigDirty);
+    if (outcome == 0) {
+      TEST_ASSERT_EQUAL_UINT8(
+          static_cast<uint8_t>(Err::CANCELLED),
+          static_cast<uint8_t>(snapshot.hardwareConfigDirtyError.code));
+    } else {
+      TEST_ASSERT_EQUAL_UINT8(
+          static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+          static_cast<uint8_t>(snapshot.hardwareConfigDirtyError.code));
+      TEST_ASSERT_EQUAL_INT32(-232,
+                              snapshot.hardwareConfigDirtyError.detail);
+    }
+    assertCalibrationEqual(priorCalibration, snapshot.calibration);
+    TEST_ASSERT_NOT_EQUAL_UINT16(0x4321, snapshot.calibration.digT1);
+    TEST_ASSERT_NOT_EQUAL_UINT16(0x5678, snapshot.calibration.digP1);
+    assertMeasurementBlockedByResyncWithoutI2c(dev, bus);
+    TEST_ASSERT_EQUAL_UINT32(0u, pollWithBudget(dev, bus, 0).jobId);
+  }
+}
+
+void test_staged_resync_partial_or_invalid_calibration_evidence_forces_resync() {
+  for (uint8_t outcome = 0; outcome < 2; ++outcome) {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+
+    Calibration priorCalibration{};
+    TEST_ASSERT_TRUE(dev.getCalibration(priorCalibration).ok());
+    SampleEnvelope priorSample{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(priorSample).ok());
+
+    if (outcome == 0) {
+      putLe16(bus, cmd::REG_DIG_T1_LSB, 0x4321);
+      bus.reg[cmd::REG_DIG_H1] = 0xA5;
+    } else {
+      for (size_t i = 0; i < cmd::REG_CALIB_H_LEN; ++i) {
+        bus.reg[static_cast<uint8_t>(cmd::REG_CALIB_H_START +
+                                     static_cast<uint8_t>(i))] = 0;
+      }
+    }
+
+    const uint32_t writesBefore = bus.writeCalls;
+    const uint8_t readsBefore = bus.readLogLen;
+    TEST_ASSERT_TRUE(dev.startResyncJob().inProgress());
+    TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+
+    JobPollResult result = pollWithBudget(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::NVM_POLL),
+                            static_cast<uint8_t>(result.phase));
+    result = pollWithBudget(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::CALIB_TP),
+                            static_cast<uint8_t>(result.phase));
+    result = pollWithBudget(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::CALIB_H),
+                            static_cast<uint8_t>(result.phase));
+    TEST_ASSERT_EQUAL_UINT8(readsBefore + 3u, bus.readLogLen);
+    TEST_ASSERT_EQUAL_HEX8(cmd::REG_CHIP_ID, bus.readRegLog[readsBefore]);
+    TEST_ASSERT_EQUAL_HEX8(cmd::REG_STATUS,
+                           bus.readRegLog[readsBefore + 1u]);
+    TEST_ASSERT_EQUAL_HEX8(cmd::REG_CALIB_TP_START,
+                           bus.readRegLog[readsBefore + 2u]);
+
+    Calibration during{};
+    TEST_ASSERT_TRUE(dev.getCalibration(during).ok());
+    assertCalibrationEqual(priorCalibration, during);
+
+    if (outcome == 0) {
+      const uint32_t callsBeforeCancel = totalBusCalls(bus);
+      TEST_ASSERT_EQUAL_UINT8(
+          static_cast<uint8_t>(Err::CANCELLED),
+          static_cast<uint8_t>(
+              dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+      TEST_ASSERT_EQUAL_UINT32(callsBeforeCancel, totalBusCalls(bus));
+      result = pollWithBudget(dev, bus, 0);
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::CANCELLED),
+                              static_cast<uint8_t>(result.state));
+      TEST_ASSERT_EQUAL_UINT8(readsBefore + 3u, bus.readLogLen);
+    } else {
+      result = pollWithBudget(dev, bus, 1);
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                              static_cast<uint8_t>(result.state));
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                              static_cast<uint8_t>(result.status.code));
+      TEST_ASSERT_EQUAL_UINT8(readsBefore + 4u, bus.readLogLen);
+      TEST_ASSERT_EQUAL_HEX8(cmd::REG_CALIB_H_START,
+                             bus.readRegLog[readsBefore + 3u]);
+    }
+    TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+
+    SettingsSnapshot snapshot{};
+    TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                            static_cast<uint8_t>(snapshot.calibrationState));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+        static_cast<uint8_t>(snapshot.configSyncState));
+    TEST_ASSERT_TRUE(snapshot.hardwareConfigDirty);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(outcome == 0 ? Err::CANCELLED
+                                          : Err::CALIBRATION_INVALID),
+        static_cast<uint8_t>(snapshot.hardwareConfigDirtyError.code));
+    assertCalibrationEqual(priorCalibration, snapshot.calibration);
+
+    Calibration unavailable{};
+    const Calibration unavailableBefore = unavailable;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(
+                                dev.getCalibration(unavailable).code));
+    assertCalibrationEqual(unavailableBefore, unavailable);
+    SampleEnvelope retained{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(retained).ok());
+    assertSampleEnvelopeEqual(priorSample, retained);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+        static_cast<uint8_t>(dev.sampleFreshness()));
+    assertMeasurementBlockedByResyncWithoutI2c(dev, bus);
+  }
 }
 
 void test_recovery_job_error_stops_without_extra_instructions() {
@@ -3276,8 +5387,8 @@ void test_recovery_job_error_stops_without_extra_instructions() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   bus.writeErrorRemaining = 1;
-  bus.writeError = Status::Error(Err::I2C_BUS, "forced reset write error", -55);
-  TEST_ASSERT_TRUE(dev.startRecoveryJob().inProgress());
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -55);
+  TEST_ASSERT_TRUE(dev.startSoftResetJob().inProgress());
 
   JobPollResult result = pollWithBudget(dev, bus, 4);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
@@ -3337,33 +5448,773 @@ void test_config_change_invalidates_cached_samples() {
                           static_cast<uint8_t>(st.code));
 }
 
-void test_register_access_after_end_does_not_touch_bus() {
+void test_raw_sentinel_failure_preserves_committed_sample_envelope() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_TRUE(dev.lastMeasurementStatus().ok());
+  SampleEnvelope before{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+  TEST_ASSERT_NOT_EQUAL(0u, before.sampleSequence);
+  TEST_ASSERT_NOT_EQUAL(0u, before.configGeneration);
+
+  setRawSample(bus, cmd::RAW_PRESSURE_SKIPPED, 520000, 31000);
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::COMPENSATION_ERROR),
+                          static_cast<uint8_t>(dev.lastMeasurementStatus().code));
+  TEST_ASSERT_TRUE(dev.hasSample());
+
+  SampleEnvelope after{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+  assertSampleEnvelopeEqual(before, after);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::STALE_AFTER_ERROR),
+                          static_cast<uint8_t>(dev.sampleFreshness()));
+}
+
+void test_pressure_divide_by_zero_failure_preserves_committed_sample_envelope() {
+  FakeBus bus;
+  setPressureDenominatorZeroCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_TRUE(dev.lastMeasurementStatus().ok());
+  SampleEnvelope before{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+
+  setRawSample(bus, 415148, 211674, 30000);
+  captureForcedSample(dev, bus);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::COMPENSATION_ERROR),
+                          static_cast<uint8_t>(dev.lastMeasurementStatus().code));
+  TEST_ASSERT_TRUE(dev.hasSample());
+
+  SampleEnvelope after{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+  assertSampleEnvelopeEqual(before, after);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::STALE_AFTER_ERROR),
+                          static_cast<uint8_t>(dev.sampleFreshness()));
+}
+
+void test_resync_required_blocks_sync_and_staged_measurement_without_i2c() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::VALID),
+                          static_cast<uint8_t>(dev.calibrationState()));
+
+  bus.failWriteOnCall = bus.writeCalls + 1u;
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -141);
+  const Status configStatus = dev.setFilter(Filter::X2);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(configStatus.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(dev.configSyncState()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::VALID),
+                          static_cast<uint8_t>(dev.calibrationState()));
+
+  const uint32_t callsBeforeBlockedRequests = totalBusCalls(bus);
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(st.code));
+  st = dev.startForcedMeasurementJob();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeBlockedRequests, totalBusCalls(bus));
+}
+
+void test_staged_apply_advances_generation_without_freshening_old_sample() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+
+  SampleEnvelope oldSample{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(oldSample).ok());
+  const uint32_t oldGeneration = dev.configGeneration();
+  const uint32_t oldSequence = dev.sampleSequence();
+  TEST_ASSERT_NOT_EQUAL(0u, oldGeneration);
+  TEST_ASSERT_NOT_EQUAL(0u, oldSequence);
+
+  bus.failWriteOnCall = bus.writeCalls + 1u;
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -142);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(dev.setFilter(Filter::X2).code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(dev.configSyncState()));
+
+  TEST_ASSERT_TRUE(dev.startApplyConfigJob().inProgress());
+  const JobPollResult result = pollUntilTerminal(dev, bus, 4);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::SYNCHRONIZED),
+                          static_cast<uint8_t>(dev.configSyncState()));
+  TEST_ASSERT_TRUE(dev.configGeneration() > oldGeneration);
+
+  SampleEnvelope afterApply{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(afterApply).ok());
+  assertSampleEnvelopeEqual(oldSample, afterApply);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_CHANGE),
+                          static_cast<uint8_t>(dev.sampleFreshness()));
+
+  setRawSample(bus, 416000, 520000, 31000);
+  captureForcedSample(dev, bus);
+  SampleEnvelope newSample{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(newSample).ok());
+  TEST_ASSERT_EQUAL_UINT32(dev.configGeneration(), newSample.configGeneration);
+  TEST_ASSERT_TRUE(newSample.sampleSequence > oldSequence);
+  TEST_ASSERT_NOT_EQUAL(0u, newSample.sampleSequence);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::FRESH),
+                          static_cast<uint8_t>(dev.sampleFreshness()));
+}
+
+void test_invalidate_device_state_is_zero_i2c_and_recovery_reloads_state() {
+  FakeBus bus;
+  setBoschSyntheticCalibration(bus);
+  setRawSample(bus, 415148, 519888, 30000);
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  captureForcedSample(dev, bus);
+
+  SampleEnvelope before{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+  const uint32_t generationBefore = dev.configGeneration();
+  const uint32_t callsBeforeInvalidation = totalBusCalls(bus);
+  TEST_ASSERT_TRUE(dev.invalidateDeviceState().ok());
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeInvalidation, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(dev.configSyncState()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                          static_cast<uint8_t>(dev.calibrationState()));
+  TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+                          static_cast<uint8_t>(dev.sampleFreshness()));
+
+  SampleEnvelope afterInvalidation{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(afterInvalidation).ok());
+  assertSampleEnvelopeEqual(before, afterInvalidation);
+
+  Calibration invalidCalibration{};
+  invalidCalibration.digT1 = 0xCAFE;
+  invalidCalibration.digT2 = -101;
+  invalidCalibration.digT3 = 102;
+  invalidCalibration.digP1 = 0xBEEF;
+  invalidCalibration.digP2 = -201;
+  invalidCalibration.digP3 = 202;
+  invalidCalibration.digP4 = -203;
+  invalidCalibration.digP5 = 204;
+  invalidCalibration.digP6 = -205;
+  invalidCalibration.digP7 = 206;
+  invalidCalibration.digP8 = -207;
+  invalidCalibration.digP9 = 208;
+  invalidCalibration.digH1 = 0xA1;
+  invalidCalibration.digH2 = -301;
+  invalidCalibration.digH3 = 0xA3;
+  invalidCalibration.digH4 = -304;
+  invalidCalibration.digH5 = 305;
+  invalidCalibration.digH6 = -36;
+  const Calibration expectedInvalidOutput = invalidCalibration;
+  const Status calibrationStatus = dev.getCalibration(invalidCalibration);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(calibrationStatus.code));
+  assertCalibrationEqual(expectedInvalidOutput, invalidCalibration);
+
+  const uint32_t callsBeforeBlockedRequests = totalBusCalls(bus);
+  Status st = dev.requestMeasurement();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(st.code));
+  st = dev.startForcedMeasurementJob();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeBlockedRequests, totalBusCalls(bus));
+
+  putLe16(bus, cmd::REG_DIG_T1_LSB, 0x4321);
+  putLe16(bus, cmd::REG_DIG_P1_LSB, 0x5678);
+  TEST_ASSERT_TRUE(dev.startResyncJob().inProgress());
+  const JobPollResult result = pollUntilTerminal(dev, bus, 4);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::SYNCHRONIZED),
+                          static_cast<uint8_t>(dev.configSyncState()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::VALID),
+                          static_cast<uint8_t>(dev.calibrationState()));
+  TEST_ASSERT_TRUE(dev.configGeneration() > generationBefore);
+  TEST_ASSERT_TRUE(dev.hasSample());
+
+  SampleEnvelope afterRecovery{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(afterRecovery).ok());
+  assertSampleEnvelopeEqual(before, afterRecovery);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_CHANGE),
+                          static_cast<uint8_t>(dev.sampleFreshness()));
+
+  Calibration reloaded{};
+  TEST_ASSERT_TRUE(dev.getCalibration(reloaded).ok());
+  TEST_ASSERT_EQUAL_HEX16(0x4321, reloaded.digT1);
+  TEST_ASSERT_EQUAL_HEX16(0x5678, reloaded.digP1);
+}
+
+void test_erased_humidity_calibration_is_rejected_unless_humidity_skipped() {
+  const uint8_t erasedValues[] = {0x00, 0xFF};
+  for (size_t caseIndex = 0; caseIndex < sizeof(erasedValues); ++caseIndex) {
+    FakeBus bus;
+    for (size_t i = 0; i < cmd::REG_CALIB_H_LEN; ++i) {
+      bus.reg[static_cast<uint8_t>(cmd::REG_CALIB_H_START + static_cast<uint8_t>(i))] =
+          erasedValues[caseIndex];
+    }
+    BME280::BME280 dev;
+    const Status st = dev.begin(makeConfig(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_FALSE(dev.isInitialized());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                            static_cast<uint8_t>(dev.calibrationState()));
+  }
+
+  FakeBus skipBus;
+  for (size_t i = 0; i < cmd::REG_CALIB_H_LEN; ++i) {
+    skipBus.reg[static_cast<uint8_t>(cmd::REG_CALIB_H_START + static_cast<uint8_t>(i))] = 0;
+  }
+  Config skipConfig = makeConfig(skipBus);
+  skipConfig.osrsH = Oversampling::SKIP;
+  BME280::BME280 skipDev;
+  TEST_ASSERT_TRUE(skipDev.begin(skipConfig).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::VALID),
+                          static_cast<uint8_t>(skipDev.calibrationState()));
+  const uint32_t callsBeforeEnable = totalBusCalls(skipBus);
+  const Status enableStatus = skipDev.setOversamplingH(Oversampling::X1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CALIBRATION_INVALID),
+                          static_cast<uint8_t>(enableStatus.code));
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeEnable, totalBusCalls(skipBus));
+}
+
+void test_cancel_result_is_zero_i2c_exactly_once_and_blocks_until_retrieved() {
+  const CancelReason reasons[] = {
+      CancelReason::OWNER_REQUEST, CancelReason::DEADLINE_EXPIRED};
+  const Err expectedErrors[] = {Err::CANCELLED, Err::DEADLINE_EXPIRED};
+  const JobState expectedStates[] = {JobState::CANCELLED, JobState::TIMED_OUT};
+
+  for (size_t i = 0; i < 2; ++i) {
+    FakeBus bus;
+    BME280::BME280 dev;
+    const Config cfg = makeConfig(bus);
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    const uint32_t callsBeforeStart = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startApplyConfigJob().inProgress());
+    const uint32_t cancelledJobId = dev.jobId();
+    TEST_ASSERT_NOT_EQUAL(0u, cancelledJobId);
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+
+    const Status cancellation = dev.cancelJob(reasons[i]);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expectedErrors[i]),
+                            static_cast<uint8_t>(cancellation.code));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expectedStates[i]),
+                            static_cast<uint8_t>(dev.jobState()));
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::SYNCHRONIZED),
+                            static_cast<uint8_t>(dev.configSyncState()));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::VALID),
+                            static_cast<uint8_t>(dev.calibrationState()));
+
+    assertAllHardwareApisBusy(dev, bus, cfg);
+    assertBusyReason(dev.invalidateDeviceState(),
+                     BusyReason::TERMINAL_RESULT_PENDING);
+    assertBusyReason(dev.startInitJob(cfg),
+                     BusyReason::TERMINAL_RESULT_PENDING);
+    assertBusyReason(dev.startForcedMeasurementJob(),
+                     BusyReason::TERMINAL_RESULT_PENDING);
+    assertBusyReason(dev.startApplyConfigJob(),
+                     BusyReason::TERMINAL_RESULT_PENDING);
+    assertBusyReason(dev.startResyncJob(),
+                     BusyReason::TERMINAL_RESULT_PENDING);
+    assertBusyReason(dev.startRecoveryJob(),
+                     BusyReason::TERMINAL_RESULT_PENDING);
+    assertBusyReason(dev.startSoftResetJob(),
+                     BusyReason::TERMINAL_RESULT_PENDING);
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+
+    JobPollResult terminal = pollWithBudget(dev, bus, 0);
+    TEST_ASSERT_EQUAL_UINT32(cancelledJobId, terminal.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::APPLY_CONFIG),
+                            static_cast<uint8_t>(terminal.kind));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::APPLY_WAIT_IDLE),
+                            static_cast<uint8_t>(terminal.phase));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expectedStates[i]),
+                            static_cast<uint8_t>(terminal.state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expectedErrors[i]),
+                            static_cast<uint8_t>(terminal.status.code));
+
+    const JobPollResult idle = pollWithBudget(dev, bus, 0);
+    TEST_ASSERT_EQUAL_UINT32(0u, idle.jobId);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::NONE),
+                            static_cast<uint8_t>(idle.kind));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::IDLE),
+                            static_cast<uint8_t>(idle.state));
+    TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+    TEST_ASSERT_NOT_EQUAL(cancelledJobId, dev.jobId());
+  }
+}
+
+void test_cancellation_preserves_last_good_state_across_mutating_phases() {
+  {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+
+    TEST_ASSERT_TRUE(dev.startApplyConfigJob().inProgress());
+    (void)pollUntilPhase(dev, bus, JobPhase::APPLY_WAIT_AFTER_SLEEP);
+    const uint32_t callsBeforeCancel = totalBusCalls(bus);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(
+                                dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeCancel, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(dev.configSyncState()));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::VALID),
+                            static_cast<uint8_t>(dev.calibrationState()));
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+        static_cast<uint8_t>(dev.sampleFreshness()));
+    (void)pollWithBudget(dev, bus, 0);
+  }
+
+  {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint8_t writeLogStart = bus.writeLogLen;
+
+    TEST_ASSERT_TRUE(dev.startSoftResetJob().inProgress());
+    const JobPollResult afterReset = pollWithBudget(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::RESYNC_READ_CHIP_ID),
+                            static_cast<uint8_t>(afterReset.phase));
+    const uint32_t callsBeforeCancel = totalBusCalls(bus);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(Err::DEADLINE_EXPIRED),
+        static_cast<uint8_t>(
+            dev.cancelJob(CancelReason::DEADLINE_EXPIRED).code));
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeCancel, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT32(
+        1u, countWritesToRegSince(bus, cmd::REG_RESET, writeLogStart));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(dev.configSyncState()));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::INVALID),
+                            static_cast<uint8_t>(dev.calibrationState()));
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    (void)pollWithBudget(dev, bus, 0);
+  }
+
+  {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    captureForcedSample(dev, bus);
+    SampleEnvelope before{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
+    const uint8_t writeLogStart = bus.writeLogLen;
+
+    TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+    const JobPollResult afterTrigger = pollWithBudget(dev, bus, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::FORCE_WAIT_TIME),
+                            static_cast<uint8_t>(afterTrigger.phase));
+    const uint32_t callsBeforeCancel = totalBusCalls(bus);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(
+                                dev.cancelJob(CancelReason::OWNER_REQUEST).code));
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeCancel, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConfigSyncState::SYNCHRONIZED),
+                            static_cast<uint8_t>(dev.configSyncState()));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(CalibrationState::VALID),
+                            static_cast<uint8_t>(dev.calibrationState()));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR),
+        static_cast<uint8_t>(dev.conversionState()));
+    TEST_ASSERT_EQUAL_UINT32(
+        0u, countWritesToRegSince(bus, cmd::REG_CTRL_HUM, writeLogStart));
+    TEST_ASSERT_EQUAL_UINT32(
+        1u, countWritesToRegSince(bus, cmd::REG_CTRL_MEAS, writeLogStart));
+    SampleEnvelope after{};
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+    assertSampleEnvelopeEqual(before, after);
+    (void)pollWithBudget(dev, bus, 0);
+  }
+}
+
+void test_resync_never_resets_and_soft_reset_has_exact_payload() {
   FakeBus bus;
   BME280::BME280 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
-  const uint32_t writesAfterBegin = bus.writeCalls;
-  const uint32_t readsAfterBegin = bus.readCalls;
+  uint8_t writeLogStart = bus.writeLogLen;
+  uint32_t callsBefore = totalBusCalls(bus);
+  TEST_ASSERT_TRUE(dev.startResyncJob().inProgress());
+  JobPollResult result = pollUntilTerminal(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::RESYNC),
+                          static_cast<uint8_t>(result.kind));
+  TEST_ASSERT_EQUAL_UINT32(callsBefore + 9u, totalBusCalls(bus));
+  TEST_ASSERT_EQUAL_UINT32(
+      0u, countWritesToRegSince(bus, cmd::REG_RESET, writeLogStart));
+
+  writeLogStart = bus.writeLogLen;
+  TEST_ASSERT_TRUE(dev.startRecoveryJob().inProgress());
+  result = pollUntilTerminal(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::RESYNC),
+                          static_cast<uint8_t>(result.kind));
+  TEST_ASSERT_EQUAL_UINT32(
+      0u, countWritesToRegSince(bus, cmd::REG_RESET, writeLogStart));
+
+  writeLogStart = bus.writeLogLen;
+  TEST_ASSERT_TRUE(dev.startSoftResetJob().inProgress());
+  result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::SOFT_RESET),
+                          static_cast<uint8_t>(result.kind));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::RESYNC_READ_CHIP_ID),
+                          static_cast<uint8_t>(result.phase));
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_RESET, bus.writeRegLog[writeLogStart]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::RESET_VALUE, bus.writeValueLog[writeLogStart]);
+  result = pollUntilTerminal(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT32(
+      1u, countWritesToRegSince(bus, cmd::REG_RESET, writeLogStart));
+}
+
+void test_ambiguous_trigger_reconciles_before_any_new_trigger() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const uint8_t writeLogStart = bus.writeLogLen;
+
+  bus.failWriteAfterEffectOnCall = bus.writeCalls + 1u;
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -171);
+  TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+  JobPollResult result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_INT32(-171, result.status.detail);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR),
+      static_cast<uint8_t>(result.conversionState));
+  TEST_ASSERT_EQUAL_UINT32(
+      1u, countWritesToRegSince(bus, cmd::REG_CTRL_MEAS, writeLogStart));
+  TEST_ASSERT_EQUAL_UINT32(
+      0u, countWritesToRegSince(bus, cmd::REG_CTRL_HUM, writeLogStart));
+
+  bus.failReadReg = cmd::REG_STATUS;
+  bus.failReadRegRemaining = 1;
+  bus.readError = TransportResult::Error(TransportErr::BUS, -172);
+  TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::FORCE_RECONCILE_STATUS),
+                          static_cast<uint8_t>(dev.jobPhase()));
+  const uint32_t writesBeforeReconcile = bus.writeCalls;
+  result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT32(writesBeforeReconcile, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR),
+      static_cast<uint8_t>(dev.conversionState()));
+
+  TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+  result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_STATUS, bus.lastReadReg);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::FORCE_TRIGGER),
+                          static_cast<uint8_t>(result.phase));
+  TEST_ASSERT_EQUAL_UINT32(writesBeforeReconcile, bus.writeCalls);
+  result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::FORCE_WAIT_TIME),
+                          static_cast<uint8_t>(result.phase));
+  TEST_ASSERT_EQUAL_UINT32(writesBeforeReconcile + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(
+      2u, countWritesToRegSince(bus, cmd::REG_CTRL_MEAS, writeLogStart));
+  TEST_ASSERT_EQUAL_UINT32(
+      0u, countWritesToRegSince(bus, cmd::REG_CTRL_HUM, writeLogStart));
+}
+
+void test_forced_job_wrap_and_conversion_timeout_are_independent() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.i2cTimeoutMs = 3;
+  cfg.conversionReadyTimeoutMs = 7;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.nowMs = 0xFFFFFFF8u;
+  TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+  JobPollResult result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::WAITING),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_TRUE(result.phaseDeadlineActive);
+  TEST_ASSERT_EQUAL_UINT32(bus.nowMs + dev.estimateMeasurementTimeMs(),
+                           result.phaseDeadlineMs);
+  TEST_ASSERT_EQUAL_UINT32(cfg.i2cTimeoutMs, bus.lastWriteTimeoutMs);
+
+  bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_MEASURING;
+  bus.nowMs = result.phaseDeadlineMs;
+  result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::WAITING),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT32(bus.nowMs + cfg.conversionReadyTimeoutMs,
+                           result.phaseDeadlineMs);
+  const uint32_t readyDeadline = result.phaseDeadlineMs;
+
+  bus.nowMs = readyDeadline - 1u;
+  result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::WAITING),
+                          static_cast<uint8_t>(result.state));
+  bus.nowMs = readyDeadline;
+  result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(result.status.code));
+  TEST_ASSERT_EQUAL_UINT32(cfg.i2cTimeoutMs, bus.lastReadTimeoutMs);
+}
+
+void test_poll_and_tick_use_explicit_health_timestamp_context() {
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    bus.nowMs = 9000u;
+    TEST_ASSERT_TRUE(dev.startResyncJob().inProgress());
+    JobPollResult result = pollAtWithBudget(dev, bus, 0u, 1);
+    TEST_ASSERT_EQUAL_UINT8(1u, result.callbacksUsed);
+    TEST_ASSERT_TRUE(dev.lastOkTimeValid());
+    TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+
+    bus.failReadReg = cmd::REG_STATUS;
+    bus.failReadRegRemaining = 1;
+    bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -173);
+    result = pollAtWithBudget(dev, bus, 1234u, 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                            static_cast<uint8_t>(result.state));
+    TEST_ASSERT_TRUE(dev.lastErrorTimeValid());
+    TEST_ASSERT_EQUAL_UINT32(1234u, dev.lastErrorMs());
+    TEST_ASSERT_EQUAL_UINT32(9000u, bus.nowMs);
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    bus.nowMs = 0u;
+    TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+    const uint32_t tickNow = dev.estimateMeasurementTimeMs();
+    bus.nowMs = 9000u;
+    bus.failReadRegEnabled = true;
+    bus.failReadReg = cmd::REG_DATA_START;
+    bus.readError = TransportResult::Error(TransportErr::NACK_DATA, -174);
+    dev.tick(tickNow);
+    TEST_ASSERT_TRUE(dev.lastOkTimeValid());
+    TEST_ASSERT_TRUE(dev.lastErrorTimeValid());
+    TEST_ASSERT_EQUAL_UINT32(tickNow, dev.lastOkMs());
+    TEST_ASSERT_EQUAL_UINT32(tickNow, dev.lastErrorMs());
+    TEST_ASSERT_EQUAL_UINT32(9000u, bus.nowMs);
+    SettingsSnapshot snapshot{};
+    TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+    TEST_ASSERT_TRUE(snapshot.lastOkTimeValid);
+    TEST_ASSERT_TRUE(snapshot.lastErrorTimeValid);
+  }
+}
+
+void test_staged_jobs_exclusively_own_hardware_operations() {
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    const Config cfg = makeConfig(bus);
+    const uint32_t callsBeforeStart = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startInitJob(cfg).inProgress());
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::INIT),
+                            static_cast<uint8_t>(dev.jobKind()));
+    assertRepresentativeHardwareApisBusy(dev, bus, cfg);
+    SettingsSnapshot settings{};
+    TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+    TEST_ASSERT_FALSE(settings.initialized);
+    TEST_ASSERT_TRUE(dev.estimateMeasurementTimeMs() > 0u);
+    dev.end();
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+  }
+
+  {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, 415148, 519888, 30000);
+    BME280::BME280 dev;
+    const Config cfg = makeConfig(bus);
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    captureForcedSample(dev, bus);
+
+    const uint32_t callsBeforeStart = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::FORCED_MEASUREMENT),
+                            static_cast<uint8_t>(dev.jobKind()));
+    assertAllHardwareApisBusy(dev, bus, cfg);
+
+    SettingsSnapshot settings{};
+    Calibration calibration{};
+    RawSample raw{};
+    CompensatedSample compensated{};
+    SampleEnvelope envelope{};
+    Mode mode = Mode::SLEEP;
+    Oversampling osrs = Oversampling::SKIP;
+    Filter filter = Filter::X16;
+    Standby standby = Standby::MS_1000;
+    TEST_ASSERT_TRUE(dev.getSettings(settings).ok());
+    TEST_ASSERT_TRUE(dev.getCalibration(calibration).ok());
+    TEST_ASSERT_TRUE(dev.getRawSample(raw).ok());
+    TEST_ASSERT_TRUE(dev.getCompensatedSample(compensated).ok());
+    TEST_ASSERT_TRUE(dev.getSampleEnvelope(envelope).ok());
+    TEST_ASSERT_TRUE(dev.getMode(mode).ok());
+    TEST_ASSERT_TRUE(dev.getOversamplingT(osrs).ok());
+    TEST_ASSERT_TRUE(dev.getOversamplingP(osrs).ok());
+    TEST_ASSERT_TRUE(dev.getOversamplingH(osrs).ok());
+    TEST_ASSERT_TRUE(dev.getFilter(filter).ok());
+    TEST_ASSERT_TRUE(dev.getStandby(standby).ok());
+    TEST_ASSERT_TRUE(dev.estimateMeasurementTimeMs() > 0u);
+    TEST_ASSERT_TRUE(dev.getStandbyTimeMs() > 0u);
+    TEST_ASSERT_TRUE(dev.estimateNormalCycleMs() > 0u);
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::RUNNING),
+                            static_cast<uint8_t>(dev.jobState()));
+    dev.end();
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    const Config cfg = makeConfig(bus);
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    const uint32_t callsBeforeStart = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startApplyConfigJob().inProgress());
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::APPLY_CONFIG),
+                            static_cast<uint8_t>(dev.jobKind()));
+    assertRepresentativeHardwareApisBusy(dev, bus, cfg);
+    dev.end();
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    const Config cfg = makeConfig(bus);
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    const uint32_t callsBeforeStart = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startRecoveryJob().inProgress());
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::RESYNC),
+                            static_cast<uint8_t>(dev.jobKind()));
+    assertRepresentativeHardwareApisBusy(dev, bus, cfg);
+    dev.end();
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+  }
+
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    const Config cfg = makeConfig(bus);
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    const uint32_t callsBeforeStart = totalBusCalls(bus);
+    TEST_ASSERT_TRUE(dev.startSoftResetJob().inProgress());
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::SOFT_RESET),
+                            static_cast<uint8_t>(dev.jobKind()));
+    assertRepresentativeHardwareApisBusy(dev, bus, cfg);
+    dev.end();
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeStart, totalBusCalls(bus));
+  }
+}
+
+void test_end_is_zero_i2c_idempotent_and_rebinds_transport() {
+  FakeBus firstBus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(firstBus)).ok());
+  TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+
+  const uint32_t firstWritesBeforeEnd = firstBus.writeCalls;
+  const uint32_t firstReadsBeforeEnd = firstBus.readCalls;
 
   dev.end();
-  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
-  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(firstWritesBeforeEnd, firstBus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(firstReadsBeforeEnd, firstBus.readCalls);
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobKind::NONE),
+                          static_cast<uint8_t>(dev.jobKind()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::IDLE),
+                          static_cast<uint8_t>(dev.jobState()));
+  TEST_ASSERT_TRUE(dev.getConfig().i2cWrite == nullptr);
+  TEST_ASSERT_TRUE(dev.getConfig().i2cWriteRead == nullptr);
+  TEST_ASSERT_TRUE(dev.getConfig().i2cUser == nullptr);
+  TEST_ASSERT_TRUE(dev.getConfig().nowMs == nullptr);
+  TEST_ASSERT_TRUE(dev.getConfig().timeUser == nullptr);
+
+  dev.end();
+  TEST_ASSERT_EQUAL_UINT32(firstWritesBeforeEnd, firstBus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(firstReadsBeforeEnd, firstBus.readCalls);
 
   uint8_t value = 0;
   Status st = dev.readRegister(cmd::REG_CHIP_ID, value);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
                           static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(firstReadsBeforeEnd, firstBus.readCalls);
 
   st = dev.writeRegister(cmd::REG_CTRL_MEAS, 0);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
                           static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(firstWritesBeforeEnd, firstBus.writeCalls);
 
   st = dev.readRegisters(cmd::REG_CHIP_ID, &value, 1);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
                           static_cast<uint8_t>(st.code));
-  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(firstReadsBeforeEnd, firstBus.readCalls);
+
+  FakeBus secondBus;
+  secondBus.deviceAddress = 0x77;
+  Config secondConfig = makeConfig(secondBus);
+  secondConfig.i2cAddress = 0x77;
+  TEST_ASSERT_TRUE(dev.begin(secondConfig).ok());
+  TEST_ASSERT_TRUE(dev.isInitialized());
+  TEST_ASSERT_TRUE(totalBusCalls(secondBus) > 0u);
+  TEST_ASSERT_EQUAL_UINT32(firstWritesBeforeEnd, firstBus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(firstReadsBeforeEnd, firstBus.readCalls);
+
+  const uint32_t secondReadsBefore = secondBus.readCalls;
+  TEST_ASSERT_TRUE(dev.readRegister(cmd::REG_CHIP_ID, value).ok());
+  TEST_ASSERT_EQUAL_HEX8(cmd::CHIP_ID_BME280, value);
+  TEST_ASSERT_EQUAL_UINT32(secondReadsBefore + 1u, secondBus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(firstReadsBeforeEnd, firstBus.readCalls);
 }
 
 int main() {
@@ -3371,12 +6222,28 @@ int main() {
   RUN_TEST(test_status_ok);
   RUN_TEST(test_status_error);
   RUN_TEST(test_status_in_progress);
+  RUN_TEST(test_transport_result_contract_is_terminal_only);
+  RUN_TEST(test_status_copy_assignment_and_persistent_fields_use_canonical_messages);
+  RUN_TEST(test_successful_transport_callbacks_report_exact_counts_once);
+  RUN_TEST(test_short_ok_counts_map_to_short_transfer_without_retry);
+  RUN_TEST(test_every_transport_error_maps_detail_and_nack_remap_is_presence_only);
+  RUN_TEST(test_mutating_short_transfer_marks_dirty_or_trigger_ambiguous);
+  RUN_TEST(test_partial_raw_read_preserves_committed_sample);
+  RUN_TEST(test_sensor_settings_defaults_and_exhaustive_validation_are_pure);
+  RUN_TEST(test_pure_measurement_time_helpers_match_bosch_boundaries);
+  RUN_TEST(test_checked_fixed_point_unit_conversions_preserve_output_on_overflow);
+  RUN_TEST(test_chip_id_helper_is_exhaustive);
+  RUN_TEST(test_all_enum_to_string_overloads_cover_values_and_invalid_fallbacks);
+  RUN_TEST(test_busy_statuses_use_typed_nonzero_reasons);
   RUN_TEST(test_config_defaults);
   RUN_TEST(test_driver_is_not_copyable_or_movable);
   RUN_TEST(test_get_settings_snapshot);
   RUN_TEST(test_begin_rejects_missing_callbacks);
   RUN_TEST(test_begin_rejects_zero_nvm_timeout);
   RUN_TEST(test_begin_rejects_oversized_nvm_timeout_without_i2c);
+  RUN_TEST(test_begin_rejects_invalid_conversion_timeout_without_i2c);
+  RUN_TEST(test_conversion_ready_timeout_respects_wrap_safe_interval_boundaries);
+  RUN_TEST(test_begin_rejects_invalid_i2c_timeout_without_i2c);
   RUN_TEST(test_begin_rejects_invalid_oversampling_combination);
   RUN_TEST(test_high_bit_enum_values_are_rejected_without_i2c);
   RUN_TEST(test_invalid_begin_after_success_resets_default_runtime);
@@ -3395,9 +6262,16 @@ int main() {
   RUN_TEST(test_init_job_stuck_nvm_no_spin_when_time_static);
   RUN_TEST(test_apply_config_job_waits_for_not_measuring_before_writes);
   RUN_TEST(test_apply_config_job_checks_not_measuring_after_sleep_write);
+  RUN_TEST(test_apply_settings_job_validation_and_start_are_zero_callback);
+  RUN_TEST(test_apply_settings_job_applies_order_and_advances_generation_once);
+  RUN_TEST(test_apply_settings_cancel_and_failure_before_write_restore_prior_state);
+  RUN_TEST(test_apply_settings_cancel_after_each_exposed_write_keeps_desired_dirty);
+  RUN_TEST(test_apply_settings_failure_at_each_write_keeps_desired_dirty);
+  RUN_TEST(test_apply_jobs_cancel_pending_sync_measurement_before_generation_change);
+  RUN_TEST(test_tick_clears_pending_measurement_when_setter_marks_resync_required);
   RUN_TEST(test_init_job_success_clears_existing_dirty_state);
   RUN_TEST(test_recovery_job_success_clears_existing_dirty_state);
-  RUN_TEST(test_recovery_job_failure_after_reset_marks_dirty);
+  RUN_TEST(test_soft_reset_job_failure_after_reset_marks_dirty);
   RUN_TEST(test_missing_now_ms_fallback_is_framework_neutral);
   RUN_TEST(test_begin_without_now_ms_uses_framework_neutral_fallback);
   RUN_TEST(test_request_measurement_requires_now_ms_hook);
@@ -3418,6 +6292,7 @@ int main() {
   RUN_TEST(test_recover_preserves_transport_error_code);
   RUN_TEST(test_set_oversampling_rejects_invalid_compensation_combo_without_write);
   RUN_TEST(test_humidity_oversampling_writes_ctrl_hum_then_ctrl_meas);
+  RUN_TEST(test_humidity_latch_address_nack_after_ctrl_hum_marks_resync_required);
   RUN_TEST(test_config_change_in_normal_mode_sleeps_writes_config_and_restores);
   RUN_TEST(test_config_write_while_measuring_returns_busy_without_write);
   RUN_TEST(test_config_write_measuring_after_sleep_marks_dirty_without_config_write);
@@ -3435,7 +6310,7 @@ int main() {
   RUN_TEST(test_diagnostic_config_write_failure_preserves_error_and_marks_dirty);
   RUN_TEST(test_diagnostic_config_write_address_nack_does_not_mark_dirty);
   RUN_TEST(test_recover_preserves_cached_sample_until_successful_resync_then_invalidates);
-  RUN_TEST(test_recovery_job_failure_preserves_cached_sample_until_successful_resync);
+  RUN_TEST(test_resync_job_failure_preserves_cached_sample_until_successful_resync);
   RUN_TEST(test_invalid_begin_does_not_clear_existing_dirty_state);
   RUN_TEST(test_apply_config_partial_failure_marks_dirty_and_preserves_error);
   RUN_TEST(test_soft_reset_write_timeout_marks_dirty_and_preserves_error);
@@ -3454,19 +6329,21 @@ int main() {
   RUN_TEST(test_recover_returns_busy_when_nvm_update_in_progress_without_calibration_read);
   RUN_TEST(test_recover_nvm_transport_error_updates_health_and_preserves_error);
   RUN_TEST(test_recover_invalid_calibration_records_health_failure);
+  RUN_TEST(test_recover_changed_tp_then_h_failure_invalidates_calibration);
+  RUN_TEST(test_recover_changed_candidate_apply_readiness_failure_stays_private);
   RUN_TEST(test_set_mode_forced_does_not_trigger_conversion);
   RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
-  RUN_TEST(test_offline_latches_public_register_read_without_i2c);
-  RUN_TEST(test_offline_typed_config_setters_do_not_mark_dirty_without_i2c);
+  RUN_TEST(test_offline_history_does_not_block_public_register_read);
+  RUN_TEST(test_offline_history_does_not_block_typed_config_setters);
   RUN_TEST(test_probe_works_while_offline_without_clearing_latch);
   RUN_TEST(test_successful_recover_from_offline_clears_latch_and_allows_i2c);
-  RUN_TEST(test_failed_recover_from_offline_keeps_latch_after_intermediate_success);
+  RUN_TEST(test_failed_recover_from_offline_reports_current_health_observation);
   RUN_TEST(test_recovery_job_from_offline_clears_latch_and_allows_i2c);
   RUN_TEST(test_recovery_job_from_offline_failure_reasserts_offline_latch);
-  RUN_TEST(test_recovery_job_from_offline_does_not_report_ready_until_complete);
-  RUN_TEST(test_non_recovery_job_still_blocked_while_offline);
+  RUN_TEST(test_recovery_job_from_offline_updates_health_before_job_completion);
+  RUN_TEST(test_offline_history_does_not_block_staged_measurement_job);
   RUN_TEST(test_forced_measurement_timing_wraparound_reaches_ready);
   RUN_TEST(test_sample_freshness_none_before_capture);
   RUN_TEST(test_sample_freshness_fresh_after_successful_capture);
@@ -3491,6 +6368,9 @@ int main() {
   RUN_TEST(test_recovery_job_nvm_busy_uses_one_status_read_per_poll);
   RUN_TEST(test_recovery_job_nvm_timeout_records_health_failure);
   RUN_TEST(test_recovery_job_failed_humidity_calibration_keeps_previous_coefficients);
+  RUN_TEST(test_staged_init_keeps_candidate_calibration_private_until_config_commit);
+  RUN_TEST(test_staged_resync_changed_candidate_failure_keeps_private_bytes_and_stale_sample);
+  RUN_TEST(test_staged_resync_partial_or_invalid_calibration_evidence_forces_resync);
   RUN_TEST(test_recovery_job_error_stops_without_extra_instructions);
   RUN_TEST(test_calibration_parses_bosch_synthetic_coefficients);
   RUN_TEST(test_calibration_parses_signed_boundaries_and_humidity_nibbles);
@@ -3498,11 +6378,25 @@ int main() {
   RUN_TEST(test_read_calibration_raw_uses_register_bytes_and_preserves_error);
   RUN_TEST(test_raw_burst_reconstructs_20_and_16_bit_samples);
   RUN_TEST(test_compensation_matches_datasheet_derived_synthetic_vector);
+  RUN_TEST(test_checked_humidity_overflow_preserves_last_good_sample_envelope);
   RUN_TEST(test_humidity_compensation_clamps_low_and_high);
   RUN_TEST(test_skipped_sentinels_are_explicit_validity_flags);
   RUN_TEST(test_enabled_raw_sentinel_rejects_compensated_sample);
   RUN_TEST(test_pressure_compensation_divide_by_zero_guard_blocks_sample);
   RUN_TEST(test_config_change_invalidates_cached_samples);
-  RUN_TEST(test_register_access_after_end_does_not_touch_bus);
+  RUN_TEST(test_raw_sentinel_failure_preserves_committed_sample_envelope);
+  RUN_TEST(test_pressure_divide_by_zero_failure_preserves_committed_sample_envelope);
+  RUN_TEST(test_resync_required_blocks_sync_and_staged_measurement_without_i2c);
+  RUN_TEST(test_staged_apply_advances_generation_without_freshening_old_sample);
+  RUN_TEST(test_invalidate_device_state_is_zero_i2c_and_recovery_reloads_state);
+  RUN_TEST(test_erased_humidity_calibration_is_rejected_unless_humidity_skipped);
+  RUN_TEST(test_cancel_result_is_zero_i2c_exactly_once_and_blocks_until_retrieved);
+  RUN_TEST(test_cancellation_preserves_last_good_state_across_mutating_phases);
+  RUN_TEST(test_resync_never_resets_and_soft_reset_has_exact_payload);
+  RUN_TEST(test_ambiguous_trigger_reconciles_before_any_new_trigger);
+  RUN_TEST(test_forced_job_wrap_and_conversion_timeout_are_independent);
+  RUN_TEST(test_poll_and_tick_use_explicit_health_timestamp_context);
+  RUN_TEST(test_staged_jobs_exclusively_own_hardware_operations);
+  RUN_TEST(test_end_is_zero_i2c_idempotent_and_rebinds_transport);
   return UNITY_END();
 }

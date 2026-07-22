@@ -1,6 +1,6 @@
 # BME280 ESP-IDF Port
 
-Last updated: 2026-05-31
+Last updated: 2026-07-19
 
 This document is the maintained ESP-IDF note for the BME280 library. It replaces
 the older separate implementation report.
@@ -51,7 +51,7 @@ The driver does not own I2C resources. The application or example owns:
 - timeout policy;
 - bus locking/mutexes;
 - reset or power-control GPIOs;
-- task scheduling for `tick()`.
+- task scheduling for `pollJob()` / `tick()` and the end-to-end owner deadline.
 
 The application passes callbacks through `BME280::Config`:
 
@@ -62,7 +62,9 @@ The application passes callbacks through `BME280::Config`:
 - `timeUser`.
 
 `Config::nowMs` should be set in ESP-IDF applications. The core fallback is
-intentionally inert and is not a platform clock.
+intentionally inert and is not a platform clock. `i2cTimeoutMs` bounds one
+transport callback; `conversionReadyTimeoutMs` separately controls BME280
+conversion/idle readiness grace.
 
 ## Transport Contract
 
@@ -73,26 +75,62 @@ The native IDF adapter uses the modern ESP-IDF I2C master driver:
 ```
 
 ## Porting Notes
-- Keep `tick(nowMs)` driven by application scheduler/task.
+
+- For a production shared-bus owner, use zero-I2C staged starts and advance the
+  active operation with `pollJob(nowMs, 1)` from the owning task. The accepted
+  job has a nonzero `jobId`; match every progress/terminal result to it.
+- Keep the end-to-end deadline in the ESP-IDF owner, including queue time.
+  `JobPollResult::phaseDeadlineMs` is only the current chip-phase deadline. On
+  expiry call zero-I2C `cancelJob(DEADLINE_EXPIRED)`, then retrieve the retained
+  cancellation with exactly one `pollJob()` call.
+- Capture natural `DONE` / `FAILED` from the poll that reaches the transition;
+  it is not retained. A pending cancellation result blocks later starts and
+  hardware-facing synchronous APIs until retrieved.
+- Keep `tick(nowMs)` driven by the application scheduler/task when using the
+  synchronous compatibility measurement API.
 - Callback timeout arguments must be honored to preserve recovery semantics.
 - Preserve transport error detail: map address NACK to optional absence only at
   chip-ID presence checks, and keep timeout/bus/data NACK faults distinct.
 - `Config::nvmReadyTimeoutMs` controls the visible NVM-ready deadline after POR
   or reset. Synchronous checks perform one status-register transaction per call
   and return `BUSY`, `TIMEOUT`, or the detailed transport error; staged jobs
-  poll NVM readiness through `pollJob()`.
-- The native example CLI exposes the same `job status/init/force/apply/recover/poll`
-  staged-job diagnostics as the Arduino CLI for HIL parity.
-- Health timestamps (`lastOkMs`, `lastErrorMs`) are sourced from `Config::nowMs`
-  when supplied. The core fallback is intentionally inert and does not include
-  Arduino or ESP-IDF headers.
+  poll NVM readiness through `pollJob()` with a fixed 255-status-callback cap.
+  The library exposes no writable-NVM or factory-programming API.
+- Use `startResyncJob()` for non-reset cooperative identity/calibration/config
+  resynchronization. `startRecoveryJob()` is its compatibility alias. Use
+  `startSoftResetJob()` only for an explicit sensor reset; shared-bus recovery
+  does not imply a device reset.
+- Use `SensorSettings`, pure `validateSettings()`, and
+  `startApplySettingsJob()` for one coherent runtime settings change. Admission
+  performs no callback; before any possible config-write effect cancellation
+  restores prior settings, while a later cancellation retains the desired
+  settings with `RESYNC_REQUIRED` for explicit reconciliation.
+- The native and Arduino diagnostic CLIs must keep identical staged-job help and
+  behavior for status/init/force/apply/resync/reset/cancel/poll, including
+  job identity, phase, callback use, deadline, and conversion-state output.
+- `pollJob(nowMs, ...)` and `tick(nowMs)` make their argument authoritative for
+  health events within the call. Other synchronous operations use
+  `Config::nowMs` when supplied. If neither source exists, timestamps are zero
+  and `lastOkTimeValid()` / `lastErrorTimeValid()` are false.
+- `OFFLINE` is observational and does not reject an explicit owner-directed I2C
+  operation. ESP-IDF application policy remains responsible for retry,
+  backoff, resync, reset, and retirement.
+- A staged forced-trigger failure or post-trigger cancellation can expose
+  `ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR`. A later forced job reads
+  `status.measuring` before issuing another trigger; it does not replay the
+  ambiguous write. Synchronized steady sampling does not rewrite `ctrl_hum`.
 
 Expected callback behavior:
 
 - `addr` is a 7-bit BME280 address, `0x76` or `0x77`.
 - `i2cWrite()` maps to `i2c_master_transmit()`.
 - `i2cWriteRead()` maps to `i2c_master_transmit_receive()` for register reads.
-- The callback completes synchronously before returning.
+- The callback makes exactly one physical attempt and completes synchronously
+  before returning. It performs no retry or bus recovery.
+- A write-read is one combined pointer-write/repeated-START/read transaction;
+  no STOP is inserted between its phases.
+- `TransportResult::OK` reports exact write/read byte counts. Short counts are
+  reported by the core as `Err::I2C_SHORT_TRANSFER`.
 - `timeoutMs` is clamped or rejected before passing it to ESP-IDF so it cannot
   become an accidental infinite wait.
 - Transport callbacks must not recursively call into the same `BME280::BME280`
@@ -100,18 +138,45 @@ Expected callback behavior:
 
 Simple ESP-IDF transfer APIs do not always reveal whether a NACK happened during
 address or data phase. Preserve precise errors when the adapter can prove them;
-otherwise return `I2C_ERROR` or `I2C_BUS` with the raw `esp_err_t` value in
-`Status::detail`.
+otherwise return `TransportErr::OTHER` with the raw `esp_err_t` value in
+`TransportResult::detail`. In particular, the example maps
+`ESP_ERR_INVALID_RESPONSE` to `OTHER`, not to address absence, because this API
+does not identify the failed phase. The core maps terminal transport results to
+canonical driver `Status` values and never stores adapter-owned text.
+
+## Cooperative Bounds
+
+Staged start, `cancelJob()`, and `end()` issue zero callbacks. While a staged
+job is running or waiting, it exclusively owns hardware-facing access;
+conflicting fallible synchronous calls return `BUSY` without invoking the IDF
+adapter, and `tick()` performs no I2C.
+Each `pollJob(nowMs, budget)` call invokes the adapter no more than `budget`
+times. A zero budget can still traverse bounded local-only phases.
+
+The library uses a 255-poll cap for NVM readiness and a 255-counter cap for each
+measuring/idle wait, with at most one final status callback before the latter
+reports its poll-limit error. With no earlier deadline or adapter failure, the
+cumulative staged callback caps are 518 for init/non-reset resync, 519 for
+explicit soft reset, 516 for config apply, 258 for forced measurement from a
+known-idle state, and 514 when forced measurement first reconciles an ambiguous
+trigger. These are callback caps, not an overall owner deadline or elapsed-time
+claim.
+
+Pure `estimateMeasurementTimeUs(const SensorSettings&)` implements the exact
+Bosch maximum formula. The millisecond helper adds the library's fixed 1 ms
+scheduling margin and rounds up. Checked fixed-point helpers convert
+centi-Celsius to signed milli-Celsius and Q22.10 relative humidity to signed
+milli-percent without heap, float, I2C, or platform dependencies.
 
 Current example mapping:
 
-| ESP-IDF result | Library status |
+| ESP-IDF result | Adapter result | Core status |
 | --- | --- |
-| `ESP_OK` | `Err::OK` |
-| `ESP_ERR_TIMEOUT` | `Err::I2C_TIMEOUT` |
-| `ESP_ERR_INVALID_ARG` | `Err::INVALID_PARAM` |
-| `ESP_ERR_INVALID_RESPONSE` | `Err::I2C_ERROR` |
-| other failures | `Err::I2C_BUS` |
+| `ESP_OK` | `TransportErr::OK` with exact counts | `Err::OK` |
+| `ESP_ERR_TIMEOUT` | `TransportErr::TIMEOUT` | `Err::I2C_TIMEOUT` |
+| `ESP_ERR_INVALID_ARG` | `TransportErr::OTHER` | `Err::I2C_ERROR` |
+| `ESP_ERR_INVALID_RESPONSE` | `TransportErr::OTHER` because the failed phase is unknown | `Err::I2C_ERROR` |
+| other controller failures | `TransportErr::BUS` | `Err::I2C_BUS` |
 
 ## Build Checks
 

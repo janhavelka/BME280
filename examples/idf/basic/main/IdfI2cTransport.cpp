@@ -18,40 +18,40 @@ int timeoutToIdf(uint32_t timeoutMs) {
   return static_cast<int>(timeoutMs);
 }
 
-BME280::Status mapEspError(esp_err_t err, const char* message) {
+BME280::TransportResult mapEspError(esp_err_t err, size_t writeCount,
+                                    size_t readCount = 0) {
   switch (err) {
     case ESP_OK:
-      return BME280::Status::Ok();
+      return BME280::TransportResult::Complete(writeCount, readCount);
     case ESP_ERR_TIMEOUT:
-      return BME280::Status::Error(BME280::Err::I2C_TIMEOUT, message,
-                                   static_cast<int32_t>(err));
+      return BME280::TransportResult::Error(
+          BME280::TransportErr::TIMEOUT, static_cast<int32_t>(err));
     case ESP_ERR_INVALID_ARG:
-      return BME280::Status::Error(BME280::Err::INVALID_PARAM, message,
-                                   static_cast<int32_t>(err));
+      return BME280::TransportResult::Error(
+          BME280::TransportErr::OTHER, static_cast<int32_t>(err));
     case ESP_ERR_INVALID_RESPONSE:
-      return BME280::Status::Error(BME280::Err::I2C_ERROR, message,
-                                   static_cast<int32_t>(err));
+      // The high-level IDF API reports NACK without proving address vs data
+      // phase. Do not invent DEVICE_NOT_FOUND or NACK_DATA.
+      return BME280::TransportResult::Error(
+          BME280::TransportErr::OTHER, static_cast<int32_t>(err));
     default:
-      return BME280::Status::Error(BME280::Err::I2C_BUS, message,
-                                   static_cast<int32_t>(err));
+      return BME280::TransportResult::Error(
+          BME280::TransportErr::BUS, static_cast<int32_t>(err));
   }
 }
 
-BME280::Status validate(uint8_t addr, const void* user) {
+BME280::TransportResult validate(uint8_t addr, const void* user) {
   if (user == nullptr) {
-    return BME280::Status::Error(BME280::Err::INVALID_CONFIG,
-                                 "IDF I2C context is null");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -1);
   }
   const IdfI2cContext* ctx = static_cast<const IdfI2cContext*>(user);
   if (ctx->device == nullptr) {
-    return BME280::Status::Error(BME280::Err::INVALID_CONFIG,
-                                 "IDF I2C device handle is null");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -2);
   }
   if (addr != ctx->address) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM,
-                                 "Unexpected I2C address");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -3);
   }
-  return BME280::Status::Ok();
+  return BME280::TransportResult::Complete(0, 0);
 }
 
 }  // namespace
@@ -109,48 +109,42 @@ void bme280IdfDeinitI2c() {
   }
 }
 
-BME280::Status idfI2cWrite(uint8_t addr, const uint8_t* data, size_t len,
-                           uint32_t timeoutMs, void* user) {
-  BME280::Status st = validate(addr, user);
-  if (!st.ok()) {
-    return st;
+BME280::TransportResult idfI2cWrite(uint8_t addr, const uint8_t* data,
+                                    size_t len, uint32_t timeoutMs, void* user) {
+  const BME280::TransportResult validation = validate(addr, user);
+  if (!validation.ok()) {
+    return validation;
   }
   if (data == nullptr || len == 0U || len > static_cast<size_t>(std::numeric_limits<int>::max())) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM,
-                                 "Invalid IDF I2C write buffer");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -4);
   }
 
   IdfI2cContext* ctx = static_cast<IdfI2cContext*>(user);
+  // Exactly one physical attempt. No adapter retry or bus recovery.
   ctx->lastError = i2c_master_transmit(ctx->device, data, static_cast<size_t>(len),
                                        timeoutToIdf(timeoutMs));
-  return mapEspError(ctx->lastError, "IDF I2C write failed");
+  return mapEspError(ctx->lastError, len);
 }
 
-BME280::Status idfI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
-                               uint8_t* rxData, size_t rxLen,
-                               uint32_t timeoutMs, void* user) {
-  BME280::Status st = validate(addr, user);
-  if (!st.ok()) {
-    return st;
+BME280::TransportResult idfI2cWriteRead(uint8_t addr,
+                                        const uint8_t* txData, size_t txLen,
+                                        uint8_t* rxData, size_t rxLen,
+                                        uint32_t timeoutMs, void* user) {
+  const BME280::TransportResult validation = validate(addr, user);
+  if (!validation.ok()) {
+    return validation;
   }
-  if ((txLen > 0U && txData == nullptr) || (rxLen > 0U && rxData == nullptr) ||
+  if (txData == nullptr || rxData == nullptr || txLen == 0U || rxLen == 0U ||
       txLen > static_cast<size_t>(std::numeric_limits<int>::max()) ||
       rxLen > static_cast<size_t>(std::numeric_limits<int>::max())) {
-    return BME280::Status::Error(BME280::Err::INVALID_PARAM,
-                                 "Invalid IDF I2C write-read buffer");
+    return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -5);
   }
 
   IdfI2cContext* ctx = static_cast<IdfI2cContext*>(user);
   const int timeout = timeoutToIdf(timeoutMs);
-  if (txLen == 0U) {
-    ctx->lastError = i2c_master_receive(ctx->device, rxData, rxLen, timeout);
-    return mapEspError(ctx->lastError, "IDF I2C read failed");
-  }
-  if (rxLen == 0U) {
-    ctx->lastError = i2c_master_transmit(ctx->device, txData, txLen, timeout);
-    return mapEspError(ctx->lastError, "IDF I2C write phase failed");
-  }
+  // One combined write/repeated-START/read transaction. No intermediate STOP,
+  // adapter retry, or bus recovery.
   ctx->lastError = i2c_master_transmit_receive(ctx->device, txData, txLen, rxData,
                                                rxLen, timeout);
-  return mapEspError(ctx->lastError, "IDF I2C write-read failed");
+  return mapEspError(ctx->lastError, txLen, rxLen);
 }

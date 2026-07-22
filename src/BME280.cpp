@@ -5,8 +5,6 @@
 
 #include "BME280/BME280.h"
 
-#include "PlatformTime.h"
-
 #include <cstring>
 #include <limits>
 
@@ -17,28 +15,74 @@ static constexpr size_t MAX_WRITE_LEN = 16;
 static constexpr uint16_t NVM_READY_MAX_POLLS = 255;
 static constexpr uint16_t MEASURING_READY_MAX_POLLS = 255;
 static constexpr uint32_t MEASUREMENT_MARGIN_US = 1000;
+static constexpr uint32_t MAX_STANDBY_TIME_MS = 1000;
 static constexpr int64_t HUMIDITY_MAX_X4096 = 419430400;
 
-class ScopedOfflineI2cAllowance {
+class ScopedTimeContext {
 public:
-  explicit ScopedOfflineI2cAllowance(bool& flag, bool allow) : _flag(flag), _old(flag) {
-    _flag = allow;
+  ScopedTimeContext(bool& active, uint32_t& value, uint32_t nowMs)
+      : _active(active), _value(value), _priorActive(active), _priorValue(value) {
+    _active = true;
+    _value = nowMs;
   }
 
-  ~ScopedOfflineI2cAllowance() {
-    _flag = _old;
+  ~ScopedTimeContext() {
+    _active = _priorActive;
+    _value = _priorValue;
   }
 
-  ScopedOfflineI2cAllowance(const ScopedOfflineI2cAllowance&) = delete;
-  ScopedOfflineI2cAllowance& operator=(const ScopedOfflineI2cAllowance&) = delete;
+  ScopedTimeContext(const ScopedTimeContext&) = delete;
+  ScopedTimeContext& operator=(const ScopedTimeContext&) = delete;
 
 private:
-  bool& _flag;
-  bool _old;
+  bool& _active;
+  uint32_t& _value;
+  bool _priorActive;
+  uint32_t _priorValue;
 };
 
 static bool deadlineReached(uint32_t nowMs, uint32_t deadlineMs) {
   return static_cast<int32_t>(nowMs - deadlineMs) >= 0;
+}
+
+static bool checkedAddI64(int64_t lhs, int64_t rhs, int64_t& out) {
+  const int64_t maximum = std::numeric_limits<int64_t>::max();
+  const int64_t minimum = std::numeric_limits<int64_t>::min();
+  if ((rhs > 0 && lhs > maximum - rhs) ||
+      (rhs < 0 && lhs < minimum - rhs)) {
+    return false;
+  }
+  out = lhs + rhs;
+  return true;
+}
+
+static bool checkedSubI64(int64_t lhs, int64_t rhs, int64_t& out) {
+  const int64_t maximum = std::numeric_limits<int64_t>::max();
+  const int64_t minimum = std::numeric_limits<int64_t>::min();
+  if ((rhs > 0 && lhs < minimum + rhs) ||
+      (rhs < 0 && lhs > maximum + rhs)) {
+    return false;
+  }
+  out = lhs - rhs;
+  return true;
+}
+
+static bool checkedMulI64(int64_t lhs, int64_t rhs, int64_t& out) {
+  const int64_t maximum = std::numeric_limits<int64_t>::max();
+  const int64_t minimum = std::numeric_limits<int64_t>::min();
+  if (lhs > 0) {
+    if ((rhs > 0 && lhs > maximum / rhs) ||
+        (rhs < 0 && rhs < minimum / lhs)) {
+      return false;
+    }
+  } else if (lhs < 0) {
+    if ((rhs > 0 && lhs < minimum / rhs) ||
+        (rhs < 0 && rhs < maximum / lhs)) {
+      return false;
+    }
+  }
+  out = lhs * rhs;
+  return true;
 }
 
 static uint8_t osrsToReg(Oversampling osrs) {
@@ -130,6 +174,7 @@ static bool isTransportFailure(const Status& st) {
     case Err::I2C_NACK_DATA:
     case Err::I2C_TIMEOUT:
     case Err::I2C_BUS:
+    case Err::I2C_SHORT_TRANSFER:
       return true;
     default:
       return false;
@@ -142,6 +187,7 @@ static bool mayHaveReachedDeviceAfterDiagnosticWrite(const Status& st) {
     case Err::I2C_NACK_DATA:
     case Err::I2C_TIMEOUT:
     case Err::I2C_BUS:
+    case Err::I2C_SHORT_TRANSFER:
       return true;
     default:
       return false;
@@ -209,34 +255,165 @@ static int16_t signExtend12(int16_t value) {
   return value;
 }
 
+static Status mapTransportResult(const TransportResult& result,
+                                 size_t expectedWriteCount,
+                                 size_t expectedReadCount) {
+  switch (result.code) {
+    case TransportErr::OK:
+      if (result.writeCount != expectedWriteCount ||
+          result.readCount != expectedReadCount) {
+        return Status::Error(Err::I2C_SHORT_TRANSFER, result.detail);
+      }
+      return Status::Ok();
+    case TransportErr::NACK_ADDRESS:
+      return Status::Error(Err::I2C_NACK_ADDR, result.detail);
+    case TransportErr::NACK_DATA:
+      return Status::Error(Err::I2C_NACK_DATA, result.detail);
+    case TransportErr::TIMEOUT:
+      return Status::Error(Err::I2C_TIMEOUT, result.detail);
+    case TransportErr::BUS:
+      return Status::Error(Err::I2C_BUS, result.detail);
+    case TransportErr::OTHER:
+      return Status::Error(Err::I2C_ERROR, result.detail);
+    default:
+      return Status::Error(Err::I2C_ERROR, result.detail);
+  }
+}
+
+static bool bytesAllEqual(const uint8_t* data, size_t len, uint8_t value) {
+  if (data == nullptr || len == 0) {
+    return false;
+  }
+  for (size_t i = 0; i < len; ++i) {
+    if (data[i] != value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool humidityCalibrationBlockValid(const uint8_t* data, size_t len) {
+  return !bytesAllEqual(data, len, 0x00) &&
+         !bytesAllEqual(data, len, 0xFF);
+}
+
 }  // namespace
 
-void BME280::_resetRuntime() {
-  const bool priorHardwareConfigDirty = _hardwareConfigDirty;
-  const Status priorHardwareConfigDirtyError = _hardwareConfigDirtyError;
+Status validateSettings(const SensorSettings& settings) {
+  if (!isValidOversampling(settings.osrsT) ||
+      !isValidOversampling(settings.osrsP) ||
+      !isValidOversampling(settings.osrsH) ||
+      !isValidFilter(settings.filter) ||
+      !isValidStandby(settings.standby) ||
+      !isValidMode(settings.mode) ||
+      !isValidMeasurementSelection(settings.osrsT, settings.osrsP,
+                                   settings.osrsH)) {
+    return Status::Error(Err::INVALID_PARAM);
+  }
+  return Status::Ok();
+}
+
+uint32_t estimateMeasurementTimeUs(const SensorSettings& settings) {
+  if (!validateSettings(settings).ok()) {
+    return 0;
+  }
+  const uint8_t tOsrs = osrsMultiplier(settings.osrsT);
+  const uint8_t pOsrs = osrsMultiplier(settings.osrsP);
+  const uint8_t hOsrs = osrsMultiplier(settings.osrsH);
+
+  uint32_t timeUs = 1250;
+  if (tOsrs > 0) {
+    timeUs += 2300U * tOsrs;
+  }
+  if (pOsrs > 0) {
+    timeUs += 2300U * pOsrs + 575U;
+  }
+  if (hOsrs > 0) {
+    timeUs += 2300U * hOsrs + 575U;
+  }
+  return timeUs;
+}
+
+uint32_t estimateMeasurementTimeMs(const SensorSettings& settings) {
+  const uint32_t boschTimeUs = estimateMeasurementTimeUs(settings);
+  if (boschTimeUs == 0) {
+    return 0;
+  }
+  return (boschTimeUs + MEASUREMENT_MARGIN_US + 999U) / 1000U;
+}
+
+Status temperatureX100ToMilliC(int32_t tempC_x100, int32_t& outMilliC) {
+  const int64_t candidate = static_cast<int64_t>(tempC_x100) * 10;
+  if (candidate < std::numeric_limits<int32_t>::min() ||
+      candidate > std::numeric_limits<int32_t>::max()) {
+    return Status::Error(Err::COMPENSATION_ERROR);
+  }
+  outMilliC = static_cast<int32_t>(candidate);
+  return Status::Ok();
+}
+
+Status humidityX1024ToMilliPercent(uint32_t humidityPct_x1024,
+                                  int32_t& outMilliPercent) {
+  static constexpr uint32_t HUMIDITY_100_PERCENT_X1024 = 100U * 1024U;
+  if (humidityPct_x1024 > HUMIDITY_100_PERCENT_X1024) {
+    return Status::Error(Err::INVALID_PARAM);
+  }
+  const uint64_t candidate =
+      (static_cast<uint64_t>(humidityPct_x1024) * 1000U) / 1024U;
+  if (candidate > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+    return Status::Error(Err::COMPENSATION_ERROR);
+  }
+  outMilliPercent = static_cast<int32_t>(candidate);
+  return Status::Ok();
+}
+
+void BME280::_resetRuntime(bool preserveHistory) {
+  const bool priorHardwareConfigDirty =
+      preserveHistory && hardwareConfigDirty();
+  const Status priorHardwareConfigDirtyError = preserveHistory
+      ? _hardwareConfigDirtyError
+      : Status::Ok();
+  const uint32_t priorConfigGeneration = preserveHistory
+      ? _configGeneration
+      : 0;
+  const uint32_t priorSampleSequence = preserveHistory
+      ? _sampleSequence
+      : 0;
 
   _config = Config{};
   _initialized = false;
   _driverState = DriverState::UNINIT;
-  _allowOfflineI2c = false;
 
   _lastOkMs = 0;
   _lastErrorMs = 0;
+  _lastOkTimeValid = false;
+  _lastErrorTimeValid = false;
   _lastError = Status::Ok();
   _consecutiveFailures = 0;
   _totalFailures = 0;
   _totalSuccess = 0;
-  _hardwareConfigDirty = priorHardwareConfigDirty;
-  _hardwareConfigDirtyError = priorHardwareConfigDirtyError;
+  _timeContextActive = false;
+  _timeContextMs = 0;
+  _configSyncState = ConfigSyncState::RESYNC_REQUIRED;
+  _calibrationState = CalibrationState::INVALID;
+  _humidityCalibrationValid = false;
+  _hardwareConfigDirtyError = priorHardwareConfigDirty
+      ? priorHardwareConfigDirtyError
+      : Status::Ok();
+  _configGeneration = priorConfigGeneration;
 
   _measurementRequested = false;
   _measurementReady = false;
   _lastMeasurementStatus = Status::Ok();
+  _conversionState = ConversionState::IDLE;
   _hasSample = false;
   _measurementStartMs = 0;
   _measurementDeadlineMs = 0;
   _measurementStatusPolls = 0;
   _sampleTimestampMs = 0;
+  _sampleSequence = priorSampleSequence;
+  _sampleConfigGeneration = 0;
+  _sampleGenerationStale = false;
   _tFine = 0;
   _rawSample = RawSample{};
   _compSample = CompensatedSample{};
@@ -272,26 +449,45 @@ Status BME280::_prepareBeginConfig(const Config& config) {
   if (config.i2cTimeoutMs == 0) {
     return Status::Error(Err::INVALID_CONFIG, "I2C timeout must be > 0");
   }
+  if (config.i2cTimeoutMs >=
+      static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+    return Status::Error(Err::INVALID_CONFIG, "I2C timeout too large");
+  }
   if (config.nvmReadyTimeoutMs == 0) {
     return Status::Error(Err::INVALID_CONFIG, "NVM timeout must be > 0");
   }
-  if (config.nvmReadyTimeoutMs >
+  if (config.nvmReadyTimeoutMs >=
       static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
     return Status::Error(Err::INVALID_CONFIG, "NVM timeout too large");
+  }
+  if (config.conversionReadyTimeoutMs == 0) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Conversion ready timeout must be > 0");
+  }
+  const SensorSettings maximumDurationSettings = {
+    Oversampling::X16, Oversampling::X16, Oversampling::X16,
+    Filter::OFF, Standby::MS_1000, Mode::NORMAL
+  };
+  const uint32_t maximumBaseIntervalMs =
+      ::BME280::estimateMeasurementTimeMs(maximumDurationSettings) +
+      MAX_STANDBY_TIME_MS;
+  const uint32_t maximumWrapSafeIntervalMs =
+      static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
+  if (config.conversionReadyTimeoutMs >
+      maximumWrapSafeIntervalMs - maximumBaseIntervalMs) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Conversion ready timeout too large");
   }
   if (config.i2cAddress != 0x76 && config.i2cAddress != 0x77) {
     return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address");
   }
-  if (!isValidOversampling(config.osrsT) ||
-      !isValidOversampling(config.osrsP) ||
-      !isValidOversampling(config.osrsH) ||
-      !isValidFilter(config.filter) ||
-      !isValidStandby(config.standby) ||
-      !isValidMode(config.mode)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid configuration value");
-  }
-  if (!isValidMeasurementSelection(config.osrsT, config.osrsP, config.osrsH)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid oversampling combination");
+  const SensorSettings settings = {
+    config.osrsT, config.osrsP, config.osrsH,
+    config.filter, config.standby, config.mode
+  };
+  const Status settingsStatus = validateSettings(settings);
+  if (!settingsStatus.ok()) {
+    return Status::Error(Err::INVALID_CONFIG, settingsStatus.detail);
   }
 
   _config = config;
@@ -303,6 +499,10 @@ Status BME280::_prepareBeginConfig(const Config& config) {
 }
 
 Status BME280::begin(const Config& config) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   Status st = _prepareBeginConfig(config);
   if (!st.ok()) {
     return st;
@@ -313,7 +513,7 @@ Status BME280::begin(const Config& config) {
   if (!st.ok()) {
     return mapPresenceError(st);
   }
-  if (chipId != cmd::CHIP_ID_BME280) {
+  if (!isBme280ChipId(chipId)) {
     return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
   }
 
@@ -322,19 +522,21 @@ Status BME280::begin(const Config& config) {
     return mapPresenceError(st);
   }
 
-  st = _readCalibration();
+  Calibration calibrationCandidate;
+  bool humidityCalibrationValid = false;
+  bool calibrationEvidenceChanged = false;
+  st = _readCalibrationCandidate(calibrationCandidate,
+                                 humidityCalibrationValid,
+                                 calibrationEvidenceChanged);
   if (!st.ok()) {
     return mapPresenceError(st);
-  }
-  st = _validateCalibration();
-  if (!st.ok()) {
-    return st;
   }
   st = _applyConfig();
   if (!st.ok()) {
     return mapPresenceError(st);
   }
 
+  _commitCalibration(calibrationCandidate, humidityCalibrationValid);
   _initialized = true;
   _driverState = DriverState::READY;
 
@@ -342,16 +544,16 @@ Status BME280::begin(const Config& config) {
 }
 
 void BME280::tick(uint32_t nowMs) {
+  ScopedTimeContext timeContext(_timeContextActive, _timeContextMs, nowMs);
   if (!_initialized || !_measurementRequested) {
     return;
   }
   if (_jobActive()) {
     return;
   }
-
-  if (_driverState == DriverState::OFFLINE) {
-    _measurementRequested = false;
-    _lastMeasurementStatus = Status::Error(Err::BUSY, "Driver is offline; call recover()");
+  if (_configSyncState != ConfigSyncState::SYNCHRONIZED ||
+      _calibrationState != CalibrationState::VALID) {
+    _cancelMeasurementTrackingForStateChange();
     return;
   }
 
@@ -375,7 +577,9 @@ void BME280::tick(uint32_t nowMs) {
   Status st = isMeasuring(measuring);
   if (!st.ok()) {
     _lastMeasurementStatus = st;
-    if (_driverState == DriverState::OFFLINE) {
+    if (_config.mode == Mode::FORCED &&
+        _conversionState != ConversionState::IDLE) {
+      _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
       _measurementRequested = false;
       _measurementDeadlineMs = 0;
       _measurementStatusPolls = 0;
@@ -383,6 +587,9 @@ void BME280::tick(uint32_t nowMs) {
     return;
   }
   if (measuring) {
+    if (_config.mode == Mode::FORCED) {
+      _conversionState = ConversionState::IN_PROGRESS;
+    }
     if (deadlineReached(nowMs, _measurementDeadlineMs) ||
         _measurementStatusPolls >= MEASURING_READY_MAX_POLLS) {
       _measurementRequested = false;
@@ -390,6 +597,9 @@ void BME280::tick(uint32_t nowMs) {
       _measurementStatusPolls = 0;
       _lastMeasurementStatus =
           Status::Error(Err::TIMEOUT, "Measurement ready timeout");
+      if (_config.mode == Mode::FORCED) {
+        _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+      }
       return;
     }
     _measurementStatusPolls++;
@@ -397,18 +607,21 @@ void BME280::tick(uint32_t nowMs) {
     return;
   }
 
-  st = _readRawData();
+  if (_config.mode == Mode::FORCED) {
+    _conversionState = ConversionState::IDLE;
+  }
+
+  RawSample candidateRaw{};
+  CompensatedSample candidateCompensated{};
+  int32_t candidateTFine = 0;
+
+  st = _readRawData(candidateRaw);
   if (!st.ok()) {
     _lastMeasurementStatus = st;
-    if (_driverState == DriverState::OFFLINE) {
-      _measurementRequested = false;
-      _measurementDeadlineMs = 0;
-      _measurementStatusPolls = 0;
-    }
     return;
   }
 
-  st = _compensate();
+  st = _compensate(candidateRaw, candidateCompensated, candidateTFine);
   if (!st.ok()) {
     _lastMeasurementStatus = st;
     _measurementRequested = false;
@@ -417,9 +630,7 @@ void BME280::tick(uint32_t nowMs) {
     return;
   }
 
-  _measurementReady = true;
-  _hasSample = true;
-  _sampleTimestampMs = nowMs;
+  _commitSample(candidateRaw, candidateCompensated, candidateTFine, nowMs);
   _measurementRequested = false;
   _measurementDeadlineMs = 0;
   _measurementStatusPolls = 0;
@@ -427,33 +638,14 @@ void BME280::tick(uint32_t nowMs) {
 }
 
 void BME280::end() {
-  if (_initialized) {
-    // Best-effort: put device to sleep to save power.
-    // Uses raw I2C to avoid health tracking during shutdown.
-    const uint8_t payload[2] = {
-      cmd::REG_CTRL_MEAS,
-      buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP)
-    };
-    (void)_i2cWriteRaw(payload, sizeof(payload));
-  }
-
-  _initialized = false;
-  _driverState = DriverState::UNINIT;
-  _measurementRequested = false;
-  _measurementReady = false;
-  _lastMeasurementStatus = Status::Ok();
-  _hasSample = false;
-  _measurementStartMs = 0;
-  _measurementDeadlineMs = 0;
-  _measurementStatusPolls = 0;
-  _sampleTimestampMs = 0;
-  _tFine = 0;
-  _rawSample = RawSample{};
-  _compSample = CompensatedSample{};
-  _clearJob();
+  _resetRuntime(false);
 }
 
 Status BME280::probe() {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -463,7 +655,7 @@ Status BME280::probe() {
   if (!st.ok()) {
     return mapPresenceError(st);
   }
-  if (chipId != cmd::CHIP_ID_BME280) {
+  if (!isBme280ChipId(chipId)) {
     return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
   }
 
@@ -471,21 +663,28 @@ Status BME280::probe() {
 }
 
 Status BME280::recover() {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  const bool startedOffline = (_driverState == DriverState::OFFLINE);
-  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
   Status result = [&]() -> Status {
     uint8_t chipId = 0;
     Status st = readRegister(cmd::REG_CHIP_ID, chipId);
     if (!st.ok()) {
       return st;
     }
-    if (chipId != cmd::CHIP_ID_BME280) {
-      return _recordFailure(
+    if (!isBme280ChipId(chipId)) {
+      const Status mismatch = _recordFailure(
           Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId));
+      _calibrationState = CalibrationState::INVALID;
+      _humidityCalibrationValid = false;
+      _markHardwareConfigDirty(mismatch);
+      _cancelMeasurementTrackingForStateChange();
+      return mismatch;
     }
 
     st = _waitForNvmReady(true);
@@ -493,35 +692,67 @@ Status BME280::recover() {
       return isTransportFailure(st) ? st : _recordFailure(st);
     }
 
-    st = _readCalibration();
+    Calibration calibrationCandidate;
+    bool humidityCalibrationValid = false;
+    bool calibrationEvidenceChanged = false;
+    st = _readCalibrationCandidate(calibrationCandidate,
+                                   humidityCalibrationValid,
+                                   calibrationEvidenceChanged);
     if (!st.ok()) {
+      if (calibrationEvidenceChanged || st.code == Err::CALIBRATION_INVALID) {
+        _calibrationState = CalibrationState::INVALID;
+        _humidityCalibrationValid = false;
+        _markHardwareConfigDirty(st);
+        _cancelMeasurementTrackingForStateChange();
+      }
       return st.code == Err::CALIBRATION_INVALID ? _recordFailure(st) : st;
     }
-    st = _validateCalibration();
-    if (!st.ok()) {
-      return _recordFailure(st);
-    }
+    const bool calibrationChanged = calibrationEvidenceChanged;
 
     // Re-apply configuration: after a power glitch or external reset the
     // device registers revert to defaults and calibration registers may have
     // just been copied from NVM.
     st = _applyConfig();
     if (!st.ok()) {
+      if (calibrationChanged) {
+        _calibrationState = CalibrationState::INVALID;
+        _humidityCalibrationValid = false;
+        _markHardwareConfigDirty(st);
+        _cancelMeasurementTrackingForStateChange();
+      }
       if (st.code == Err::BUSY) {
         return _recordFailure(st);
       }
       return st;
     }
 
+    _commitCalibration(calibrationCandidate, humidityCalibrationValid);
     return Status::Ok();
   }();
   if (result.ok()) {
     _invalidateSampleCache();
   }
-  if (startedOffline && !result.ok() && !result.inProgress()) {
-    _reassertOfflineLatch();
-  }
   return result;
+}
+
+SensorSettings BME280::sensorSettings() const {
+  return SensorSettings{
+    _config.osrsT,
+    _config.osrsP,
+    _config.osrsH,
+    _config.filter,
+    _config.standby,
+    _config.mode
+  };
+}
+
+void BME280::_setSensorSettings(const SensorSettings& settings) {
+  _config.osrsT = settings.osrsT;
+  _config.osrsP = settings.osrsP;
+  _config.osrsH = settings.osrsH;
+  _config.filter = settings.filter;
+  _config.standby = settings.standby;
+  _config.mode = settings.mode;
 }
 
 Status BME280::getSettings(SettingsSnapshot& out) const {
@@ -530,26 +761,40 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   out.i2cAddress = _config.i2cAddress;
   out.i2cTimeoutMs = _config.i2cTimeoutMs;
   out.nvmReadyTimeoutMs = _config.nvmReadyTimeoutMs;
+  out.conversionReadyTimeoutMs = _config.conversionReadyTimeoutMs;
   out.offlineThreshold = _config.offlineThreshold;
   out.hasNowMsHook = (_config.nowMs != nullptr);
-  out.mode = _config.mode;
-  out.osrsT = _config.osrsT;
-  out.osrsP = _config.osrsP;
-  out.osrsH = _config.osrsH;
-  out.filter = _config.filter;
-  out.standby = _config.standby;
+  const SensorSettings settings = sensorSettings();
+  out.mode = settings.mode;
+  out.osrsT = settings.osrsT;
+  out.osrsP = settings.osrsP;
+  out.osrsH = settings.osrsH;
+  out.filter = settings.filter;
+  out.standby = settings.standby;
   out.measurementRequested = _measurementRequested;
   out.measurementReady = _measurementReady;
+  out.conversionState = _conversionState;
   out.lastMeasurementStatus = _lastMeasurementStatus;
   out.hasSample = _hasSample;
   out.sampleFreshness = sampleFreshness();
-  out.hardwareConfigDirty = _hardwareConfigDirty;
+  out.configSyncState = _configSyncState;
+  out.calibrationState = _calibrationState;
+  out.hardwareConfigDirty = hardwareConfigDirty();
   out.hardwareConfigDirtyError = _hardwareConfigDirtyError;
+  out.configGeneration = _configGeneration;
+  out.sampleSequence = _hasSample ? _sampleSequence : 0;
+  out.sampleConfigGeneration = _hasSample ? _sampleConfigGeneration : 0;
   out.measurementStartMs = _measurementStartMs;
   out.sampleTimestampMs = _sampleTimestampMs;
   out.tFine = _tFine;
   out.rawSample = _rawSample;
   out.compSample = _compSample;
+  out.sample.rawSample = _rawSample;
+  out.sample.compensatedSample = _compSample;
+  out.sample.tFine = _tFine;
+  out.sample.timestampMs = _sampleTimestampMs;
+  out.sample.sampleSequence = _hasSample ? _sampleSequence : 0;
+  out.sample.configGeneration = _hasSample ? _sampleConfigGeneration : 0;
   out.calibration.digT1 = _digT1;
   out.calibration.digT2 = _digT2;
   out.calibration.digT3 = _digT3;
@@ -568,6 +813,8 @@ Status BME280::getSettings(SettingsSnapshot& out) const {
   out.calibration.digH4 = _digH4;
   out.calibration.digH5 = _digH5;
   out.calibration.digH6 = _digH6;
+  out.lastOkTimeValid = _lastOkTimeValid;
+  out.lastErrorTimeValid = _lastErrorTimeValid;
   return Status::Ok();
 }
 
@@ -575,8 +822,13 @@ SampleFreshness BME280::sampleFreshness() const {
   if (!_hasSample) {
     return SampleFreshness::NONE;
   }
-  if (_hardwareConfigDirty) {
+  if (_configSyncState != ConfigSyncState::SYNCHRONIZED ||
+      _calibrationState != CalibrationState::VALID) {
     return SampleFreshness::STALE_AFTER_CONFIG_DIRTY;
+  }
+  if (_sampleGenerationStale ||
+      _sampleConfigGeneration != _configGeneration) {
+    return SampleFreshness::STALE_AFTER_CONFIG_CHANGE;
   }
   if (!_lastMeasurementStatus.ok()) {
     return SampleFreshness::STALE_AFTER_ERROR;
@@ -594,53 +846,140 @@ bool BME280::_jobActive() const {
          (_jobState == JobState::RUNNING || _jobState == JobState::WAITING);
 }
 
+Status BME280::_jobStartAdmission() const {
+  if (_jobActive()) {
+    return Status::Error(
+        Err::BUSY, "Staged job already active",
+        static_cast<int32_t>(BusyReason::STAGED_JOB_ACTIVE));
+  }
+  if (_jobTerminalResultPending) {
+    return Status::Error(
+        Err::BUSY, "Terminal job result pending",
+        static_cast<int32_t>(BusyReason::TERMINAL_RESULT_PENDING));
+  }
+  return Status::Ok();
+}
+
+Status BME280::_hardwareOperationAdmission() const {
+  return _jobStartAdmission();
+}
+
 void BME280::_clearJob() {
   _jobKind = JobKind::NONE;
   _jobState = JobState::IDLE;
   _jobPhase = JobPhase::NONE;
   _jobStatus = Status::Ok();
+  _jobId = 0;
+  _jobTerminalResultPending = false;
   _jobDeadlineMs = 0;
+  _jobDeadlineActive = false;
   _jobNvmPolls = 0;
   _jobWaitPolls = 0;
-  _jobStartedOffline = false;
   _jobHardwareConfigTouched = false;
+  _jobResetMayHaveReached = false;
+  _jobForcedTriggerMayHaveReached = false;
+  _jobSettingsStaged = false;
+  _jobPriorSettings = SensorSettings{};
   _jobCalibration = Calibration{};
+  _jobHumidityCalibrationValid = false;
+  _jobCalibrationChanged = false;
+  _jobDeviceIdentityMismatch = false;
+  _jobPriorConfigSyncState = ConfigSyncState::RESYNC_REQUIRED;
+  _jobPriorHardwareConfigDirtyError = Status::Ok();
+  _jobRawSample = RawSample{};
+  _jobCompSample = CompensatedSample{};
+  _jobTFine = 0;
 }
 
 Status BME280::_startJob(JobKind kind, JobPhase phase) {
-  if (_jobActive()) {
-    return Status::Error(Err::BUSY, "Job already running");
+  const Status admission = _jobStartAdmission();
+  if (!admission.ok()) {
+    return admission;
   }
 
+  ++_nextJobId;
+  if (_nextJobId == 0) {
+    ++_nextJobId;
+  }
+  _jobPriorConfigSyncState = _configSyncState;
+  _jobPriorHardwareConfigDirtyError = _hardwareConfigDirtyError;
+  _jobId = _nextJobId;
   _jobKind = kind;
   _jobState = JobState::RUNNING;
   _jobPhase = phase;
   _jobStatus = Status::Error(Err::IN_PROGRESS, "Job in progress");
+  _jobTerminalResultPending = false;
   _jobDeadlineMs = 0;
+  _jobDeadlineActive = false;
   _jobNvmPolls = 0;
   _jobWaitPolls = 0;
-  _jobStartedOffline = false;
   _jobHardwareConfigTouched = false;
+  _jobResetMayHaveReached = false;
+  _jobForcedTriggerMayHaveReached = false;
+  _jobSettingsStaged = false;
+  _jobPriorSettings = SensorSettings{};
   _jobCalibration = Calibration{};
+  _jobHumidityCalibrationValid = false;
+  _jobCalibrationChanged = false;
+  _jobDeviceIdentityMismatch = false;
+  _jobRawSample = RawSample{};
+  _jobCompSample = CompensatedSample{};
+  _jobTFine = 0;
   return Status::Error(Err::IN_PROGRESS, "Job started");
+}
+
+JobPollResult BME280::_idleJobResult() const {
+  JobPollResult result;
+  result.conversionState = _conversionState;
+  return result;
 }
 
 JobPollResult BME280::_jobResult(uint8_t instructionsUsed) const {
   JobPollResult result;
+  result.jobId = _jobId;
+  result.kind = _jobKind;
+  result.phase = _jobPhase;
   result.state = _jobState;
   result.status = _jobStatus;
+  result.conversionState = _conversionState;
+  result.phaseDeadlineActive = _jobDeadlineActive;
+  result.phaseDeadlineMs = _jobDeadlineActive ? _jobDeadlineMs : 0;
+  result.callbacksUsed = instructionsUsed;
   result.instructionsUsed = instructionsUsed;
   return result;
 }
 
 JobPollResult BME280::_failJob(const Status& st, uint8_t instructionsUsed) {
   Status finalStatus = st;
-  if (_jobKind == JobKind::RECOVERY && !st.ok() && !st.inProgress() &&
+  const bool configJob = _jobKind == JobKind::INIT ||
+                         _jobKind == JobKind::APPLY_CONFIG ||
+                         _jobKind == JobKind::RESYNC ||
+                         _jobKind == JobKind::SOFT_RESET;
+  if ((_jobKind == JobKind::RESYNC ||
+       _jobKind == JobKind::SOFT_RESET) &&
+      !st.ok() && !st.inProgress() &&
       !isTransportFailure(st)) {
     finalStatus = _recordFailure(st);
   }
-  if (_jobHardwareConfigTouched && !finalStatus.ok() && !finalStatus.inProgress()) {
+  const bool changedDeviceStateObserved =
+      _jobKind == JobKind::RESYNC &&
+      (_jobCalibrationChanged || _jobDeviceIdentityMismatch);
+  if (_jobResetMayHaveReached || changedDeviceStateObserved) {
+    _calibrationState = CalibrationState::INVALID;
+    _humidityCalibrationValid = false;
+  }
+  if ((_jobHardwareConfigTouched || changedDeviceStateObserved) &&
+      !finalStatus.ok() && !finalStatus.inProgress()) {
     _markHardwareConfigDirty(finalStatus);
+  } else {
+    if (_jobSettingsStaged) {
+      _setSensorSettings(_jobPriorSettings);
+    }
+    if (configJob &&
+        _configSyncState == ConfigSyncState::UPDATE_IN_PROGRESS) {
+      _configSyncState = _jobPriorConfigSyncState;
+      _hardwareConfigDirtyError = _jobPriorHardwareConfigDirtyError;
+    }
   }
   if (_jobKind == JobKind::FORCED_MEASUREMENT &&
       !finalStatus.ok() && !finalStatus.inProgress()) {
@@ -652,11 +991,8 @@ JobPollResult BME280::_failJob(const Status& st, uint8_t instructionsUsed) {
   }
   _jobState = JobState::FAILED;
   _jobStatus = finalStatus;
-  _jobPhase = JobPhase::NONE;
-  if (_jobKind == JobKind::RECOVERY && _jobStartedOffline &&
-      !finalStatus.ok() && !finalStatus.inProgress()) {
-    _reassertOfflineLatch();
-  }
+  _jobDeadlineActive = false;
+  _jobTerminalResultPending = false;
   return _jobResult(instructionsUsed);
 }
 
@@ -664,17 +1000,17 @@ JobPollResult BME280::_completeJob(uint8_t instructionsUsed) {
   _jobState = JobState::DONE;
   _jobStatus = Status::Ok();
   _jobPhase = JobPhase::COMPLETE;
+  _jobDeadlineActive = false;
+  _jobTerminalResultPending = false;
   _jobNvmPolls = 0;
   _jobWaitPolls = 0;
-  _jobStartedOffline = false;
   _jobHardwareConfigTouched = false;
   return _jobResult(instructionsUsed);
 }
 
 void BME280::_trackJobConfigWriteResult(const Status& st) {
-  if (st.ok()) {
+  if (st.ok() || mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
     _jobHardwareConfigTouched = true;
-    return;
   }
   if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
     _markHardwareConfigDirty(st);
@@ -682,31 +1018,48 @@ void BME280::_trackJobConfigWriteResult(const Status& st) {
 }
 
 Status BME280::startInitJob(const Config& config) {
-  if (_jobActive()) {
-    return Status::Error(Err::BUSY, "Job already running");
+  const Status admission = _jobStartAdmission();
+  if (!admission.ok()) {
+    return admission;
   }
   Status st = _prepareBeginConfig(config);
   if (!st.ok()) {
     return st;
   }
-  return _startJob(JobKind::INIT, JobPhase::INIT_READ_CHIP_ID);
+  st = _startJob(JobKind::INIT, JobPhase::INIT_READ_CHIP_ID);
+  if (st.inProgress()) {
+    _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
+  }
+  return st;
 }
 
 Status BME280::startForcedMeasurementJob() {
+  const Status admission = _jobStartAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  if (_driverState == DriverState::OFFLINE) {
-    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
+  if (_configSyncState != ConfigSyncState::SYNCHRONIZED ||
+      _calibrationState != CalibrationState::VALID) {
+    const Status st = Status::Error(Err::RESYNC_REQUIRED,
+                                    "Device state requires resynchronization");
+    _lastMeasurementStatus = st;
+    return st;
   }
   if (_config.mode != Mode::FORCED) {
     return Status::Error(Err::INVALID_PARAM, "Device is not in forced mode");
   }
   if (_measurementRequested && !_measurementReady) {
-    return Status::Error(Err::BUSY, "Measurement in progress");
+    return Status::Error(
+        Err::BUSY, static_cast<int32_t>(BusyReason::MEASUREMENT_ACTIVE));
   }
 
-  Status st = _startJob(JobKind::FORCED_MEASUREMENT, JobPhase::FORCE_WRITE_CTRL_HUM);
+  const JobPhase firstPhase = (_conversionState == ConversionState::IDLE)
+      ? JobPhase::FORCE_TRIGGER
+      : JobPhase::FORCE_RECONCILE_STATUS;
+  Status st = _startJob(JobKind::FORCED_MEASUREMENT, firstPhase);
   if (st.inProgress()) {
     _measurementReady = false;
     _lastMeasurementStatus = Status::Error(Err::IN_PROGRESS,
@@ -716,47 +1069,189 @@ Status BME280::startForcedMeasurementJob() {
 }
 
 Status BME280::startApplyConfigJob() {
+  const Status admission = _jobStartAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
-  if (_driverState == DriverState::OFFLINE) {
-    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
+  Status st = _startJob(JobKind::APPLY_CONFIG, JobPhase::APPLY_WAIT_IDLE);
+  if (st.inProgress()) {
+    _cancelMeasurementTrackingForStateChange();
+    _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
   }
-  return _startJob(JobKind::APPLY_CONFIG, JobPhase::APPLY_WAIT_IDLE);
+  return st;
 }
 
-Status BME280::startRecoveryJob() {
+Status BME280::startApplySettingsJob(const SensorSettings& settings) {
+  const Status admission = _jobStartAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
+  const Status validation = validateSettings(settings);
+  if (!validation.ok()) {
+    return validation;
+  }
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED);
+  }
+  if (settings.osrsH != Oversampling::SKIP &&
+      !_humidityCalibrationValid) {
+    return Status::Error(Err::CALIBRATION_INVALID);
+  }
+
+  const SensorSettings priorSettings = sensorSettings();
+  Status st = _startJob(JobKind::APPLY_CONFIG, JobPhase::APPLY_WAIT_IDLE);
+  if (st.inProgress()) {
+    _jobSettingsStaged = true;
+    _jobPriorSettings = priorSettings;
+    _cancelMeasurementTrackingForStateChange();
+    _setSensorSettings(settings);
+    _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
+  }
+  return st;
+}
+
+Status BME280::startResyncJob() {
+  const Status admission = _jobStartAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  const bool startedOffline = (_driverState == DriverState::OFFLINE);
-  Status st = _startJob(JobKind::RECOVERY, JobPhase::RECOVERY_WRITE_RESET);
+  Status st = _startJob(JobKind::RESYNC, JobPhase::RESYNC_READ_CHIP_ID);
   if (st.inProgress()) {
-    _jobStartedOffline = startedOffline;
+    _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
     _measurementRequested = false;
     _measurementReady = false;
     _measurementStartMs = 0;
     _measurementDeadlineMs = 0;
     _measurementStatusPolls = 0;
+    if (_conversionState == ConversionState::IN_PROGRESS) {
+      _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+    }
   }
   return st;
 }
 
-JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
-  if (_jobKind == JobKind::NONE || _jobState == JobState::IDLE ||
-      _jobState == JobState::DONE || _jobState == JobState::FAILED) {
-    return _jobResult(0);
+Status BME280::startRecoveryJob() {
+  return startResyncJob();
+}
+
+Status BME280::startSoftResetJob() {
+  const Status admission = _jobStartAdmission();
+  if (!admission.ok()) {
+    return admission;
   }
-  if (maxInstructions == 0) {
-    return _jobResult(0);
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+
+  Status st = _startJob(JobKind::SOFT_RESET, JobPhase::SOFT_RESET_WRITE);
+  if (st.inProgress()) {
+    _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
+    _measurementRequested = false;
+    _measurementReady = false;
+    _measurementStartMs = 0;
+    _measurementDeadlineMs = 0;
+    _measurementStatusPolls = 0;
+    if (_conversionState == ConversionState::IN_PROGRESS) {
+      _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+    }
+  }
+  return st;
+}
+
+Status BME280::cancelJob(CancelReason reason) {
+  if (!_jobActive()) {
+    return Status::Error(Err::INVALID_PARAM, "No active job to cancel");
+  }
+
+  Status cancellation;
+  JobState terminalState = JobState::CANCELLED;
+  switch (reason) {
+    case CancelReason::OWNER_REQUEST:
+      cancellation = Status::Error(Err::CANCELLED, "Job cancelled by owner");
+      break;
+    case CancelReason::DEADLINE_EXPIRED:
+      cancellation = Status::Error(Err::DEADLINE_EXPIRED,
+                                   "Job owner deadline expired");
+      terminalState = JobState::TIMED_OUT;
+      break;
+    default:
+      return Status::Error(Err::INVALID_PARAM, "Invalid cancellation reason");
+  }
+
+  const bool configJob = _jobKind == JobKind::INIT ||
+                         _jobKind == JobKind::APPLY_CONFIG ||
+                         _jobKind == JobKind::RESYNC ||
+                         _jobKind == JobKind::SOFT_RESET;
+  const bool changedDeviceStateObserved =
+      _jobKind == JobKind::RESYNC &&
+      (_jobCalibrationChanged || _jobDeviceIdentityMismatch);
+  if (_jobResetMayHaveReached || changedDeviceStateObserved) {
+    _calibrationState = CalibrationState::INVALID;
+    _humidityCalibrationValid = false;
+    _markHardwareConfigDirty(cancellation);
+  } else if (_jobHardwareConfigTouched) {
+    _markHardwareConfigDirty(cancellation);
+  } else {
+    if (_jobSettingsStaged) {
+      _setSensorSettings(_jobPriorSettings);
+    }
+    if (configJob &&
+        _configSyncState == ConfigSyncState::UPDATE_IN_PROGRESS) {
+      _configSyncState = _jobPriorConfigSyncState;
+      _hardwareConfigDirtyError = _jobPriorHardwareConfigDirtyError;
+    }
+  }
+
+  if (_jobKind == JobKind::FORCED_MEASUREMENT &&
+      (_jobForcedTriggerMayHaveReached ||
+       _conversionState == ConversionState::IN_PROGRESS)) {
+    _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+  }
+  if (_jobKind == JobKind::FORCED_MEASUREMENT) {
+    _lastMeasurementStatus = cancellation;
+  }
+
+  _measurementRequested = false;
+  _measurementReady = false;
+  _measurementStartMs = 0;
+  _measurementDeadlineMs = 0;
+  _measurementStatusPolls = 0;
+  _jobRawSample = RawSample{};
+  _jobCompSample = CompensatedSample{};
+  _jobTFine = 0;
+  _jobCalibration = Calibration{};
+  _jobHumidityCalibrationValid = false;
+  _jobCalibrationChanged = false;
+  _jobDeviceIdentityMismatch = false;
+  _jobState = terminalState;
+  _jobStatus = cancellation;
+  _jobDeadlineMs = 0;
+  _jobDeadlineActive = false;
+  _jobNvmPolls = 0;
+  _jobWaitPolls = 0;
+  _jobTerminalResultPending = true;
+  return cancellation;
+}
+
+JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
+  ScopedTimeContext timeContext(_timeContextActive, _timeContextMs, nowMs);
+  if (_jobTerminalResultPending) {
+    const JobPollResult terminal = _jobResult(0);
+    _jobTerminalResultPending = false;
+    return terminal;
+  }
+  if (!_jobActive()) {
+    return _idleJobResult();
   }
 
   uint8_t instructionsUsed = 0;
-  const bool recoveryJobActive = (_jobKind == JobKind::RECOVERY);
-  ScopedOfflineI2cAllowance recoveryOfflineI2c(_allowOfflineI2c,
-                                               recoveryJobActive);
-
   for (uint8_t guard = 0; guard < 32; ++guard) {
     _jobState = JobState::RUNNING;
     _jobStatus = Status::Error(Err::IN_PROGRESS, "Job in progress");
@@ -772,7 +1267,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (!st.ok()) {
           return _failJob(mapPresenceError(st), instructionsUsed);
         }
-        if (chipId != cmd::CHIP_ID_BME280) {
+        if (!isBme280ChipId(chipId)) {
           return _failJob(
               Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId),
               instructionsUsed);
@@ -783,6 +1278,14 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
 
       case JobPhase::INIT_NVM_START:
         _jobDeadlineMs = nowMs + _config.nvmReadyTimeoutMs;
+        _jobDeadlineActive = true;
+        _jobNvmPolls = 0;
+        _jobPhase = JobPhase::NVM_POLL;
+        break;
+
+      case JobPhase::RESYNC_NVM_START:
+        _jobDeadlineMs = nowMs + _config.nvmReadyTimeoutMs;
+        _jobDeadlineActive = true;
         _jobNvmPolls = 0;
         _jobPhase = JobPhase::NVM_POLL;
         break;
@@ -804,9 +1307,9 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         }
 
         uint8_t status = 0;
-        const Status st = (_jobKind == JobKind::RECOVERY)
-            ? readRegister(cmd::REG_STATUS, status)
-            : _readRegisterRaw(cmd::REG_STATUS, status);
+        const Status st = (_jobKind == JobKind::INIT)
+            ? _readRegisterRaw(cmd::REG_STATUS, status)
+            : readRegs(cmd::REG_STATUS, &status, 1);
         ++instructionsUsed;
         ++_jobNvmPolls;
         if (!st.ok()) {
@@ -817,6 +1320,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           _jobStatus = Status::Error(Err::IN_PROGRESS, "NVM update in progress");
           return _jobResult(instructionsUsed);
         }
+        _jobDeadlineActive = false;
         _jobPhase = JobPhase::CALIB_TP;
         break;
       }
@@ -830,6 +1334,10 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (!st.ok()) {
           return _failJob(st, instructionsUsed);
         }
+        if (_jobKind == JobKind::RESYNC &&
+            !_calibrationTpMatchesCommitted(_jobCalibration)) {
+          _jobCalibrationChanged = true;
+        }
         _jobPhase = JobPhase::CALIB_H;
         break;
       }
@@ -841,6 +1349,10 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         const Status st = _readCalibrationH();
         ++instructionsUsed;
         if (!st.ok()) {
+          if (_jobKind == JobKind::RESYNC &&
+              st.code == Err::CALIBRATION_INVALID) {
+            _jobCalibrationChanged = true;
+          }
           return _failJob(st, instructionsUsed);
         }
         _jobPhase = JobPhase::VALIDATE_CALIBRATION;
@@ -851,9 +1363,14 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         const Status st = _validateCalibrationValues(_jobCalibration.digT1,
                                                      _jobCalibration.digP1);
         if (!st.ok()) {
+          if (_jobKind == JobKind::RESYNC) {
+            _jobCalibrationChanged = true;
+          }
           return _failJob(st, instructionsUsed);
         }
-        _commitCalibration(_jobCalibration);
+        _jobCalibrationChanged = _jobCalibrationChanged ||
+            !_calibrationMatchesCommitted(
+                _jobCalibration, _jobHumidityCalibrationValid);
         _jobPhase = JobPhase::APPLY_CTRL_MEAS_SLEEP;
         break;
       }
@@ -870,7 +1387,17 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         }
         if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
           if (_jobWaitPolls == 0) {
-            _jobDeadlineMs = nowMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+            uint32_t waitEstimateMs = estimateMeasurementTimeMs();
+            if (_jobSettingsStaged) {
+              const uint32_t priorEstimateMs =
+                  ::BME280::estimateMeasurementTimeMs(_jobPriorSettings);
+              if (priorEstimateMs > waitEstimateMs) {
+                waitEstimateMs = priorEstimateMs;
+              }
+            }
+            _jobDeadlineMs = nowMs + waitEstimateMs +
+                             _config.conversionReadyTimeoutMs;
+            _jobDeadlineActive = true;
           }
           if (deadlineReached(nowMs, _jobDeadlineMs) ||
               _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
@@ -884,6 +1411,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           return _jobResult(instructionsUsed);
         }
         _jobWaitPolls = 0;
+        _jobDeadlineActive = false;
         _jobPhase = JobPhase::APPLY_CTRL_MEAS_SLEEP;
         break;
       }
@@ -916,7 +1444,17 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         }
         if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
           if (_jobWaitPolls == 0) {
-            _jobDeadlineMs = nowMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+            uint32_t waitEstimateMs = estimateMeasurementTimeMs();
+            if (_jobSettingsStaged) {
+              const uint32_t priorEstimateMs =
+                  ::BME280::estimateMeasurementTimeMs(_jobPriorSettings);
+              if (priorEstimateMs > waitEstimateMs) {
+                waitEstimateMs = priorEstimateMs;
+              }
+            }
+            _jobDeadlineMs = nowMs + waitEstimateMs +
+                             _config.conversionReadyTimeoutMs;
+            _jobDeadlineActive = true;
           }
           if (deadlineReached(nowMs, _jobDeadlineMs) ||
               _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
@@ -926,12 +1464,14 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           }
           ++_jobWaitPolls;
           _markHardwareConfigDirty(
-              Status::Error(Err::BUSY, "Device still measuring after sleep write"));
+              Status::Error(Err::BUSY,
+                            static_cast<int32_t>(BusyReason::DEVICE_MEASURING)));
           _jobState = JobState::WAITING;
           _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
           return _jobResult(instructionsUsed);
         }
         _jobWaitPolls = 0;
+        _jobDeadlineActive = false;
         _jobPhase = JobPhase::APPLY_CONFIG;
         break;
       }
@@ -982,21 +1522,48 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         break;
       }
 
-      case JobPhase::FORCE_WRITE_CTRL_HUM: {
+      case JobPhase::FORCE_RECONCILE_STATUS: {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
-        const uint8_t value = buildCtrlHum(_config.osrsH);
-        const Status st = writeRegs(cmd::REG_CTRL_HUM, &value, 1);
+        uint8_t status = 0;
+        const Status st = readRegs(cmd::REG_STATUS, &status, 1);
         ++instructionsUsed;
         if (!st.ok()) {
+          _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
           return _failJob(st, instructionsUsed);
         }
-        _jobPhase = JobPhase::FORCE_WRITE_CTRL_MEAS;
+        if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+          _conversionState = ConversionState::IN_PROGRESS;
+          if (!_jobDeadlineActive) {
+            _jobDeadlineMs = nowMs + _config.conversionReadyTimeoutMs;
+            _jobDeadlineActive = true;
+            _jobWaitPolls = 0;
+          }
+          if (deadlineReached(nowMs, _jobDeadlineMs) ||
+              _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
+            _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+            return _failJob(Status::Error(Err::TIMEOUT,
+                                          "Conversion reconcile timeout"),
+                            instructionsUsed);
+          }
+          ++_jobWaitPolls;
+          _jobState = JobState::WAITING;
+          _jobStatus = Status::Error(Err::IN_PROGRESS,
+                                     "Existing conversion in progress");
+          _lastMeasurementStatus = _jobStatus;
+          return _jobResult(instructionsUsed);
+        }
+
+        _conversionState = ConversionState::IDLE;
+        _jobForcedTriggerMayHaveReached = false;
+        _jobDeadlineActive = false;
+        _jobWaitPolls = 0;
+        _jobPhase = JobPhase::FORCE_TRIGGER;
         break;
       }
 
-      case JobPhase::FORCE_WRITE_CTRL_MEAS: {
+      case JobPhase::FORCE_TRIGGER: {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
@@ -1005,14 +1572,24 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         const Status st = writeRegs(cmd::REG_CTRL_MEAS, &value, 1);
         ++instructionsUsed;
         if (!st.ok()) {
+          if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+            _jobForcedTriggerMayHaveReached = true;
+            _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+          } else {
+            _conversionState = ConversionState::IDLE;
+          }
           return _failJob(st, instructionsUsed);
         }
+        _jobForcedTriggerMayHaveReached = true;
+        _conversionState = ConversionState::IN_PROGRESS;
         _measurementRequested = true;
         _measurementReady = false;
         _measurementStartMs = nowMs;
-        _measurementDeadlineMs = nowMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+        _measurementDeadlineMs = nowMs + estimateMeasurementTimeMs() +
+                                 _config.conversionReadyTimeoutMs;
         _measurementStatusPolls = 0;
         _jobDeadlineMs = nowMs + estimateMeasurementTimeMs();
+        _jobDeadlineActive = true;
         _jobPhase = JobPhase::FORCE_WAIT_TIME;
         break;
       }
@@ -1024,7 +1601,8 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           _lastMeasurementStatus = _jobStatus;
           return _jobResult(instructionsUsed);
         }
-        _jobDeadlineMs = nowMs + _config.i2cTimeoutMs;
+        _jobDeadlineMs = nowMs + _config.conversionReadyTimeoutMs;
+        _jobDeadlineActive = true;
         _jobWaitPolls = 0;
         _jobPhase = JobPhase::FORCE_READ_STATUS;
         break;
@@ -1037,11 +1615,14 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         const Status st = readRegs(cmd::REG_STATUS, &status, 1);
         ++instructionsUsed;
         if (!st.ok()) {
+          _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
           return _failJob(st, instructionsUsed);
         }
         if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+          _conversionState = ConversionState::IN_PROGRESS;
           if (deadlineReached(nowMs, _jobDeadlineMs) ||
               _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
+            _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
             return _failJob(Status::Error(Err::TIMEOUT,
                                           "Measurement ready timeout"),
                             instructionsUsed);
@@ -1052,6 +1633,9 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           _lastMeasurementStatus = _jobStatus;
           return _jobResult(instructionsUsed);
         }
+        _conversionState = ConversionState::IDLE;
+        _jobForcedTriggerMayHaveReached = false;
+        _jobDeadlineActive = false;
         _jobWaitPolls = 0;
         _jobPhase = JobPhase::FORCE_READ_DATA;
         break;
@@ -1061,7 +1645,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
-        const Status st = _readRawData();
+        const Status st = _readRawData(_jobRawSample);
         ++instructionsUsed;
         if (!st.ok()) {
           return _failJob(st, instructionsUsed);
@@ -1071,23 +1655,23 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
       }
 
       case JobPhase::FORCE_COMPENSATE: {
-        const Status st = _compensate();
+        const Status st = _compensate(_jobRawSample, _jobCompSample, _jobTFine);
         if (!st.ok()) {
           _measurementRequested = false;
           return _failJob(st, instructionsUsed);
         }
-        _measurementReady = true;
-        _hasSample = true;
-        _sampleTimestampMs = nowMs;
+        _commitSample(_jobRawSample, _jobCompSample, _jobTFine, nowMs);
         _measurementRequested = false;
         _measurementDeadlineMs = 0;
         _measurementStatusPolls = 0;
         _lastMeasurementStatus = Status::Ok();
+        _conversionState = ConversionState::IDLE;
+        _jobForcedTriggerMayHaveReached = false;
         _jobPhase = JobPhase::COMPLETE;
         break;
       }
 
-      case JobPhase::RECOVERY_WRITE_RESET: {
+      case JobPhase::SOFT_RESET_WRITE: {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
@@ -1095,66 +1679,90 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         const Status st = writeRegs(cmd::REG_RESET, &value, 1);
         ++instructionsUsed;
         _trackJobConfigWriteResult(st);
+        if (st.ok() || mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+          _jobResetMayHaveReached = true;
+          _calibrationState = CalibrationState::INVALID;
+          _humidityCalibrationValid = false;
+        }
         if (!st.ok()) {
           return _failJob(st, instructionsUsed);
         }
-        _jobPhase = JobPhase::RECOVERY_READ_CHIP_ID;
+        _jobPhase = JobPhase::RESYNC_READ_CHIP_ID;
         break;
       }
 
-      case JobPhase::RECOVERY_READ_CHIP_ID: {
+      case JobPhase::RESYNC_READ_CHIP_ID: {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
         uint8_t chipId = 0;
-        const Status st = readRegister(cmd::REG_CHIP_ID, chipId);
+        const Status st = readRegs(cmd::REG_CHIP_ID, &chipId, 1);
         ++instructionsUsed;
         if (!st.ok()) {
           return _failJob(st, instructionsUsed);
         }
-        if (chipId != cmd::CHIP_ID_BME280) {
+        if (!isBme280ChipId(chipId)) {
+          if (_jobKind == JobKind::RESYNC) {
+            _jobDeviceIdentityMismatch = true;
+          }
           return _failJob(
               Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId),
               instructionsUsed);
         }
-        _jobPhase = JobPhase::INIT_NVM_START;
+        _jobPhase = JobPhase::RESYNC_NVM_START;
         break;
       }
 
       case JobPhase::COMPLETE:
         if (_jobKind == JobKind::INIT) {
+          _commitCalibration(_jobCalibration, _jobHumidityCalibrationValid);
           _clearHardwareConfigDirty();
           _initialized = true;
           _driverState = DriverState::READY;
         } else if (_jobKind == JobKind::APPLY_CONFIG) {
           _clearHardwareConfigDirty();
-        } else if (_jobKind == JobKind::RECOVERY) {
+          if (_config.mode == Mode::FORCED) {
+            _conversionState = ConversionState::IDLE;
+          }
+        } else if (_jobKind == JobKind::RESYNC ||
+                   _jobKind == JobKind::SOFT_RESET) {
+          _commitCalibration(_jobCalibration, _jobHumidityCalibrationValid);
           _clearHardwareConfigDirty();
-          _invalidateSampleCache();
           _driverState = DriverState::READY;
           _consecutiveFailures = 0;
+          _conversionState = ConversionState::IDLE;
         }
         return _completeJob(instructionsUsed);
 
       case JobPhase::NONE:
       default:
-        return _failJob(Status::Error(Err::BUSY, "Invalid job state"),
+        return _failJob(Status::Error(
+                            Err::BUSY,
+                            static_cast<int32_t>(BusyReason::INVALID_JOB_STATE)),
                         instructionsUsed);
     }
   }
 
-  return _failJob(Status::Error(Err::BUSY, "Job state machine stalled"),
+  return _failJob(Status::Error(
+                      Err::BUSY,
+                      static_cast<int32_t>(BusyReason::JOB_STATE_MACHINE_STALLED)),
                   instructionsUsed);
 }
 
 Status BME280::requestMeasurement() {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     Status st = Status::Error(Err::NOT_INITIALIZED, "begin() not called");
     _lastMeasurementStatus = st;
     return st;
   }
-  if (_driverState == DriverState::OFFLINE) {
-    Status st = Status::Error(Err::BUSY, "Driver is offline; call recover()");
+  if (_configSyncState != ConfigSyncState::SYNCHRONIZED ||
+      _calibrationState != CalibrationState::VALID) {
+    Status st = Status::Error(Err::RESYNC_REQUIRED,
+                              "Device state requires resynchronization");
     _lastMeasurementStatus = st;
     return st;
   }
@@ -1169,7 +1777,8 @@ Status BME280::requestMeasurement() {
     return st;
   }
   if (_measurementRequested && !_measurementReady) {
-    Status st = Status::Error(Err::BUSY, "Measurement in progress");
+    Status st = Status::Error(
+        Err::BUSY, static_cast<int32_t>(BusyReason::MEASUREMENT_ACTIVE));
     _lastMeasurementStatus = st;
     return st;
   }
@@ -1177,9 +1786,14 @@ Status BME280::requestMeasurement() {
   _measurementReady = false;
 
   if (_config.mode == Mode::FORCED) {
+    const bool conversionMayBeActive =
+        _conversionState != ConversionState::IDLE;
     bool measuring = false;
     Status st = isMeasuring(measuring);
     if (!st.ok()) {
+      if (conversionMayBeActive) {
+        _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+      }
       _lastMeasurementStatus = st;
       return st;
     }
@@ -1187,26 +1801,34 @@ Status BME280::requestMeasurement() {
       // A conversion can still be running after config writes in forced mode.
       // Track completion instead of forcing the caller to re-issue the request.
       _measurementRequested = true;
-      _measurementStartMs = _nowMs();
-      _measurementDeadlineMs =
-          _measurementStartMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+      const uint32_t nowMs = _nowMs();
+      _measurementStartMs = nowMs - estimateMeasurementTimeMs();
+      _measurementDeadlineMs = nowMs + _config.conversionReadyTimeoutMs;
       _measurementStatusPolls = 0;
+      _conversionState = ConversionState::IN_PROGRESS;
       st = Status::Error(Err::IN_PROGRESS, "Measurement already in progress");
       _lastMeasurementStatus = st;
       return st;
     }
 
+    _conversionState = ConversionState::IDLE;
+
     const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::FORCED);
     st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
     if (!st.ok()) {
+      if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+        _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+      }
       _lastMeasurementStatus = st;
       return st;
     }
 
     _measurementRequested = true;
+    _conversionState = ConversionState::IN_PROGRESS;
     _measurementStartMs = _nowMs();
     _measurementDeadlineMs =
-        _measurementStartMs + estimateMeasurementTimeMs() + _config.i2cTimeoutMs;
+        _measurementStartMs + estimateMeasurementTimeMs() +
+        _config.conversionReadyTimeoutMs;
     _measurementStatusPolls = 0;
 
     st = Status::Error(Err::IN_PROGRESS, "Measurement started");
@@ -1217,7 +1839,8 @@ Status BME280::requestMeasurement() {
   _measurementRequested = true;
   _measurementStartMs = _nowMs();
   _measurementDeadlineMs =
-      _measurementStartMs + estimateNormalCycleMs() + _config.i2cTimeoutMs;
+      _measurementStartMs + estimateNormalCycleMs() +
+      _config.conversionReadyTimeoutMs;
   _measurementStatusPolls = 0;
   Status st = Status::Error(Err::IN_PROGRESS, "Measurement scheduled");
   _lastMeasurementStatus = st;
@@ -1267,9 +1890,30 @@ Status BME280::getCompensatedSample(CompensatedSample& out) const {
   return Status::Ok();
 }
 
+Status BME280::getSampleEnvelope(SampleEnvelope& out) const {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (!_hasSample) {
+    return Status::Error(Err::MEASUREMENT_NOT_READY, "Measurement not ready");
+  }
+
+  out.rawSample = _rawSample;
+  out.compensatedSample = _compSample;
+  out.tFine = _tFine;
+  out.timestampMs = _sampleTimestampMs;
+  out.sampleSequence = _sampleSequence;
+  out.configGeneration = _sampleConfigGeneration;
+  return Status::Ok();
+}
+
 Status BME280::getCalibration(Calibration& out) const {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_calibrationState != CalibrationState::VALID) {
+    return Status::Error(Err::RESYNC_REQUIRED,
+                         "Calibration must be reloaded");
   }
 
   out.digT1 = _digT1;
@@ -1296,7 +1940,32 @@ Status BME280::getCalibration(Calibration& out) const {
   return Status::Ok();
 }
 
+Status BME280::invalidateDeviceState() {
+  const Status admission = _jobStartAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
+
+  const Status invalid = Status::Error(
+      Err::RESYNC_REQUIRED, "Device state invalidated by owner");
+  _calibrationState = CalibrationState::INVALID;
+  _humidityCalibrationValid = false;
+  _markHardwareConfigDirty(invalid);
+  _measurementRequested = false;
+  _measurementReady = false;
+  _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+  _measurementStartMs = 0;
+  _measurementDeadlineMs = 0;
+  _measurementStatusPolls = 0;
+  _lastMeasurementStatus = invalid;
+  return Status::Ok();
+}
+
 Status BME280::readCalibrationRaw(CalibrationRaw& out) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1306,15 +1975,14 @@ Status BME280::readCalibrationRaw(CalibrationRaw& out) {
     return st;
   }
 
-  st = readRegs(cmd::REG_CALIB_H1, &out.h1, 1);
-  if (!st.ok()) {
-    return st;
-  }
-
   return readRegs(cmd::REG_CALIB_H_START, out.h, sizeof(out.h));
 }
 
 Status BME280::setMode(Mode mode) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1337,6 +2005,8 @@ Status BME280::setMode(Mode mode) {
   }
 
   _config.mode = mode;
+  _conversionState = ConversionState::IDLE;
+  _advanceConfigGeneration();
   _invalidateSampleCache();
   if (mode == Mode::SLEEP) {
     _measurementRequested = false;
@@ -1355,6 +2025,10 @@ Status BME280::getMode(Mode& out) const {
 }
 
 Status BME280::setOversamplingT(Oversampling osrs) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1375,11 +2049,16 @@ Status BME280::setOversamplingT(Oversampling osrs) {
     return st;
   }
   _config.osrsT = osrs;
+  _advanceConfigGeneration();
   _invalidateSampleCache();
   return Status::Ok();
 }
 
 Status BME280::setOversamplingP(Oversampling osrs) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1400,11 +2079,16 @@ Status BME280::setOversamplingP(Oversampling osrs) {
     return st;
   }
   _config.osrsP = osrs;
+  _advanceConfigGeneration();
   _invalidateSampleCache();
   return Status::Ok();
 }
 
 Status BME280::setOversamplingH(Oversampling osrs) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1413,6 +2097,10 @@ Status BME280::setOversamplingH(Oversampling osrs) {
   }
   if (!isValidMeasurementSelection(_config.osrsT, _config.osrsP, osrs)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid oversampling combination");
+  }
+  if (osrs != Oversampling::SKIP && !_humidityCalibrationValid) {
+    return Status::Error(Err::CALIBRATION_INVALID,
+                         "Humidity calibration block invalid");
   }
 
   const uint8_t ctrlHum = buildCtrlHum(osrs);
@@ -1428,18 +2116,24 @@ Status BME280::setOversamplingH(Oversampling osrs) {
                                          registerModeForConfig(_config.mode));
   st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
   if (!st.ok()) {
-    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
-      _markHardwareConfigDirty(st);
-    }
+    // ctrl_hum already reached the device. Even a definite address NACK on
+    // this second transaction leaves the cached setting out of sync with the
+    // register image and requires a full verified resynchronization.
+    _markHardwareConfigDirty(st);
     return st;
   }
 
   _config.osrsH = osrs;
+  _advanceConfigGeneration();
   _invalidateSampleCache();
   return Status::Ok();
 }
 
 Status BME280::setFilter(Filter filter) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1488,11 +2182,16 @@ Status BME280::setFilter(Filter filter) {
   }
 
   _config.filter = filter;
+  _advanceConfigGeneration();
   _invalidateSampleCache();
   return Status::Ok();
 }
 
 Status BME280::setStandby(Standby standby) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1541,6 +2240,7 @@ Status BME280::setStandby(Standby standby) {
   }
 
   _config.standby = standby;
+  _advanceConfigGeneration();
   _invalidateSampleCache();
   return Status::Ok();
 }
@@ -1586,24 +2286,24 @@ Status BME280::getStandby(Standby& out) const {
 }
 
 Status BME280::softReset() {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  const bool startedOffline = (_driverState == DriverState::OFFLINE);
-  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
   Status result = [&]() -> Status {
-    _measurementRequested = false;
-    _measurementReady = false;
-    _lastMeasurementStatus = Status::Ok();
-    _hasSample = false;
-    _measurementStartMs = 0;
-    _measurementDeadlineMs = 0;
-    _measurementStatusPolls = 0;
-    _sampleTimestampMs = 0;
+    _invalidateSampleCache();
 
     const uint8_t resetValue = cmd::RESET_VALUE;
     Status st = writeRegs(cmd::REG_RESET, &resetValue, 1);
+    if (st.ok() || mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+      _calibrationState = CalibrationState::INVALID;
+      _humidityCalibrationValid = false;
+      _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+    }
     if (!st.ok()) {
       if (st.code != Err::I2C_NACK_ADDR && st.code != Err::DEVICE_NOT_FOUND) {
         _markHardwareConfigDirty(st);
@@ -1617,15 +2317,15 @@ Status BME280::softReset() {
       return isTransportFailure(st) ? st : _recordFailure(st);
     }
 
-    st = _readCalibration();
+    Calibration calibrationCandidate;
+    bool humidityCalibrationValid = false;
+    bool calibrationEvidenceChanged = false;
+    st = _readCalibrationCandidate(calibrationCandidate,
+                                   humidityCalibrationValid,
+                                   calibrationEvidenceChanged);
     if (!st.ok()) {
       _markHardwareConfigDirty(st);
       return st.code == Err::CALIBRATION_INVALID ? _recordFailure(st) : st;
-    }
-    st = _validateCalibration();
-    if (!st.ok()) {
-      _markHardwareConfigDirty(st);
-      return _recordFailure(st);
     }
     st = _applyConfig();
     if (!st.ok()) {
@@ -1635,15 +2335,18 @@ Status BME280::softReset() {
       }
       return st;
     }
+    _commitCalibration(calibrationCandidate, humidityCalibrationValid);
+    _conversionState = ConversionState::IDLE;
     return Status::Ok();
   }();
-  if (startedOffline && !result.ok() && !result.inProgress()) {
-    _reassertOfflineLatch();
-  }
   return result;
 }
 
 Status BME280::readChipId(uint8_t& id) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1651,6 +2354,10 @@ Status BME280::readChipId(uint8_t& id) {
 }
 
 Status BME280::readStatus(uint8_t& status) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1658,6 +2365,10 @@ Status BME280::readStatus(uint8_t& status) {
 }
 
 Status BME280::readCtrlHum(uint8_t& value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1665,6 +2376,10 @@ Status BME280::readCtrlHum(uint8_t& value) {
 }
 
 Status BME280::readCtrlMeas(uint8_t& value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1672,6 +2387,10 @@ Status BME280::readCtrlMeas(uint8_t& value) {
 }
 
 Status BME280::readConfig(uint8_t& value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1679,6 +2398,10 @@ Status BME280::readConfig(uint8_t& value) {
 }
 
 Status BME280::isMeasuring(bool& measuring) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1693,24 +2416,12 @@ Status BME280::isMeasuring(bool& measuring) {
   return Status::Ok();
 }
 
+uint32_t BME280::estimateMeasurementTimeUs() const {
+  return ::BME280::estimateMeasurementTimeUs(sensorSettings());
+}
+
 uint32_t BME280::estimateMeasurementTimeMs() const {
-  const uint8_t t_osrs = osrsMultiplier(_config.osrsT);
-  const uint8_t p_osrs = osrsMultiplier(_config.osrsP);
-  const uint8_t h_osrs = osrsMultiplier(_config.osrsH);
-
-  uint32_t timeUs = 1250;
-  if (t_osrs > 0) {
-    timeUs += 2300U * t_osrs;
-  }
-  if (p_osrs > 0) {
-    timeUs += 2300U * p_osrs + 575U;
-  }
-  if (h_osrs > 0) {
-    timeUs += 2300U * h_osrs + 575U;
-  }
-  timeUs += MEASUREMENT_MARGIN_US;
-
-  return (timeUs + 999U) / 1000U;
+  return ::BME280::estimateMeasurementTimeMs(sensorSettings());
 }
 
 uint32_t BME280::getStandbyTimeMs() const {
@@ -1739,8 +2450,10 @@ Status BME280::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
   if (_config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C write-read not set");
   }
-  return _config.i2cWriteRead(_config.i2cAddress, txBuf, txLen, rxBuf, rxLen,
-                              _config.i2cTimeoutMs, _config.i2cUser);
+  const TransportResult result = _config.i2cWriteRead(
+      _config.i2cAddress, txBuf, txLen, rxBuf, rxLen,
+      _config.i2cTimeoutMs, _config.i2cUser);
+  return mapTransportResult(result, txLen, rxLen);
 }
 
 Status BME280::_i2cWriteRaw(const uint8_t* buf, size_t len) {
@@ -1750,8 +2463,9 @@ Status BME280::_i2cWriteRaw(const uint8_t* buf, size_t len) {
   if (_config.i2cWrite == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C write not set");
   }
-  return _config.i2cWrite(_config.i2cAddress, buf, len, _config.i2cTimeoutMs,
-                          _config.i2cUser);
+  const TransportResult result = _config.i2cWrite(
+      _config.i2cAddress, buf, len, _config.i2cTimeoutMs, _config.i2cUser);
+  return mapTransportResult(result, len, 0);
 }
 
 Status BME280::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
@@ -1759,10 +2473,6 @@ Status BME280::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
   if (txBuf == nullptr || txLen == 0 || (rxLen > 0 && rxBuf == nullptr)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
-  if (!_allowOfflineI2c && _initialized && _driverState == DriverState::OFFLINE) {
-    return _offlineStatus();
-  }
-
   Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
     return st;
@@ -1774,19 +2484,11 @@ Status BME280::_i2cWriteTracked(const uint8_t* buf, size_t len) {
   if (buf == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
-  if (!_allowOfflineI2c && _initialized && _driverState == DriverState::OFFLINE) {
-    return _offlineStatus();
-  }
-
   Status st = _i2cWriteRaw(buf, len);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
     return st;
   }
   return _updateHealth(st);
-}
-
-Status BME280::_offlineStatus() const {
-  return Status::Error(Err::BUSY, "Driver is offline; call recover()");
 }
 
 Status BME280::readRegs(uint8_t startReg, uint8_t* buf, size_t len) {
@@ -1814,6 +2516,10 @@ Status BME280::writeRegs(uint8_t startReg, const uint8_t* buf, size_t len) {
 }
 
 Status BME280::readRegisters(uint8_t startReg, uint8_t* buf, size_t len) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1821,6 +2527,10 @@ Status BME280::readRegisters(uint8_t startReg, uint8_t* buf, size_t len) {
 }
 
 Status BME280::writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1839,6 +2549,10 @@ Status BME280::writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len) 
 }
 
 Status BME280::readRegister(uint8_t reg, uint8_t& value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1846,6 +2560,10 @@ Status BME280::readRegister(uint8_t reg, uint8_t& value) {
 }
 
 Status BME280::writeRegister(uint8_t reg, uint8_t value) {
+  const Status admission = _hardwareOperationAdmission();
+  if (!admission.ok()) {
+    return admission;
+  }
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
@@ -1866,16 +2584,15 @@ Status BME280::_updateHealth(const Status& st) {
   }
 
   const uint32_t now = _nowMs();
+  const bool timeValid = _timeValid();
   const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
   const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
 
   if (st.ok()) {
     _lastOkMs = now;
+    _lastOkTimeValid = timeValid;
     if (_totalSuccess < maxU32) {
       _totalSuccess++;
-    }
-    if (_jobKind == JobKind::RECOVERY && _jobStartedOffline && _jobActive()) {
-      return st;
     }
     _consecutiveFailures = 0;
 
@@ -1885,6 +2602,7 @@ Status BME280::_updateHealth(const Status& st) {
 
   _lastError = st;
   _lastErrorMs = now;
+  _lastErrorTimeValid = timeValid;
   if (_totalFailures < maxU32) {
     _totalFailures++;
   }
@@ -1912,11 +2630,13 @@ Status BME280::_recordFailure(const Status& st) {
   }
 
   const uint32_t now = _nowMs();
+  const bool timeValid = _timeValid();
   const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
   const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
 
   _lastError = st;
   _lastErrorMs = now;
+  _lastErrorTimeValid = timeValid;
   if (_totalFailures < maxU32) {
     _totalFailures++;
   }
@@ -1935,27 +2655,20 @@ Status BME280::_recordFailure(const Status& st) {
   return st;
 }
 
-void BME280::_reassertOfflineLatch() {
-  _driverState = DriverState::OFFLINE;
-  const uint8_t threshold = _config.offlineThreshold == 0 ? 1 : _config.offlineThreshold;
-  if (_consecutiveFailures < threshold) {
-    _consecutiveFailures = threshold;
-  }
-}
-
 void BME280::_markHardwareConfigDirty(const Status& st) {
   if (st.ok() || st.inProgress()) {
     return;
   }
-  if (!_hardwareConfigDirty) {
+  if (_hardwareConfigDirtyError.ok()) {
     _hardwareConfigDirtyError = st;
   }
-  _hardwareConfigDirty = true;
+  _configSyncState = ConfigSyncState::RESYNC_REQUIRED;
 }
 
 void BME280::_clearHardwareConfigDirty() {
-  _hardwareConfigDirty = false;
+  _configSyncState = ConfigSyncState::SYNCHRONIZED;
   _hardwareConfigDirtyError = Status::Ok();
+  _advanceConfigGeneration();
 }
 
 Status BME280::_ensureConfigWriteReady() {
@@ -1967,7 +2680,8 @@ Status BME280::_ensureConfigWriteReady() {
     return st;
   }
   if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
-    return Status::Error(Err::BUSY, "Device measuring; config write deferred");
+    return Status::Error(
+        Err::BUSY, static_cast<int32_t>(BusyReason::DEVICE_MEASURING));
   }
   return Status::Ok();
 }
@@ -1989,6 +2703,7 @@ Status BME280::_applyConfig() {
     _markHardwareConfigDirty(st);
     return st;
   }
+  _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
 
   st = _ensureConfigWriteReady();
   if (!st.ok()) {
@@ -2019,6 +2734,9 @@ Status BME280::_applyConfig() {
   }
 
   _clearHardwareConfigDirty();
+  if (_config.mode == Mode::FORCED) {
+    _conversionState = ConversionState::IDLE;
+  }
   return Status::Ok();
 }
 
@@ -2040,8 +2758,8 @@ Status BME280::_waitForNvmReady(bool tracked) {
                          static_cast<int32_t>(_config.nvmReadyTimeoutMs));
   }
 
-  return Status::Error(Err::BUSY, "NVM update in progress",
-                       static_cast<int32_t>(_config.nvmReadyTimeoutMs));
+  return Status::Error(
+      Err::BUSY, static_cast<int32_t>(BusyReason::NVM_UPDATE));
 }
 
 Status BME280::_readCalibrationTp() {
@@ -2076,6 +2794,14 @@ Status BME280::_readCalibrationH() {
     return st;
   }
 
+  _jobHumidityCalibrationValid =
+      humidityCalibrationBlockValid(calibH, sizeof(calibH));
+  if (_config.osrsH != Oversampling::SKIP &&
+      !_jobHumidityCalibrationValid) {
+    return Status::Error(Err::CALIBRATION_INVALID,
+                         "Humidity calibration block erased");
+  }
+
   _jobCalibration.digH2 = static_cast<int16_t>((calibH[1] << 8) | calibH[0]);
   _jobCalibration.digH3 = calibH[2];
 
@@ -2088,32 +2814,31 @@ Status BME280::_readCalibrationH() {
   return Status::Ok();
 }
 
-Status BME280::_readCalibration() {
+Status BME280::_readCalibrationCandidate(
+    Calibration& calibration, bool& humidityCalibrationValid,
+    bool& calibrationEvidenceChanged) {
+  calibrationEvidenceChanged = false;
   uint8_t calibTP[cmd::REG_CALIB_TP_LEN] = {};
   Status st = readRegs(cmd::REG_CALIB_TP_START, calibTP, sizeof(calibTP));
   if (!st.ok()) {
     return st;
   }
 
-  const uint16_t digT1 = static_cast<uint16_t>((calibTP[1] << 8) | calibTP[0]);
-  const int16_t digT2 = static_cast<int16_t>((calibTP[3] << 8) | calibTP[2]);
-  const int16_t digT3 = static_cast<int16_t>((calibTP[5] << 8) | calibTP[4]);
-
-  const uint16_t digP1 = static_cast<uint16_t>((calibTP[7] << 8) | calibTP[6]);
-  const int16_t digP2 = static_cast<int16_t>((calibTP[9] << 8) | calibTP[8]);
-  const int16_t digP3 = static_cast<int16_t>((calibTP[11] << 8) | calibTP[10]);
-  const int16_t digP4 = static_cast<int16_t>((calibTP[13] << 8) | calibTP[12]);
-  const int16_t digP5 = static_cast<int16_t>((calibTP[15] << 8) | calibTP[14]);
-  const int16_t digP6 = static_cast<int16_t>((calibTP[17] << 8) | calibTP[16]);
-  const int16_t digP7 = static_cast<int16_t>((calibTP[19] << 8) | calibTP[18]);
-  const int16_t digP8 = static_cast<int16_t>((calibTP[21] << 8) | calibTP[20]);
-  const int16_t digP9 = static_cast<int16_t>((calibTP[23] << 8) | calibTP[22]);
-
-  uint8_t h1 = 0;
-  st = readRegs(cmd::REG_CALIB_H1, &h1, 1);
-  if (!st.ok()) {
-    return st;
-  }
+  Calibration candidate;
+  candidate.digT1 = static_cast<uint16_t>((calibTP[1] << 8) | calibTP[0]);
+  candidate.digT2 = static_cast<int16_t>((calibTP[3] << 8) | calibTP[2]);
+  candidate.digT3 = static_cast<int16_t>((calibTP[5] << 8) | calibTP[4]);
+  candidate.digP1 = static_cast<uint16_t>((calibTP[7] << 8) | calibTP[6]);
+  candidate.digP2 = static_cast<int16_t>((calibTP[9] << 8) | calibTP[8]);
+  candidate.digP3 = static_cast<int16_t>((calibTP[11] << 8) | calibTP[10]);
+  candidate.digP4 = static_cast<int16_t>((calibTP[13] << 8) | calibTP[12]);
+  candidate.digP5 = static_cast<int16_t>((calibTP[15] << 8) | calibTP[14]);
+  candidate.digP6 = static_cast<int16_t>((calibTP[17] << 8) | calibTP[16]);
+  candidate.digP7 = static_cast<int16_t>((calibTP[19] << 8) | calibTP[18]);
+  candidate.digP8 = static_cast<int16_t>((calibTP[21] << 8) | calibTP[20]);
+  candidate.digP9 = static_cast<int16_t>((calibTP[23] << 8) | calibTP[22]);
+  candidate.digH1 = calibTP[cmd::REG_CALIB_TP_LEN - 1];
+  calibrationEvidenceChanged = !_calibrationTpMatchesCommitted(candidate);
 
   uint8_t calibH[cmd::REG_CALIB_H_LEN] = {};
   st = readRegs(cmd::REG_CALIB_H_START, calibH, sizeof(calibH));
@@ -2121,41 +2846,33 @@ Status BME280::_readCalibration() {
     return st;
   }
 
-  const int16_t digH2 = static_cast<int16_t>((calibH[1] << 8) | calibH[0]);
-  const uint8_t digH3 = calibH[2];
-
+  candidate.digH2 = static_cast<int16_t>((calibH[1] << 8) | calibH[0]);
+  candidate.digH3 = calibH[2];
   int16_t h4 = static_cast<int16_t>((calibH[3] << 4) | (calibH[4] & 0x0F));
   int16_t h5 = static_cast<int16_t>((calibH[5] << 4) | (calibH[4] >> 4));
-  const int16_t digH4 = signExtend12(h4);
-  const int16_t digH5 = signExtend12(h5);
-  const int8_t digH6 = static_cast<int8_t>(calibH[6]);
+  candidate.digH4 = signExtend12(h4);
+  candidate.digH5 = signExtend12(h5);
+  candidate.digH6 = static_cast<int8_t>(calibH[6]);
 
-  if (digT1 == 0 || digT1 == 0xFFFF) {
-    return Status::Error(Err::CALIBRATION_INVALID, "Invalid temperature calibration");
+  st = _validateCalibrationValues(candidate.digT1, candidate.digP1);
+  if (!st.ok()) {
+    calibrationEvidenceChanged = true;
+    return st;
   }
-  if (digP1 == 0 || digP1 == 0xFFFF) {
-    return Status::Error(Err::CALIBRATION_INVALID, "Invalid pressure calibration");
+  const bool candidateHumidityCalibrationValid =
+      humidityCalibrationBlockValid(calibH, sizeof(calibH));
+  if (_config.osrsH != Oversampling::SKIP &&
+      !candidateHumidityCalibrationValid) {
+    calibrationEvidenceChanged = true;
+    return Status::Error(Err::CALIBRATION_INVALID,
+                         "Humidity calibration block erased");
   }
 
-  _digT1 = digT1;
-  _digT2 = digT2;
-  _digT3 = digT3;
-  _digP1 = digP1;
-  _digP2 = digP2;
-  _digP3 = digP3;
-  _digP4 = digP4;
-  _digP5 = digP5;
-  _digP6 = digP6;
-  _digP7 = digP7;
-  _digP8 = digP8;
-  _digP9 = digP9;
-  _digH1 = h1;
-  _digH2 = digH2;
-  _digH3 = digH3;
-  _digH4 = digH4;
-  _digH5 = digH5;
-  _digH6 = digH6;
-
+  calibrationEvidenceChanged = calibrationEvidenceChanged ||
+      !_calibrationMatchesCommitted(candidate,
+                                    candidateHumidityCalibrationValid);
+  calibration = candidate;
+  humidityCalibrationValid = candidateHumidityCalibrationValid;
   return Status::Ok();
 }
 
@@ -2170,7 +2887,8 @@ Status BME280::_validateCalibrationValues(uint16_t digT1, uint16_t digP1) const 
   return Status::Ok();
 }
 
-void BME280::_commitCalibration(const Calibration& calibration) {
+void BME280::_commitCalibration(const Calibration& calibration,
+                                bool humidityCalibrationValid) {
   _digT1 = calibration.digT1;
   _digT2 = calibration.digT2;
   _digT3 = calibration.digT3;
@@ -2189,51 +2907,94 @@ void BME280::_commitCalibration(const Calibration& calibration) {
   _digH4 = calibration.digH4;
   _digH5 = calibration.digH5;
   _digH6 = calibration.digH6;
+  _humidityCalibrationValid = humidityCalibrationValid;
+  _calibrationState = CalibrationState::VALID;
 }
 
-Status BME280::_validateCalibration() {
-  return _validateCalibrationValues(_digT1, _digP1);
+bool BME280::_calibrationMatchesCommitted(
+    const Calibration& calibration, bool humidityCalibrationValid) const {
+  return _calibrationState == CalibrationState::VALID &&
+         _humidityCalibrationValid == humidityCalibrationValid &&
+         _digT1 == calibration.digT1 &&
+         _digT2 == calibration.digT2 &&
+         _digT3 == calibration.digT3 &&
+         _digP1 == calibration.digP1 &&
+         _digP2 == calibration.digP2 &&
+         _digP3 == calibration.digP3 &&
+         _digP4 == calibration.digP4 &&
+         _digP5 == calibration.digP5 &&
+         _digP6 == calibration.digP6 &&
+         _digP7 == calibration.digP7 &&
+         _digP8 == calibration.digP8 &&
+         _digP9 == calibration.digP9 &&
+         _digH1 == calibration.digH1 &&
+         _digH2 == calibration.digH2 &&
+         _digH3 == calibration.digH3 &&
+         _digH4 == calibration.digH4 &&
+         _digH5 == calibration.digH5 &&
+         _digH6 == calibration.digH6;
 }
 
-Status BME280::_readRawData() {
+bool BME280::_calibrationTpMatchesCommitted(
+    const Calibration& calibration) const {
+  return _calibrationState == CalibrationState::VALID &&
+         _digT1 == calibration.digT1 &&
+         _digT2 == calibration.digT2 &&
+         _digT3 == calibration.digT3 &&
+         _digP1 == calibration.digP1 &&
+         _digP2 == calibration.digP2 &&
+         _digP3 == calibration.digP3 &&
+         _digP4 == calibration.digP4 &&
+         _digP5 == calibration.digP5 &&
+         _digP6 == calibration.digP6 &&
+         _digP7 == calibration.digP7 &&
+         _digP8 == calibration.digP8 &&
+         _digP9 == calibration.digP9 &&
+         _digH1 == calibration.digH1;
+}
+
+Status BME280::_readRawData(RawSample& out) {
   uint8_t data[cmd::DATA_LEN] = {};
   Status st = readRegs(cmd::REG_DATA_START, data, sizeof(data));
   if (!st.ok()) {
     return st;
   }
 
-  _rawSample = RawSample{};
-  _rawSample.adcP = (static_cast<int32_t>(data[0]) << 12) |
-                    (static_cast<int32_t>(data[1]) << 4) |
-                    (static_cast<int32_t>(data[2]) >> 4);
-  _rawSample.adcT = (static_cast<int32_t>(data[3]) << 12) |
-                    (static_cast<int32_t>(data[4]) << 4) |
-                    (static_cast<int32_t>(data[5]) >> 4);
-  _rawSample.adcH = (static_cast<int32_t>(data[6]) << 8) |
-                    static_cast<int32_t>(data[7]);
-  _rawSample.pressureValid = (_config.osrsP != Oversampling::SKIP) &&
-                             (_rawSample.adcP != cmd::RAW_PRESSURE_SKIPPED);
-  _rawSample.temperatureValid = (_config.osrsT != Oversampling::SKIP) &&
-                                (_rawSample.adcT != cmd::RAW_TEMPERATURE_SKIPPED);
-  _rawSample.humidityValid = (_config.osrsH != Oversampling::SKIP) &&
-                             (_rawSample.adcH != cmd::RAW_HUMIDITY_SKIPPED);
+  RawSample candidate{};
+  candidate.adcP = (static_cast<int32_t>(data[0]) << 12) |
+                   (static_cast<int32_t>(data[1]) << 4) |
+                   (static_cast<int32_t>(data[2]) >> 4);
+  candidate.adcT = (static_cast<int32_t>(data[3]) << 12) |
+                   (static_cast<int32_t>(data[4]) << 4) |
+                   (static_cast<int32_t>(data[5]) >> 4);
+  candidate.adcH = (static_cast<int32_t>(data[6]) << 8) |
+                   static_cast<int32_t>(data[7]);
+  candidate.pressureValid = (_config.osrsP != Oversampling::SKIP) &&
+                            (candidate.adcP != cmd::RAW_PRESSURE_SKIPPED);
+  candidate.temperatureValid = (_config.osrsT != Oversampling::SKIP) &&
+                               (candidate.adcT != cmd::RAW_TEMPERATURE_SKIPPED);
+  candidate.humidityValid = (_config.osrsH != Oversampling::SKIP) &&
+                            (candidate.adcH != cmd::RAW_HUMIDITY_SKIPPED);
 
+  out = candidate;
   return Status::Ok();
 }
 
-Status BME280::_compensate() {
-  _compSample = CompensatedSample{};
+Status BME280::_compensate(const RawSample& raw,
+                           CompensatedSample& compensated,
+                           int32_t& tFine) const {
+  CompensatedSample candidate{};
+  int32_t candidateTFine = 0;
   const bool pressSkipped = (_config.osrsP == Oversampling::SKIP);
   const bool humSkipped = (_config.osrsH == Oversampling::SKIP);
 
   // Temperature compensation is required for pressure and humidity.
-  if (!_rawSample.temperatureValid) {
-    _tFine = 0;
+  if (!raw.temperatureValid) {
     return Status::Error(Err::COMPENSATION_ERROR, "Temperature sample skipped");
   }
 
   // --- Temperature (Bosch int32 reference) ---
-  const int32_t adcT = _rawSample.adcT;
+  const int32_t adcT = raw.adcT;
 
   const int64_t tDelta1 = (static_cast<int64_t>(adcT) >> 3) -
                           (static_cast<int64_t>(_digT1) << 1);
@@ -2245,89 +3006,220 @@ Status BME280::_compensate() {
   const int64_t tFine64 = tVar1 + tVar2;
   if (tFine64 < static_cast<int64_t>(std::numeric_limits<int32_t>::min()) ||
       tFine64 > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
-    _tFine = 0;
     return Status::Error(Err::COMPENSATION_ERROR, "Temperature compensation overflow");
   }
   const int64_t tempC_x100 = (tFine64 * 5 + 128) >> 8;
   if (tempC_x100 < static_cast<int64_t>(std::numeric_limits<int32_t>::min()) ||
       tempC_x100 > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
-    _tFine = 0;
     return Status::Error(Err::COMPENSATION_ERROR, "Temperature output overflow");
   }
 
-  _tFine = static_cast<int32_t>(tFine64);
-  _compSample.tempC_x100 = static_cast<int32_t>(tempC_x100);
-  _compSample.temperatureValid = true;
+  candidateTFine = static_cast<int32_t>(tFine64);
+  candidate.tempC_x100 = static_cast<int32_t>(tempC_x100);
+  candidate.temperatureValid = true;
 
   // --- Pressure (Bosch int64 reference) ---
   if (pressSkipped) {
-    _compSample.pressurePa = 0;
-    _compSample.pressureValid = false;
+    candidate.pressurePa = 0;
+    candidate.pressureValid = false;
   } else {
-    if (!_rawSample.pressureValid) {
+    if (!raw.pressureValid) {
       return Status::Error(Err::COMPENSATION_ERROR, "Pressure sample skipped");
     }
-    const int32_t adcP = _rawSample.adcP;
+    const int32_t adcP = raw.adcP;
 
-    int64_t pVar1 = static_cast<int64_t>(_tFine) - 128000;
-    int64_t pVar2 = pVar1 * pVar1 * static_cast<int64_t>(_digP6);
-    pVar2 = pVar2 + ((pVar1 * static_cast<int64_t>(_digP5)) << 17);
-    pVar2 = pVar2 + (static_cast<int64_t>(_digP4) << 35);
-    pVar1 = ((pVar1 * pVar1 * static_cast<int64_t>(_digP3)) >> 8) +
-            ((pVar1 * static_cast<int64_t>(_digP2)) << 12);
-    pVar1 = (((static_cast<int64_t>(1) << 47) + pVar1) *
-             static_cast<int64_t>(_digP1)) >> 33;
+    int64_t pVar1 = static_cast<int64_t>(candidateTFine) - 128000;
+    int64_t pSquared = 0;
+    int64_t pVar2 = 0;
+    int64_t term = 0;
+    int64_t sum = 0;
+    if (!checkedMulI64(pVar1, pVar1, pSquared) ||
+        !checkedMulI64(pSquared, static_cast<int64_t>(_digP6), pVar2) ||
+        !checkedMulI64(pVar1, static_cast<int64_t>(_digP5), term) ||
+        !checkedMulI64(term, 131072, term) ||
+        !checkedAddI64(pVar2, term, pVar2) ||
+        !checkedMulI64(static_cast<int64_t>(_digP4), 34359738368LL, term) ||
+        !checkedAddI64(pVar2, term, pVar2)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Pressure compensation overflow");
+    }
+
+    if (!checkedMulI64(pSquared, static_cast<int64_t>(_digP3), term)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Pressure compensation overflow");
+    }
+    term >>= 8;
+    if (!checkedMulI64(pVar1, static_cast<int64_t>(_digP2), sum) ||
+        !checkedMulI64(sum, 4096, sum) ||
+        !checkedAddI64(term, sum, pVar1) ||
+        !checkedAddI64(140737488355328LL, pVar1, sum) ||
+        !checkedMulI64(sum, static_cast<int64_t>(_digP1), pVar1)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Pressure compensation overflow");
+    }
+    pVar1 >>= 33;
     if (pVar1 == 0) {
       return Status::Error(Err::COMPENSATION_ERROR, "Pressure div by zero");
     }
 
     int64_t p = 1048576 - static_cast<int64_t>(adcP);
-    p = (((p << 31) - pVar2) * 3125) / pVar1;
-    pVar1 = (static_cast<int64_t>(_digP9) * (p >> 13) * (p >> 13)) >> 25;
-    pVar2 = (static_cast<int64_t>(_digP8) * p) >> 19;
-    p = ((p + pVar1 + pVar2) >> 8) + (static_cast<int64_t>(_digP7) << 4);
+    if (!checkedMulI64(p, 2147483648LL, p) ||
+        !checkedSubI64(p, pVar2, p) ||
+        !checkedMulI64(p, 3125, p) ||
+        (p == std::numeric_limits<int64_t>::min() && pVar1 == -1)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Pressure compensation overflow");
+    }
+    p /= pVar1;
+
+    const int64_t pressureScaled = p >> 13;
+    if (!checkedMulI64(static_cast<int64_t>(_digP9), pressureScaled, pVar1) ||
+        !checkedMulI64(pVar1, pressureScaled, pVar1)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Pressure compensation overflow");
+    }
+    pVar1 >>= 25;
+    if (!checkedMulI64(static_cast<int64_t>(_digP8), p, pVar2)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Pressure compensation overflow");
+    }
+    pVar2 >>= 19;
+    if (!checkedAddI64(p, pVar1, sum) ||
+        !checkedAddI64(sum, pVar2, sum) ||
+        !checkedMulI64(static_cast<int64_t>(_digP7), 16, term)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Pressure compensation overflow");
+    }
+    sum >>= 8;
+    if (!checkedAddI64(sum, term, p)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Pressure compensation overflow");
+    }
     int64_t pressurePa = p >> 8;
     if (pressurePa < 0) {
       pressurePa = 0;
     } else if (pressurePa > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
       pressurePa = static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
     }
-    _compSample.pressurePa = static_cast<uint32_t>(pressurePa);
-    _compSample.pressureValid = true;
+    candidate.pressurePa = static_cast<uint32_t>(pressurePa);
+    candidate.pressureValid = true;
   }
 
   // --- Humidity (Bosch int32 reference, widened to int64 for safety) ---
   if (humSkipped) {
-    _compSample.humidityPct_x1024 = 0;
-    _compSample.humidityValid = false;
+    candidate.humidityPct_x1024 = 0;
+    candidate.humidityValid = false;
   } else {
-    if (!_rawSample.humidityValid) {
+    if (!raw.humidityValid) {
       return Status::Error(Err::COMPENSATION_ERROR, "Humidity sample skipped");
     }
-    const int32_t adcH = _rawSample.adcH;
+    const int32_t adcH = raw.adcH;
 
-    int64_t h = static_cast<int64_t>(_tFine) - 76800;
-    const int64_t hTerm1 = (static_cast<int64_t>(adcH) << 14) -
-                           (static_cast<int64_t>(_digH4) << 20) -
-                           (static_cast<int64_t>(_digH5) * h) + 16384;
-    int64_t hTerm2 = ((((h * static_cast<int64_t>(_digH6)) >> 10) *
-                       (((h * static_cast<int64_t>(_digH3)) >> 11) + 32768)) >> 10) +
-                     2097152;
-    hTerm2 = ((hTerm2 * static_cast<int64_t>(_digH2)) + 8192) >> 14;
-    h = (hTerm1 >> 15) * hTerm2;
-    h = h - (((((h >> 15) * (h >> 15)) >> 7) *
-              static_cast<int64_t>(_digH1)) >> 4);
+    int64_t h = static_cast<int64_t>(candidateTFine) - 76800;
+    int64_t hTerm1 = 0;
+    int64_t hTerm2 = 0;
+    int64_t hFactor = 0;
+    int64_t hCorrection = 0;
+    int64_t hIntermediate = 0;
+    if (!checkedMulI64(static_cast<int64_t>(adcH), 16384, hTerm1) ||
+        !checkedMulI64(static_cast<int64_t>(_digH4), 1048576,
+                       hIntermediate) ||
+        !checkedSubI64(hTerm1, hIntermediate, hTerm1) ||
+        !checkedMulI64(static_cast<int64_t>(_digH5), h, hIntermediate) ||
+        !checkedSubI64(hTerm1, hIntermediate, hTerm1) ||
+        !checkedAddI64(hTerm1, 16384, hTerm1)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Humidity compensation overflow");
+    }
+    if (!checkedMulI64(h, static_cast<int64_t>(_digH6), hTerm2) ||
+        !checkedMulI64(h, static_cast<int64_t>(_digH3), hFactor)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Humidity compensation overflow");
+    }
+    hTerm2 >>= 10;
+    hFactor >>= 11;
+    if (!checkedAddI64(hFactor, 32768, hFactor) ||
+        !checkedMulI64(hTerm2, hFactor, hTerm2)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Humidity compensation overflow");
+    }
+    hTerm2 >>= 10;
+    if (!checkedAddI64(hTerm2, 2097152, hTerm2) ||
+        !checkedMulI64(hTerm2, static_cast<int64_t>(_digH2), hTerm2) ||
+        !checkedAddI64(hTerm2, 8192, hTerm2)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Humidity compensation overflow");
+    }
+    hTerm2 >>= 14;
+    if (!checkedMulI64(hTerm1 >> 15, hTerm2, h)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Humidity compensation overflow");
+    }
+    hCorrection = h >> 15;
+    if (!checkedMulI64(hCorrection, hCorrection, hCorrection)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Humidity compensation overflow");
+    }
+    hCorrection >>= 7;
+    if (!checkedMulI64(hCorrection, static_cast<int64_t>(_digH1), hCorrection)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Humidity compensation overflow");
+    }
+    hCorrection >>= 4;
+    if (!checkedSubI64(h, hCorrection, h)) {
+      return Status::Error(Err::COMPENSATION_ERROR,
+                           "Humidity compensation overflow");
+    }
     if (h < 0) {
       h = 0;
     }
     if (h > HUMIDITY_MAX_X4096) {
       h = HUMIDITY_MAX_X4096;
     }
-    _compSample.humidityPct_x1024 = static_cast<uint32_t>(h >> 12);
-    _compSample.humidityValid = true;
+    candidate.humidityPct_x1024 = static_cast<uint32_t>(h >> 12);
+    candidate.humidityValid = true;
   }
 
+  compensated = candidate;
+  tFine = candidateTFine;
   return Status::Ok();
+}
+
+void BME280::_commitSample(const RawSample& raw,
+                           const CompensatedSample& compensated,
+                           int32_t tFine, uint32_t timestampMs) {
+  if (_sampleSequence < std::numeric_limits<uint32_t>::max()) {
+    ++_sampleSequence;
+  }
+  _rawSample = raw;
+  _compSample = compensated;
+  _tFine = tFine;
+  _sampleTimestampMs = timestampMs;
+  _sampleConfigGeneration = _configGeneration;
+  _sampleGenerationStale = false;
+  _hasSample = true;
+  _measurementReady = true;
+}
+
+void BME280::_advanceConfigGeneration() {
+  if (_configGeneration < std::numeric_limits<uint32_t>::max()) {
+    ++_configGeneration;
+  }
+  if (_hasSample) {
+    _sampleGenerationStale = true;
+  }
+}
+
+void BME280::_cancelMeasurementTrackingForStateChange() {
+  if (_conversionState == ConversionState::IN_PROGRESS) {
+    _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
+  }
+  _measurementRequested = false;
+  _measurementReady = false;
+  _measurementStartMs = 0;
+  _measurementDeadlineMs = 0;
+  _measurementStatusPolls = 0;
+  _lastMeasurementStatus = Status::Error(Err::RESYNC_REQUIRED);
 }
 
 void BME280::_invalidateSampleCache() {
@@ -2336,17 +3228,28 @@ void BME280::_invalidateSampleCache() {
   _lastMeasurementStatus = Status::Ok();
   _hasSample = false;
   _measurementStartMs = 0;
+  _measurementDeadlineMs = 0;
+  _measurementStatusPolls = 0;
   _sampleTimestampMs = 0;
+  _sampleConfigGeneration = 0;
+  _sampleGenerationStale = false;
   _tFine = 0;
   _rawSample = RawSample{};
   _compSample = CompensatedSample{};
 }
 
 uint32_t BME280::_nowMs() const {
+  if (_timeContextActive) {
+    return _timeContextMs;
+  }
   if (_config.nowMs != nullptr) {
     return _config.nowMs(_config.timeUser);
   }
-  return platform::nowMs();
+  return 0;
+}
+
+bool BME280::_timeValid() const {
+  return _timeContextActive || _config.nowMs != nullptr;
 }
 
 }  // namespace BME280

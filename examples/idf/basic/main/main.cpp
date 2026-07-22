@@ -116,7 +116,6 @@ uint32_t gPendingStartMs = 0;
 int gStressRemaining = 0;
 StressStats gStress;
 uint8_t gActiveAddress = BME280_DEFAULT_ADDR;
-uint8_t gLastJobInstructions = 0;
 
 void cancelPending();
 
@@ -133,27 +132,7 @@ const char* boolStr(bool value) {
 }
 
 const char* errToStr(BME280::Err err) {
-  using namespace BME280;
-  switch (err) {
-    case Err::OK: return "OK";
-    case Err::NOT_INITIALIZED: return "NOT_INITIALIZED";
-    case Err::INVALID_CONFIG: return "INVALID_CONFIG";
-    case Err::I2C_ERROR: return "I2C_ERROR";
-    case Err::TIMEOUT: return "TIMEOUT";
-    case Err::INVALID_PARAM: return "INVALID_PARAM";
-    case Err::DEVICE_NOT_FOUND: return "DEVICE_NOT_FOUND";
-    case Err::CHIP_ID_MISMATCH: return "CHIP_ID_MISMATCH";
-    case Err::CALIBRATION_INVALID: return "CALIBRATION_INVALID";
-    case Err::MEASUREMENT_NOT_READY: return "MEASUREMENT_NOT_READY";
-    case Err::COMPENSATION_ERROR: return "COMPENSATION_ERROR";
-    case Err::BUSY: return "BUSY";
-    case Err::IN_PROGRESS: return "IN_PROGRESS";
-    case Err::I2C_NACK_ADDR: return "I2C_NACK_ADDR";
-    case Err::I2C_NACK_DATA: return "I2C_NACK_DATA";
-    case Err::I2C_TIMEOUT: return "I2C_TIMEOUT";
-    case Err::I2C_BUS: return "I2C_BUS";
-    default: return "UNKNOWN";
-  }
+  return BME280::toString(err);
 }
 
 const char* stateToStr(BME280::DriverState state) {
@@ -162,28 +141,6 @@ const char* stateToStr(BME280::DriverState state) {
     case BME280::DriverState::READY: return "READY";
     case BME280::DriverState::DEGRADED: return "DEGRADED";
     case BME280::DriverState::OFFLINE: return "OFFLINE";
-    default: return "UNKNOWN";
-  }
-}
-
-const char* jobKindToStr(BME280::JobKind kind) {
-  switch (kind) {
-    case BME280::JobKind::NONE: return "NONE";
-    case BME280::JobKind::INIT: return "INIT";
-    case BME280::JobKind::FORCED_MEASUREMENT: return "FORCED_MEASUREMENT";
-    case BME280::JobKind::APPLY_CONFIG: return "APPLY_CONFIG";
-    case BME280::JobKind::RECOVERY: return "RECOVERY";
-    default: return "UNKNOWN";
-  }
-}
-
-const char* jobStateToStr(BME280::JobState state) {
-  switch (state) {
-    case BME280::JobState::IDLE: return "IDLE";
-    case BME280::JobState::RUNNING: return "RUNNING";
-    case BME280::JobState::WAITING: return "WAITING";
-    case BME280::JobState::DONE: return "DONE";
-    case BME280::JobState::FAILED: return "FAILED";
     default: return "UNKNOWN";
   }
 }
@@ -311,9 +268,10 @@ bool parseI2cAddress(const char* token, uint8_t& out) {
   return true;
 }
 
-bool parseJobBudget(const char* token, uint8_t& out) {
+bool parseJobBudget(const char* token, uint8_t& out, bool allowZero) {
   uint32_t value = 0;
-  if (!parseU32(token, value) || value < 1U || value > JOB_CLI_MAX_BUDGET) {
+  const uint32_t minimum = allowZero ? 0U : 1U;
+  if (!parseU32(token, value) || value < minimum || value > JOB_CLI_MAX_BUDGET) {
     return false;
   }
   out = static_cast<uint8_t>(value);
@@ -514,25 +472,51 @@ void printDriverHealth() {
 }
 
 void printJobUsage() {
-  LOGW("Usage: job status | job init|force|apply|recover|poll [1..8]");
+  LOGW("Usage: job status | job start <init|force|apply|resync|reset|recover> | job cancel <owner|deadline> | job poll [0..8] | job <init|force|apply|resync|reset|recover> [1..8]");
 }
 
-void printJobStatus() {
-  const BME280::Status st = device.jobStatus();
+bool isTerminalJobState(BME280::JobState state) {
+  return state == BME280::JobState::DONE ||
+         state == BME280::JobState::FAILED ||
+         state == BME280::JobState::CANCELLED ||
+         state == BME280::JobState::TIMED_OUT;
+}
+
+BME280::JobPollResult makeJobBoundaryResult(const BME280::Status& status) {
+  BME280::JobPollResult result;
+  result.jobId = device.jobId();
+  result.kind = device.jobKind();
+  result.phase = device.jobPhase();
+  result.state = device.jobState();
+  result.status = status;
+  result.conversionState = device.conversionState();
+  return result;
+}
+
+void printJobResult(const BME280::JobPollResult& result, const char* boundary) {
   std::printf("=== Job Status ===\n");
-  std::printf("Job kind: %s\n", jobKindToStr(device.jobKind()));
-  std::printf("Job state: %s\n", jobStateToStr(device.jobState()));
+  std::printf("Boundary: %s\n", boundary);
+  std::printf("Job ID: %lu\n", static_cast<unsigned long>(result.jobId));
+  std::printf("Job kind: %s\n", BME280::toString(result.kind));
+  std::printf("Job phase: %s\n", BME280::toString(result.phase));
+  std::printf("Job state: %s\n", BME280::toString(result.state));
+  std::printf("Terminal state: %s\n", isTerminalJobState(result.state) ? "true" : "false");
   std::printf("Status: %s (code=%u, detail=%ld)\n",
-              errToStr(st.code),
-              static_cast<unsigned>(st.code),
-              static_cast<long>(st.detail));
-  if (st.msg != nullptr && st.msg[0] != '\0') {
-    std::printf("Message: %s\n", st.msg);
-  }
-  std::printf("Instructions: %u\n", static_cast<unsigned>(gLastJobInstructions));
+              BME280::toString(result.status.code),
+              static_cast<unsigned>(result.status.code),
+              static_cast<long>(result.status.detail));
+  std::printf("Conversion state: %s\n", BME280::toString(result.conversionState));
+  std::printf("Phase deadline active: %s\n", result.phaseDeadlineActive ? "true" : "false");
+  std::printf("Phase deadline ms: %lu\n", static_cast<unsigned long>(result.phaseDeadlineMs));
+  std::printf("Callbacks used: %u\n", static_cast<unsigned>(result.callbacksUsed));
+  std::printf("Instructions: %u\n", static_cast<unsigned>(result.instructionsUsed));
   std::printf("Driver: %s\n", stateToStr(device.state()));
   std::printf("Hardware config dirty: %s\n", boolStr(device.hardwareConfigDirty()));
   std::printf("Consecutive failures: %u\n", static_cast<unsigned>(device.consecutiveFailures()));
+}
+
+void printJobStatus() {
+  printJobResult(makeJobBoundaryResult(device.jobStatus()), "SNAPSHOT");
 }
 
 BME280::Status startJobByName(const char* action) {
@@ -545,6 +529,12 @@ BME280::Status startJobByName(const char* action) {
   if (std::strcmp(action, "apply") == 0) {
     return device.startApplyConfigJob();
   }
+  if (std::strcmp(action, "resync") == 0) {
+    return device.startResyncJob();
+  }
+  if (std::strcmp(action, "reset") == 0) {
+    return device.startSoftResetJob();
+  }
   if (std::strcmp(action, "recover") == 0) {
     return device.startRecoveryJob();
   }
@@ -553,34 +543,53 @@ BME280::Status startJobByName(const char* action) {
 
 void pollJobOnce(uint8_t budget) {
   const BME280::JobPollResult result = device.pollJob(currentMs(), budget);
-  gLastJobInstructions = result.instructionsUsed;
-  printJobStatus();
+  printJobResult(result, "POLL");
+}
+
+void startJobNonBlocking(const char* action) {
+  const BME280::Status status = startJobByName(action);
+  printJobResult(makeJobBoundaryResult(status), "START");
+}
+
+void cancelJobByName(const char* reason) {
+  BME280::CancelReason cancelReason;
+  if (std::strcmp(reason, "owner") == 0) {
+    cancelReason = BME280::CancelReason::OWNER_REQUEST;
+  } else if (std::strcmp(reason, "deadline") == 0) {
+    cancelReason = BME280::CancelReason::DEADLINE_EXPIRED;
+  } else {
+    printJobUsage();
+    return;
+  }
+  const BME280::Status status = device.cancelJob(cancelReason);
+  printJobResult(makeJobBoundaryResult(status), "CANCEL");
 }
 
 void runJobToTerminal(const char* action, uint8_t budget) {
   cancelPending();
-  gLastJobInstructions = 0;
   const BME280::Status st = startJobByName(action);
   if (!st.inProgress()) {
-    printStatus(st);
-    printJobStatus();
+    printJobResult(makeJobBoundaryResult(st), "START");
     return;
   }
 
   BME280::JobPollResult result{};
   for (uint16_t poll = 0; poll < JOB_CLI_MAX_POLLS; ++poll) {
     result = device.pollJob(currentMs(), budget);
-    gLastJobInstructions = result.instructionsUsed;
-    if (result.state == BME280::JobState::DONE ||
-        result.state == BME280::JobState::FAILED) {
-      printJobStatus();
+    if (isTerminalJobState(result.state)) {
+      printJobResult(result, "POLL");
       return;
     }
     vTaskDelay(pdMS_TO_TICKS(JOB_CLI_POLL_DELAY_MS));
   }
 
   LOGW("Job poll limit reached");
-  printJobStatus();
+  const BME280::Status cancelStatus = device.cancelJob(BME280::CancelReason::OWNER_REQUEST);
+  if (!isTerminalJobState(device.jobState())) {
+    printJobResult(makeJobBoundaryResult(cancelStatus), "CANCEL");
+    return;
+  }
+  printJobResult(device.pollJob(currentMs(), 0U), "POLL");
 }
 
 void handleJobCommand(char*& cursor) {
@@ -590,33 +599,62 @@ void handleJobCommand(char*& cursor) {
     return;
   }
 
-  uint8_t budget = JOB_CLI_DEFAULT_BUDGET;
-  char* budgetToken = nextToken(cursor);
-  if (budgetToken != nullptr && !parseJobBudget(budgetToken, budget)) {
-    printJobUsage();
-    return;
-  }
+  char* argument = nextToken(cursor);
   if (nextToken(cursor) != nullptr) {
     printJobUsage();
     return;
   }
 
   if (std::strcmp(action, "status") == 0) {
-    if (budgetToken != nullptr) {
+    if (argument != nullptr) {
       printJobUsage();
       return;
     }
     printJobStatus();
     return;
   }
+  if (std::strcmp(action, "start") == 0) {
+    if (argument == nullptr ||
+        (std::strcmp(argument, "init") != 0 &&
+         std::strcmp(argument, "force") != 0 &&
+         std::strcmp(argument, "apply") != 0 &&
+         std::strcmp(argument, "resync") != 0 &&
+         std::strcmp(argument, "reset") != 0 &&
+         std::strcmp(argument, "recover") != 0)) {
+      printJobUsage();
+      return;
+    }
+    startJobNonBlocking(argument);
+    return;
+  }
+  if (std::strcmp(action, "cancel") == 0) {
+    if (argument == nullptr) {
+      printJobUsage();
+      return;
+    }
+    cancelJobByName(argument);
+    return;
+  }
   if (std::strcmp(action, "poll") == 0) {
+    uint8_t budget = JOB_CLI_DEFAULT_BUDGET;
+    if (argument != nullptr && !parseJobBudget(argument, budget, true)) {
+      printJobUsage();
+      return;
+    }
     pollJobOnce(budget);
     return;
   }
   if (std::strcmp(action, "init") == 0 ||
       std::strcmp(action, "force") == 0 ||
       std::strcmp(action, "apply") == 0 ||
+      std::strcmp(action, "resync") == 0 ||
+      std::strcmp(action, "reset") == 0 ||
       std::strcmp(action, "recover") == 0) {
+    uint8_t budget = JOB_CLI_DEFAULT_BUDGET;
+    if (argument != nullptr && !parseJobBudget(argument, budget, false)) {
+      printJobUsage();
+      return;
+    }
     runJobToTerminal(action, budget);
     return;
   }
@@ -756,7 +794,8 @@ void printCalibrationRaw() {
   for (size_t i = 0; i < sizeof(raw.tp); ++i) {
     std::printf("%02X%s", static_cast<unsigned>(raw.tp[i]), (i + 1U < sizeof(raw.tp)) ? " " : "");
   }
-  std::printf("\n  H1: %02X\n  H: ", static_cast<unsigned>(raw.h1));
+  std::printf("\n  H1: %02X\n  H: ",
+              static_cast<unsigned>(raw.tp[BME280::cmd::REG_CALIB_TP_LEN - 1U]));
   for (size_t i = 0; i < sizeof(raw.h); ++i) {
     std::printf("%02X%s", static_cast<unsigned>(raw.h[i]), (i + 1U < sizeof(raw.h)) ? " " : "");
   }
@@ -1209,7 +1248,7 @@ void printHelp() {
   printHelpItem("state", "Show compact one-line health summary");
   printHelpItem("probe", "Probe device (no health tracking)");
   printHelpItem("recover", "Manual recovery attempt");
-  printHelpItem("job status|init|force|apply|recover|poll [budget]", "Run staged job API diagnostics");
+  printHelpItem("job status|start|cancel|poll|init|force|apply|resync|reset|recover", "Run staged job API diagnostics");
   printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   printHelpItem("stress [N]", "Run N measurement cycles");
   printHelpItem("stress_mix [N]", "Run N mixed-operation cycles");

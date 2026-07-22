@@ -1,6 +1,6 @@
 # BME280 Industry Hardening Summary
 
-Last updated: 2026-06-23
+Last updated: 2026-07-19
 
 This document is the maintained summary for the merged industry-readiness work.
 It replaces the temporary prompt, phase, merge-gate, and self-test records that
@@ -14,9 +14,10 @@ use on ESP32-S2 and ESP32-S3 with Arduino/PlatformIO and ESP-IDF consumers.
 No physical BME280 hardware validation is claimed here. Local ESP-IDF `idf.py`
 validation is claimed only when the exact commands are run and recorded.
 
-Release scope: `v1.7.0` is the direct public successor to `v1.6.0`. The
-release notes for `v1.7.0` contain the staged recovery closure, sample
-freshness API, job CLI/HIL coverage, and release-gating runner flags.
+Release scope: `2.0.0` is a major release candidate because the transport
+callback and `CalibrationRaw` contracts break source compatibility. `v1.7.0`
+remains the latest published tag until the exact 2.0.0 release commit passes
+remote CI and is tagged.
 
 ## Active Documentation Set
 
@@ -50,7 +51,35 @@ Core and API contracts:
 - Driver objects are non-copyable and non-movable.
 - Public error reporting keeps distinguishable transport errors when the
   adapter can provide them.
-- Measurement scheduling now requires an injected timebase for fresh samples.
+- Transport callbacks return terminal-only `TransportResult`, require exact
+  byte counts and one physical attempt, and forbid adapter retry/recovery.
+  Driver `Status` messages are canonical library strings derived from typed
+  codes; adapter-owned text is never retained.
+- Measurement scheduling now requires an injected timebase for the synchronous
+  compatibility path. Cooperative `pollJob(nowMs, ...)` and `tick(nowMs)` use
+  the explicit timestamp for chip phases and health events in that call;
+  timestamp-validity flags distinguish real time from the inert zero fallback.
+- `OFFLINE` is an observational health threshold. It no longer overrides an
+  explicit application-owned retry, resync, reset, or retirement decision.
+
+Cooperative job ownership:
+
+- Init, forced measurement, config apply, non-reset resync, and explicit soft
+  reset have zero-I2C start operations and one fixed-memory state machine.
+- An accepted job has a nonzero `jobId`. `JobPollResult` exposes public
+  `JobPhase`, chip-phase deadline state, callback use, terminal status, and
+  `ConversionState`.
+- `pollJob(nowMs, budget)` issues no more than `budget` callbacks. A running or
+  waiting job exclusively owns hardware access: fallible conflicting calls
+  return `BUSY`, while `tick()` performs no I2C.
+- Natural completion/failure is returned by the exact poll that reaches it.
+  Zero-I2C cancellation is retained for exactly one later poll; until retrieval,
+  terminal-pending state blocks later hardware work.
+- Application deadlines remain external and include queue time. An owner calls
+  `cancelJob(OWNER_REQUEST)` or `cancelJob(DEADLINE_EXPIRED)` without I2C;
+  `phaseDeadlineMs` never replaces or renews the owner deadline.
+- `end()` is an idempotent zero-I2C unbind. Sensor sleep, if required, must be a
+  separate explicit fallible hardware operation.
 
 Measurement and compensation:
 
@@ -59,8 +88,16 @@ Measurement and compensation:
 - Raw and compensated sample structs expose per-channel validity flags.
 - Bosch skipped-channel sentinel constants are named in the public command
   table.
-- Configuration changes invalidate cached samples so callers do not reuse data
-  captured under older settings.
+- Configuration changes invalidate cached samples or retain them explicitly as
+  stale under an older generation so callers do not reuse them as current data.
+- Candidate raw data, compensated data, `t_fine`, timestamp, sample sequence,
+  and configuration generation commit atomically; failed refreshes preserve the
+  previous envelope byte-for-byte.
+- Forced conversion knowledge is explicit. Ambiguous trigger failure or
+  post-trigger cancellation becomes `UNKNOWN_AFTER_TRIGGER_ERROR`; the next
+  staged forced job reconciles `status.measuring` before issuing a new trigger.
+  The ambiguous trigger is never replayed, and steady forced sampling does not
+  rewrite an unchanged `ctrl_hum` setting.
 
 Configuration, reset, and recovery:
 
@@ -70,29 +107,50 @@ Configuration, reset, and recovery:
   dirty state so service commands cannot silently desynchronize the typed
   config cache.
 - Dirty state is cleared only after a complete successful config resync through
-  `begin()`, `recover()`, or `softReset()`.
-- Successful recovery and reset resync invalidate cached samples. Failed staged
-  recovery preserves stale-but-readable cached samples and exposes freshness via
-  `sampleFreshness()` / `SettingsSnapshot::sampleFreshness`.
+  `begin()`, `recover()`, `softReset()`, or the matching staged operation.
+- Synchronous `recover()` and staged `startResyncJob()` resynchronize identity,
+  NVM readiness, calibration, and config without resetting the sensor. Legacy
+  `startRecoveryJob()` is a non-reset alias. `startSoftResetJob()` is the
+  separate explicit reset-plus-resync operation.
+- Synchronous successful recovery/reset invalidates cached samples. Staged
+  config/resync completion advances the configuration generation, preserving
+  any last-good sample only as stale diagnostic data.
 - `setFilter()` and `setStandby()` avoid config writes while the sensor reports
   `measuring`.
+- `SensorSettings` and `startApplySettingsJob()` provide one zero-I2C admission
+  point for coherent whole-settings changes while reusing the existing apply
+  phases. Pre-write failure restores the prior snapshot; possible partial
+  effects retain desired settings with an explicit resync requirement.
 - Synchronous reset/recover NVM readiness checks perform one status read and
   return visible `BUSY`, `TIMEOUT`, or the original transport error. Repeated
   bounded NVM polling is available through staged jobs advanced by `pollJob()`.
+- `Config::conversionReadyTimeoutMs` is separate from the per-callback
+  `i2cTimeoutMs`. Timeout fields reject zero; conversion grace also reserves
+  the maximum 1,114 ms mutable measurement/standby base interval so every
+  composed deadline remains at or below `INT32_MAX`.
+- Pure helpers cover settings validation, exact Bosch microsecond timing,
+  rounded scheduler timing, chip identity, and checked fixed-unit conversion.
+  `CalibrationRaw` exposes the complete image through two bursts without a
+  duplicate H1 field or read.
+- The library exposes no writable calibration NVM, trimming, or factory-
+  programming API. It only performs bounded waits for the BME280's internal NVM
+  copy after POR/reset and reads the resulting calibration registers.
 
 Examples, ESP-IDF, and CI:
 
 - The Arduino bring-up CLI and native ESP-IDF CLI share the same command
   contract without sharing Arduino source in IDF builds.
-- Both CLIs expose `job status`, `job init`, `job force`, `job apply`,
-  `job recover`, and `job poll` diagnostics for the public staged-job API.
+- Both CLIs keep matching staged-job diagnostics for status, init, force,
+  apply, non-reset resync, explicit reset, cancel, and poll, including job
+  identity, phase/deadline, callback use, terminal state, and conversion state.
 - The ESP-IDF example uses `app_main`, `driver/i2c_master.h`, `esp_timer`, and
   fixed C command buffers.
 - Guard scripts check core framework neutrality, CLI parity, IDF example
   boundaries, HIL runner/docs consistency, generated version state, and package
   contents.
-- CI is configured for PlatformIO Arduino builds, native tests, package checks,
-  and ESP-IDF example builds.
+- CI is configured for PlatformIO Arduino builds, native tests, an ASan/UBSan
+  native lane, package checks, and ESP-IDF example builds. A configured lane is
+  not runtime evidence until the corresponding workflow succeeds.
 
 HIL preparation:
 
@@ -103,6 +161,22 @@ HIL preparation:
   command plans, environment records, CSV/JSON results, and artifact manifests;
   `--include-job-api` adds staged-job HIL coverage, while `--require-pass` and
   `--fail-on-review` provide release-gating exit modes.
+
+## Deterministic Operation Bounds
+
+Zero-I2C operations include staged starts, cancellation, `end()`, and cached
+snapshots. Synchronous compatibility operations use fixed transaction shapes,
+and every transport callback receives `Config::i2cTimeoutMs`. Cooperative work
+is bounded per call by the `uint8_t` callback budget.
+
+NVM readiness permits at most 255 status callbacks. A measuring/idle phase uses
+a 255-poll counter and may make one final status callback before reporting its
+poll-limit timeout. With no earlier chip-phase deadline or transport error, the
+cumulative staged callback caps are 518 for init or non-reset resync, 519 for
+explicit soft reset, 516 for config apply, 258 for a known-idle forced job, and
+514 for a forced job that first reconciles an ambiguous trigger. These counts do
+not define an overall owner deadline or elapsed-time guarantee; the application
+owns queueing, poll cadence, bus policy, and its original operation deadline.
 
 ## Validation Boundary
 
