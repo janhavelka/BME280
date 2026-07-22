@@ -103,11 +103,12 @@ jobs:
       - name: Check release metadata
         run: python tools/check_release_metadata.py
 
-      - name: Install Doxygen
+      - name: Install Doxygen and Graphviz
         run: |
           sudo apt-get update
-          sudo apt-get install -y doxygen
+          sudo apt-get install -y doxygen graphviz
           doxygen --version
+          dot -V
 
       - name: Generate Doxygen documentation
         run: doxygen Doxyfile
