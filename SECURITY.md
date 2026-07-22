@@ -2,34 +2,41 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.7.x   | :white_check_mark: |
-| < 1.7   | Best effort only   |
+| Version | Security support |
+| --- | --- |
+| 2.0.x | Supported |
+| 1.x and older | Best effort only |
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability within this library, please follow responsible disclosure:
+Do not open a public issue for a suspected vulnerability. Email
+`info@thymos.cz` with:
 
-1. **Do NOT** open a public GitHub issue.
-2. Email the maintainer at: `info@thymos.cz`.
-3. Include:
-   - A description of the vulnerability
-   - Steps to reproduce
-   - Potential impact
-   - Any suggested fixes (optional)
+- the affected version and target;
+- a description of the issue and potential impact;
+- reproducible steps or a minimal test case;
+- any proposed mitigation, if available.
 
-We will acknowledge receipt within 48 hours and aim to provide a fix or mitigation within 14 days for critical issues.
+The maintainer aims to acknowledge reports within 48 hours and to provide a fix
+or mitigation for critical issues within 14 days. These are response targets,
+not service-level guarantees.
 
-## Scope
+## Security Boundary
 
-This library is designed for embedded systems. Security considerations include:
-- No dynamic memory allocation in steady state (reduces attack surface)
-- No network code (networking is out of scope for this library)
-- No persistent storage by default (NVS side effects are opt-in)
+The library parses no network traffic and owns no persistent storage. Its main
+security-relevant boundary is the application-supplied transport and time
+callbacks. Applications must:
 
-## Security Best Practices for Users
+- keep callback/user-pointer storage valid for the configured driver lifetime;
+- serialize each driver instance and shared I2C bus externally;
+- enforce finite bus-lock and transfer timeouts;
+- validate any untrusted values before mapping them into `Config`, typed
+  settings, raw register access, or diagnostic CLI commands;
+- avoid calling public APIs from ISRs or recursively from transport callbacks;
+- treat raw control/reset register writes and physical fault injection as
+  privileged diagnostic operations;
+- use a watchdog and application-owned retry/backoff policy appropriate to the
+  product.
 
-- Always validate external inputs before passing to `Config`
-- Use hardware watchdogs in production deployments
-- Keep dependencies updated
+The driver has no heap allocation in steady-state core paths, but that property
+alone is not a security guarantee.

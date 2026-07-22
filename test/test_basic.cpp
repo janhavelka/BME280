@@ -1447,8 +1447,8 @@ void test_conversion_ready_timeout_respects_wrap_safe_interval_boundaries() {
   TEST_ASSERT_EQUAL_UINT32(11u, estimateMeasurementTimeMs(cases[0]));
   TEST_ASSERT_EQUAL_UINT32(114u, estimateMeasurementTimeMs(cases[1]));
   const uint32_t globalWorstCaseInterval =
-      estimateMeasurementTimeMs(cases[1]) + 1000u;
-  TEST_ASSERT_EQUAL_UINT32(1114u, globalWorstCaseInterval);
+      (2u * estimateMeasurementTimeMs(cases[1])) + 1000u;
+  TEST_ASSERT_EQUAL_UINT32(1228u, globalWorstCaseInterval);
 
   for (size_t i = 0; i < 2; ++i) {
     const uint32_t largestAccepted =
@@ -2225,7 +2225,7 @@ void test_apply_jobs_cancel_pending_sync_measurement_before_generation_change() 
   }
 }
 
-void test_tick_clears_pending_measurement_when_setter_marks_resync_required() {
+void test_setter_dirty_transition_immediately_clears_pending_measurement() {
   FakeBus bus;
   setBoschSyntheticCalibration(bus);
   setRawSample(bus, 415148, 519888, 30000);
@@ -2248,7 +2248,8 @@ void test_tick_clears_pending_measurement_when_setter_marks_resync_required() {
       static_cast<uint8_t>(dev.configSyncState()));
   SettingsSnapshot snapshot{};
   TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
-  TEST_ASSERT_TRUE(snapshot.measurementRequested);
+  TEST_ASSERT_FALSE(snapshot.measurementRequested);
+  TEST_ASSERT_FALSE(snapshot.measurementReady);
 
   const uint32_t callsBeforeTick = totalBusCalls(bus);
   dev.tick(bus.nowMs);
@@ -3039,7 +3040,7 @@ void test_diagnostic_config_write_marks_dirty_after_success_and_recover_clears()
   TEST_ASSERT_TRUE(dev.hardwareConfigDirtyError().ok());
 }
 
-void test_diagnostic_config_write_invalidates_cached_samples() {
+void test_diagnostic_config_write_preserves_stale_envelope_but_clears_ready() {
   FakeBus bus;
   setBoschSyntheticCalibration(bus);
   setRawSample(bus, 415148, 519888, 30000);
@@ -3047,17 +3048,27 @@ void test_diagnostic_config_write_invalidates_cached_samples() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
   captureForcedSample(dev, bus);
   TEST_ASSERT_TRUE(dev.hasSample());
+  TEST_ASSERT_TRUE(dev.measurementReady());
+  SampleEnvelope before{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(before).ok());
 
   Status st = dev.writeRegister(cmd::REG_CTRL_MEAS, 0);
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
-  TEST_ASSERT_FALSE(dev.hasSample());
+  TEST_ASSERT_TRUE(dev.hasSample());
   TEST_ASSERT_FALSE(dev.measurementReady());
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(SampleFreshness::STALE_AFTER_CONFIG_DIRTY),
+      static_cast<uint8_t>(dev.sampleFreshness()));
 
-  RawSample raw{};
-  st = dev.getRawSample(raw);
+  Measurement measurement{};
+  st = dev.getMeasurement(measurement);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::MEASUREMENT_NOT_READY),
                           static_cast<uint8_t>(st.code));
+
+  SampleEnvelope after{};
+  TEST_ASSERT_TRUE(dev.getSampleEnvelope(after).ok());
+  assertSampleEnvelopeEqual(before, after);
 }
 
 void test_diagnostic_config_block_write_marks_dirty_when_range_overlaps_config() {
@@ -4251,7 +4262,9 @@ void test_normal_mode_request_waits_for_fresh_cycle() {
   TEST_ASSERT_FALSE(dev.measurementReady());
   TEST_ASSERT_EQUAL_UINT32(readsAfterRequest, bus.readCalls);
 
-  bus.nowMs += dev.estimateNormalCycleMs() - 1U;
+  const uint32_t worstPhaseFreshnessMs =
+      dev.estimateNormalCycleMs() + dev.estimateMeasurementTimeMs();
+  bus.nowMs += worstPhaseFreshnessMs - 1U;
   dev.tick(bus.nowMs);
   TEST_ASSERT_FALSE(dev.measurementReady());
   TEST_ASSERT_EQUAL_UINT32(readsAfterRequest, bus.readCalls);
@@ -4260,6 +4273,34 @@ void test_normal_mode_request_waits_for_fresh_cycle() {
   dev.tick(bus.nowMs);
   TEST_ASSERT_TRUE(dev.measurementReady());
   TEST_ASSERT_GREATER_THAN_UINT32(readsAfterRequest, bus.readCalls);
+}
+
+void test_high_osr_normal_freshness_deadline_is_wrap_safe() {
+  FakeBus bus;
+  bus.nowMs = 0xFFFFFFF0u;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::NORMAL;
+  cfg.osrsT = Oversampling::X16;
+  cfg.osrsP = Oversampling::X16;
+  cfg.osrsH = Oversampling::X16;
+  cfg.standby = Standby::MS_1000;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint32_t requestStartMs = bus.nowMs;
+  TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+  const uint32_t readinessMs =
+      (2u * dev.estimateMeasurementTimeMs()) + dev.getStandbyTimeMs();
+  TEST_ASSERT_EQUAL_UINT32(1228u, readinessMs);
+  const uint32_t readsAfterRequest = bus.readCalls;
+
+  dev.tick(requestStartMs + readinessMs - 1u);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterRequest, bus.readCalls);
+  TEST_ASSERT_FALSE(dev.measurementReady());
+
+  dev.tick(requestStartMs + readinessMs);
+  TEST_ASSERT_GREATER_THAN_UINT32(readsAfterRequest, bus.readCalls);
+  TEST_ASSERT_TRUE(dev.measurementReady());
 }
 
 void test_forced_measurement_request_while_busy_tracks_completion() {
@@ -4283,6 +4324,35 @@ void test_forced_measurement_request_while_busy_tracks_completion() {
   Measurement m{};
   st = dev.getMeasurement(m);
   TEST_ASSERT_TRUE(st.ok());
+}
+
+void test_ambiguous_high_osr_forced_request_reserves_full_wrap_safe_conversion() {
+  FakeBus bus;
+  bus.nowMs = 0xFFFFFFF0u;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.osrsT = Oversampling::X16;
+  cfg.osrsP = Oversampling::X16;
+  cfg.osrsH = Oversampling::X16;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.measuringStatusReadsRemaining = 2;
+  const uint32_t requestStartMs = bus.nowMs;
+  TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+  const uint32_t readsAfterRequest = bus.readCalls;
+  const uint32_t conversionMs = dev.estimateMeasurementTimeMs();
+  TEST_ASSERT_EQUAL_UINT32(114u, conversionMs);
+
+  dev.tick(requestStartMs + conversionMs - 1u);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterRequest, bus.readCalls);
+  TEST_ASSERT_FALSE(dev.measurementReady());
+
+  dev.tick(requestStartMs + conversionMs);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterRequest + 1u, bus.readCalls);
+  TEST_ASSERT_FALSE(dev.measurementReady());
+
+  dev.tick(requestStartMs + conversionMs + 1u);
+  TEST_ASSERT_TRUE(dev.measurementReady());
 }
 
 void test_tick_raw_read_failure_records_measurement_status() {
@@ -4312,10 +4382,59 @@ void test_tick_raw_read_failure_records_measurement_status() {
 
   SettingsSnapshot snap{};
   TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
-  TEST_ASSERT_TRUE(snap.measurementRequested);
+  TEST_ASSERT_FALSE(snap.measurementRequested);
   TEST_ASSERT_FALSE(snap.hasSample);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(snap.lastMeasurementStatus.code));
+
+  const uint32_t callsAfterFailure = totalBusCalls(bus);
+  dev.tick(bus.nowMs + 1u);
+  TEST_ASSERT_EQUAL_UINT32(callsAfterFailure, totalBusCalls(bus));
+}
+
+void test_tick_status_and_compensation_failures_are_terminal_until_new_request() {
+  {
+    FakeBus bus;
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+    bus.failReadRegEnabled = true;
+    bus.failReadReg = cmd::REG_STATUS;
+    bus.readError = TransportResult::Error(TransportErr::TIMEOUT, -56);
+    bus.nowMs += dev.estimateMeasurementTimeMs();
+    dev.tick(bus.nowMs);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                            static_cast<uint8_t>(dev.lastMeasurementStatus().code));
+    SettingsSnapshot snapshot{};
+    TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+    TEST_ASSERT_FALSE(snapshot.measurementRequested);
+    const uint32_t callsAfterFailure = totalBusCalls(bus);
+    dev.tick(bus.nowMs + 1u);
+    TEST_ASSERT_EQUAL_UINT32(callsAfterFailure, totalBusCalls(bus));
+    TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+    TEST_ASSERT_GREATER_THAN_UINT32(callsAfterFailure, totalBusCalls(bus));
+  }
+
+  {
+    FakeBus bus;
+    setBoschSyntheticCalibration(bus);
+    setRawSample(bus, cmd::RAW_PRESSURE_SKIPPED, 519888, 30000);
+    BME280::BME280 dev;
+    TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+    TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+    bus.nowMs += dev.estimateMeasurementTimeMs();
+    dev.tick(bus.nowMs);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::COMPENSATION_ERROR),
+                            static_cast<uint8_t>(dev.lastMeasurementStatus().code));
+    SettingsSnapshot snapshot{};
+    TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+    TEST_ASSERT_FALSE(snapshot.measurementRequested);
+    const uint32_t callsAfterFailure = totalBusCalls(bus);
+    dev.tick(bus.nowMs + 1u);
+    TEST_ASSERT_EQUAL_UINT32(callsAfterFailure, totalBusCalls(bus));
+    TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+    TEST_ASSERT_GREATER_THAN_UINT32(callsAfterFailure, totalBusCalls(bus));
+  }
 }
 
 void test_tick_stuck_measuring_times_out_without_raw_read() {
@@ -5957,6 +6076,41 @@ void test_ambiguous_trigger_reconciles_before_any_new_trigger() {
       0u, countWritesToRegSince(bus, cmd::REG_CTRL_HUM, writeLogStart));
 }
 
+void test_staged_ambiguous_high_osr_reconcile_uses_full_readiness_budget() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.osrsT = Oversampling::X16;
+  cfg.osrsP = Oversampling::X16;
+  cfg.osrsH = Oversampling::X16;
+  cfg.conversionReadyTimeoutMs = 7;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.failWriteAfterEffectOnCall = bus.writeCalls + 1u;
+  bus.writeError = TransportResult::Error(TransportErr::TIMEOUT, -175);
+  TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+  JobPollResult result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR),
+      static_cast<uint8_t>(dev.conversionState()));
+
+  bus.nowMs = 0xFFFFFFF0u;
+  bus.measuringStatusReadsRemaining = 1;
+  TEST_ASSERT_TRUE(dev.startForcedMeasurementJob().inProgress());
+  result = pollWithBudget(dev, bus, 1);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::WAITING),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::FORCE_RECONCILE_STATUS),
+                          static_cast<uint8_t>(result.phase));
+  TEST_ASSERT_TRUE(result.phaseDeadlineActive);
+  TEST_ASSERT_EQUAL_UINT32(
+      bus.nowMs + dev.estimateMeasurementTimeMs() +
+          cfg.conversionReadyTimeoutMs,
+      result.phaseDeadlineMs);
+}
+
 void test_forced_job_wrap_and_conversion_timeout_are_independent() {
   FakeBus bus;
   BME280::BME280 dev;
@@ -6268,7 +6422,7 @@ int main() {
   RUN_TEST(test_apply_settings_cancel_after_each_exposed_write_keeps_desired_dirty);
   RUN_TEST(test_apply_settings_failure_at_each_write_keeps_desired_dirty);
   RUN_TEST(test_apply_jobs_cancel_pending_sync_measurement_before_generation_change);
-  RUN_TEST(test_tick_clears_pending_measurement_when_setter_marks_resync_required);
+  RUN_TEST(test_setter_dirty_transition_immediately_clears_pending_measurement);
   RUN_TEST(test_init_job_success_clears_existing_dirty_state);
   RUN_TEST(test_recovery_job_success_clears_existing_dirty_state);
   RUN_TEST(test_soft_reset_job_failure_after_reset_marks_dirty);
@@ -6304,7 +6458,7 @@ int main() {
   RUN_TEST(test_partial_config_restore_failure_marks_hardware_dirty);
   RUN_TEST(test_dirty_state_clears_after_successful_recover_resync);
   RUN_TEST(test_diagnostic_config_write_marks_dirty_after_success_and_recover_clears);
-  RUN_TEST(test_diagnostic_config_write_invalidates_cached_samples);
+  RUN_TEST(test_diagnostic_config_write_preserves_stale_envelope_but_clears_ready);
   RUN_TEST(test_diagnostic_config_block_write_marks_dirty_when_range_overlaps_config);
   RUN_TEST(test_diagnostic_non_config_write_does_not_mark_dirty);
   RUN_TEST(test_diagnostic_config_write_failure_preserves_error_and_marks_dirty);
@@ -6351,8 +6505,11 @@ int main() {
   RUN_TEST(test_sample_freshness_stale_when_hardware_config_dirty);
   RUN_TEST(test_sample_fresh_uses_wrap_safe_age_check);
   RUN_TEST(test_normal_mode_request_waits_for_fresh_cycle);
+  RUN_TEST(test_high_osr_normal_freshness_deadline_is_wrap_safe);
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
+  RUN_TEST(test_ambiguous_high_osr_forced_request_reserves_full_wrap_safe_conversion);
   RUN_TEST(test_tick_raw_read_failure_records_measurement_status);
+  RUN_TEST(test_tick_status_and_compensation_failures_are_terminal_until_new_request);
   RUN_TEST(test_tick_stuck_measuring_times_out_without_raw_read);
   RUN_TEST(test_set_mode_sleep_cancels_pending_measurement_request);
   RUN_TEST(test_raw_and_compensated_samples_remain_available_after_measurement_read);
@@ -6394,6 +6551,7 @@ int main() {
   RUN_TEST(test_cancellation_preserves_last_good_state_across_mutating_phases);
   RUN_TEST(test_resync_never_resets_and_soft_reset_has_exact_payload);
   RUN_TEST(test_ambiguous_trigger_reconciles_before_any_new_trigger);
+  RUN_TEST(test_staged_ambiguous_high_osr_reconcile_uses_full_readiness_budget);
   RUN_TEST(test_forced_job_wrap_and_conversion_timeout_are_independent);
   RUN_TEST(test_poll_and_tick_use_explicit_health_timestamp_context);
   RUN_TEST(test_staged_jobs_exclusively_own_hardware_operations);

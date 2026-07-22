@@ -46,6 +46,7 @@ struct TransportResult {
   /// Construct a completed transfer result.
   /// @param written Number of bytes physically written
   /// @param read Number of bytes physically read
+  /// @return Successful terminal result with the supplied physical counts.
   static constexpr TransportResult Complete(size_t written, size_t read = 0) {
     return TransportResult{TransportErr::OK, 0, written, read};
   }
@@ -55,6 +56,8 @@ struct TransportResult {
   /// @param detailCode Adapter-owned numeric diagnostic
   /// @param written Number of bytes physically written before failure
   /// @param read Number of bytes physically read before failure
+  /// @return Terminal error result carrying the supplied code, detail, and
+  ///         physical counts.
   static constexpr TransportResult Error(TransportErr error,
                                          int32_t detailCode = 0,
                                          size_t written = 0,
@@ -102,7 +105,8 @@ using I2cWriteReadFn = TransportResult (*)(uint8_t addr,
 
 /// Millisecond timestamp callback.
 ///
-/// requestMeasurement() and tick(nowMs) must use the same monotonic timebase.
+/// requestMeasurement(), pollJob(nowMs), and tick(nowMs) must use the same
+/// monotonic timebase.
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
 using NowMsFn = uint32_t (*)(void* user);
@@ -118,6 +122,9 @@ enum class Oversampling : uint8_t {
 };
 
 /// Return the canonical string for an oversampling setting.
+/// @param value Oversampling setting to describe.
+/// @return Static canonical setting name; invalid values return
+///         `UNKNOWN_OVERSAMPLING`.
 constexpr const char* toString(Oversampling value) {
   switch (value) {
     case Oversampling::SKIP: return "SKIP";
@@ -138,6 +145,8 @@ enum class Mode : uint8_t {
 };
 
 /// Return the canonical string for a measurement mode.
+/// @param value Measurement mode to describe.
+/// @return Static canonical mode name; invalid values return `UNKNOWN_MODE`.
 constexpr const char* toString(Mode value) {
   switch (value) {
     case Mode::SLEEP: return "SLEEP";
@@ -157,6 +166,9 @@ enum class Filter : uint8_t {
 };
 
 /// Return the canonical string for an IIR filter setting.
+/// @param value Filter setting to describe.
+/// @return Static canonical setting name; invalid values return
+///         `UNKNOWN_FILTER`.
 constexpr const char* toString(Filter value) {
   switch (value) {
     case Filter::OFF: return "OFF";
@@ -181,6 +193,9 @@ enum class Standby : uint8_t {
 };
 
 /// Return the canonical string for a standby setting.
+/// @param value Standby setting to describe.
+/// @return Static canonical setting name; invalid values return
+///         `UNKNOWN_STANDBY`.
 constexpr const char* toString(Standby value) {
   switch (value) {
     case Standby::MS_0_5: return "MS_0_5";
@@ -252,8 +267,16 @@ constexpr bool isBme280ChipId(uint8_t chipId) { return chipId == 0x60; }
 /// The application owns shared-bus serialization, timeout policy, recovery, and
 /// all platform resources; the core driver never resets or reconfigures the bus.
 ///
-/// `nowMs` is optional for `begin()` but required for measurement scheduling.
-/// `tick(nowMs)` and `nowMs(user)` should use the same monotonic clock.
+/// `nowMs` is optional for `begin()` but required for compatibility
+/// measurement scheduling. `pollJob(nowMs)`, `tick(nowMs)`, and `nowMs(user)`
+/// must use the same monotonic clock.
+///
+/// The address must be 0x76 or 0x77. I2C and NVM timeouts must be nonzero and
+/// less than INT32_MAX. Conversion-ready grace must be nonzero and small enough
+/// that the worst normal-mode freshness interval (two maximum conversions plus
+/// one standby interval) remains within the signed wrap-safe half range. An
+/// offlineThreshold of zero is normalized to one when the configuration is
+/// accepted.
 struct Config {
   // === I2C Transport (required) ===
   I2cWriteFn i2cWrite = nullptr;        ///< I2C write function pointer
@@ -266,9 +289,9 @@ struct Config {
   
   // === Device Settings ===
   uint8_t i2cAddress = 0x76;             ///< 0x76 (SDO=GND) or 0x77 (SDO=VDDIO)
-  uint32_t i2cTimeoutMs = 50;            ///< I2C transaction timeout in ms
-  uint32_t nvmReadyTimeoutMs = 10;        ///< NVM ready timeout after POR/reset in ms
-  uint32_t conversionReadyTimeoutMs = 20; ///< Grace period; validated with the maximum cycle for wrap-safe deadlines
+  uint32_t i2cTimeoutMs = 50;            ///< Per-callback timeout: 1..INT32_MAX-1 ms
+  uint32_t nvmReadyTimeoutMs = 10;       ///< NVM deadline: 1..INT32_MAX-1 ms
+  uint32_t conversionReadyTimeoutMs = 20; ///< Nonzero chip-ready grace; maximum is wrap-safety constrained
 
   // === Measurement Settings ===
   Oversampling osrsT = Oversampling::X1; ///< Temperature oversampling
@@ -279,7 +302,7 @@ struct Config {
   Mode mode = Mode::FORCED;              ///< Operating mode
   
   // === Health Tracking ===
-  uint8_t offlineThreshold = 5;          ///< Consecutive failures before OFFLINE state
+  uint8_t offlineThreshold = 5;          ///< Failures before OFFLINE; zero is normalized to one
 };
 
 } // namespace BME280

@@ -1,8 +1,12 @@
-﻿# BME280 Register & Timing Reference (implementation-ready)
+﻿# BME280 Register and Timing Reference
 
-Source: `BME280_datasheet.pdf` (Bosch Sensortec BME280 datasheet).
+Source: `BME280_datasheet.pdf`, Bosch Sensortec BME280 datasheet, revision
+1.24, February 2024.
 
-This file is designed so an implementation agent can build a **robust BME280 driver** without reopening the PDF.
+This is a maintained convenience index for the I2C driver. The vendor PDF is
+authoritative for electrical limits, compensation code, package/handling data,
+and any detail omitted here. The library intentionally supports BME280 I2C
+only; SPI and BMP280 compatibility are outside its public contract.
 
 ---
 

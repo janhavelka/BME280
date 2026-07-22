@@ -86,15 +86,24 @@ BME280::TransportResult bmeWrite(uint8_t addr,
     return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -1);
   }
 
-  const uint32_t boundedTimeout = clampTimeout(timeoutMs, ctx->maxTimeoutMs);
-  LockGuard lock(*ctx->busMutex, boundedTimeout);
+  // Deadline and remainingMs() are application helpers using one monotonic
+  // clock. The callback budget includes both lock acquisition and transfer.
+  const Deadline deadline =
+      Deadline::afterMs(clampTimeout(timeoutMs, ctx->maxTimeoutMs));
+  LockGuard lock(*ctx->busMutex, deadline.remainingMs());
   if (!lock.locked()) {
     return BME280::TransportResult::Error(BME280::TransportErr::TIMEOUT,
                                           BUS_LOCK_TIMEOUT);
   }
 
   // Exactly one mutating transfer; never replay this call in the adapter.
-  I2cResult result = i2cTransmit(ctx->bus, addr, data, len, boundedTimeout);
+  const uint32_t transferBudgetMs = deadline.remainingMs();
+  if (transferBudgetMs == 0) {
+    return BME280::TransportResult::Error(BME280::TransportErr::TIMEOUT,
+                                          CALLBACK_DEADLINE_EXPIRED);
+  }
+  I2cResult result =
+      i2cTransmit(ctx->bus, addr, data, len, transferBudgetMs);
   return mapI2cResult(result, len, 0);
 }
 
@@ -111,8 +120,9 @@ BME280::TransportResult bmeWriteRead(uint8_t addr,
     return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -2);
   }
 
-  const uint32_t boundedTimeout = clampTimeout(timeoutMs, ctx->maxTimeoutMs);
-  LockGuard lock(*ctx->busMutex, boundedTimeout);
+  const Deadline deadline =
+      Deadline::afterMs(clampTimeout(timeoutMs, ctx->maxTimeoutMs));
+  LockGuard lock(*ctx->busMutex, deadline.remainingMs());
   if (!lock.locked()) {
     return BME280::TransportResult::Error(BME280::TransportErr::TIMEOUT,
                                           BUS_LOCK_TIMEOUT);
@@ -120,15 +130,23 @@ BME280::TransportResult bmeWriteRead(uint8_t addr,
 
   // One combined pointer-write/repeated-START/read transaction, with no STOP
   // between phases and no adapter retry.
+  const uint32_t transferBudgetMs = deadline.remainingMs();
+  if (transferBudgetMs == 0) {
+    return BME280::TransportResult::Error(BME280::TransportErr::TIMEOUT,
+                                          CALLBACK_DEADLINE_EXPIRED);
+  }
   I2cResult result = i2cTransmitReceive(ctx->bus, addr, txData, txLen,
-                                        rxData, rxLen, boundedTimeout);
+                                        rxData, rxLen, transferBudgetMs);
   return mapI2cResult(result, txLen, rxLen);
 }
 ```
 
-The callback may lock the shared bus for the actual I2C transaction, but it does
-not make the BME280 driver instance thread-safe by itself. Serialize public
-driver calls with a driver mutex or by routing them through one owner task.
+The callback timeout is one end-to-end budget for lock acquisition plus the
+physical transfer. Do not give each phase the original timeout independently;
+that can double the documented blocking bound. The callback may lock the shared
+bus for the actual I2C transaction, but it does not make the BME280 driver
+instance thread-safe by itself. Serialize public driver calls with a driver
+mutex or by routing them through one owner task.
 
 Return `TransportResult::Complete()` only with the exact physical byte counts.
 An `OK` result with shorter counts becomes `Err::I2C_SHORT_TRANSFER` in the
@@ -320,8 +338,11 @@ cancellation after the trigger can leave `ConversionState` as
 an ambiguous trigger. Once settings are synchronized, steady forced sampling
 writes only `ctrl_meas`; `ctrl_hum` is latched during configuration apply and is
 not rewritten for every sample. In normal mode, the compatibility scheduler
-waits one estimated normal cycle before reading so the sample is fresh relative
-to the request.
+waits the worst phase interval (two configured conversion bounds plus one standby
+interval) before reading so the sample is fresh relative to the request. An
+ambiguous existing forced conversion receives one full configured conversion
+interval plus readiness grace. These bounds remain wrap-safe across `uint32_t`
+rollover.
 
 `hasSample()` means the latest successful raw/compensated sample is cached; it
 does not by itself prove freshness for the current request. Use
@@ -330,6 +351,93 @@ does not by itself prove freshness for the current request. Use
 `STALE_AFTER_CONFIG_DIRTY` means the hardware configuration may differ from the
 driver cache. `STALE_AFTER_CONFIG_CHANGE` means the sample belongs to an older
 configuration generation.
+Dirty transitions clear pending/unread measurement readiness but preserve the
+last `SampleEnvelope` for explicitly stale diagnostics. Terminal status-read,
+raw-read, or compensation errors end the request, so later `tick()` calls perform
+no I2C until the owner explicitly requests another measurement.
+
+## Owner-Managed Integration Checklist
+
+For an application that already owns a device queue or sensor-candidate policy,
+keep one owner-private BME280 adapter and preserve these boundaries:
+
+- advance a staged operation with `pollJob(nowMs, 1)` so one owner poll performs
+  at most one transport callback;
+- retain the application's original end-to-end deadline across queueing and all
+  polls; a library chip-phase deadline must never replace or renew it;
+- accept a sample only when every application-required channel validity flag is
+  true, and use the checked fixed-point conversion helpers for integer units;
+- map only definite address NACK / `DEVICE_NOT_FOUND` to optional absence;
+  identity, calibration, timeout, data-NACK, bus, and compensation failures are
+  faults;
+- evaluate `sampleFreshness()` as well as cached values, and do not publish a
+  stale last-good sample as the result of a failed current request;
+- on removal or possible replacement, call zero-I2C
+  `invalidateDeviceState()` and require a complete init/resync before measuring;
+  an ACK alone does not prove cached calibration belongs to the current device;
+- keep candidate selection, retries, aggregate health, recovery/backoff,
+  application units, and publication policy in the application owner.
+
+These are integration requirements, not hardware-validation claims. Validate
+the final adapter with its actual queue, deadline, hotplug, shared-bus, and fault
+policy.
+
+### TunnelMonitor-node Integration Boundary
+
+The `TunnelMonitor-node` repository was reviewed at commit `0dc40d1` on branch
+`prompt-45-platformization` on 2026-07-22. At that baseline it does not yet
+depend on this library: BME280 register access and compensation still live in
+`I2cTask`, and the maintained implementation plan assigns their atomic
+replacement to the later BME280/ENV module slice. Do not add an interim wrapper
+around that duplicate protocol path.
+
+That plan currently names the exact `v2.0.0` tag. The readiness, stale-sample,
+terminal-tick, and HIL cleanup fixes in this repository's `Unreleased` section
+are post-tag changes and are not present in `v2.0.0`. Before integrating them,
+publish a normal patch release and update TunnelMonitor to that exact annotated
+tag. Do not substitute a dirty working tree, branch, or moving selector.
+
+For the planned integration, preserve these concrete mappings:
+
+- `I2cTask` remains the sole physical-bus, queue, lock, immutable-deadline, and
+  recovery owner. One private `Bme280Module` owns one `BME280` instance.
+- Each library transport callback calls the owner's `transferOnce` exactly
+  once. It passes the remaining callback budget after lock/queue time, maps
+  exact byte counts, and performs no retry or bus recovery.
+- Admit initialization with zero-I2C `startInitJob(config)` and advance jobs
+  with `pollJob(nowMs, 1)`. The original TunnelMonitor command deadline remains
+  authoritative across initialization, candidate fallback, conversion, and
+  result publication; no child/library phase renews it.
+- At the owner deadline, call zero-I2C
+  `cancelJob(CancelReason::DEADLINE_EXPIRED)`, retrieve the retained terminal
+  once with `pollJob(nowMs, 0)`, and do not start another hardware operation
+  before that drain.
+- Only an initial, definite address NACK may classify the optional `0x76`
+  candidate as absent. After an ACK/probe, identity mismatch, calibration
+  failure, timeout, data NACK, bus error, short transfer, or compensation error
+  is a fault, not absence.
+- On bus invalidation or possible hot replacement, cancel/drain as applicable,
+  call zero-I2C `invalidateDeviceState()`, clear the cached ENV candidate, and
+  require complete staged initialization before accepting a new sample.
+- Publish one atomic current measurement only when temperature, humidity, and
+  pressure are all valid and `sampleFreshness()` is `FRESH`. Never report a
+  stale last-good BME280 sample as the result of a failed current ENV request.
+- Preserve the product-owned candidate order SHT3x `0x44`, SHT3x `0x45`, then
+  BME280 `0x76`, its at-most-one retained logical result, and its existing
+  units. Candidate selection and aggregate ENV health do not belong in this
+  chip library.
+- Use `startResyncJob()` after owner-directed bus recovery. Do not turn a bus
+  recovery into an automatic BME280 soft reset; use `startSoftResetJob()` only
+  for an explicit device-reset policy.
+
+The local one-hour COM5 run in `HARDWARE_VALIDATION.md` exercised the standalone
+ESP32-S2 CLI and the library's staged API, including one-callback polling and
+deadline cancellation. It does not validate TunnelMonitor's ESP32-S3 target,
+shared queue, candidate fallback, hotplug behavior, application deadline,
+result lifetime, or coexistence with the other I2C devices. Those cases require
+the `native` and `native_hil_fram` module tests, both `tunnelmonitor_wifi` and
+`tunnelmonitor_wifi_hil` builds, and authorized HIL after the production module
+replaces the old direct path.
 
 ## Shared Bus With Other Devices
 
@@ -437,10 +545,9 @@ record evidence beyond host tests:
 - shared-bus contention or coexistence test notes for the other devices on the
   bus.
 
-Use `docs/I2C_HIL_RUNBOOK.md`, `docs/I2C_HIL_TARGET_TEMPLATE.md`, and
-`docs/BME280_HARDWARE_VALIDATION_MATRIX.md` for formal hardware evidence. CI,
-PlatformIO builds, package checks, and Doxygen generation do not prove physical
-bus margin, environmental accuracy, or field readiness.
+Use `docs/HARDWARE_VALIDATION.md` for the HIL procedure, evidence schema, and
+result ledger. CI, PlatformIO builds, package checks, and Doxygen generation do
+not prove physical bus margin, environmental accuracy, or field readiness.
 
 For a shared-bus production claim, add application-level evidence:
 

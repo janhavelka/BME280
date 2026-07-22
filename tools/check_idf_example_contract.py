@@ -121,7 +121,7 @@ def main() -> int:
     arduino = read(ARDUINO_MAIN)
     idf = read(IDF_MAIN)
     read(IDF_TRANSPORT)
-    read(IDF_CMAKE)
+    idf_cmake = read(IDF_CMAKE)
     idf_files = sorted(
         path
         for path in IDF_ROOT.rglob("*")
@@ -144,6 +144,16 @@ def main() -> int:
     for token in REQUIRED_IDF_TOKENS:
         if token not in combined_idf:
             fail(f"IDF example missing required native token: {token}")
+
+    for token in (
+        "rev-parse --short=12 HEAD",
+        "status --porcelain --untracked-files=normal",
+        "BME280_GIT_COMMIT",
+        "BME280_GIT_STATUS",
+        "target_compile_definitions",
+    ):
+        if token not in idf_cmake:
+            fail(f"IDF example CMake missing firmware provenance contract: {token}")
 
     arduino_help = help_items(arduino)
     idf_help = help_items(idf)

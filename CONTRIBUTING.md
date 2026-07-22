@@ -15,12 +15,14 @@ Thank you for considering contributing to this project!
 ## Guidelines
 
 ### Code Style
+
 - Follow existing code style (see `.clang-format`)
 - Use `constexpr` instead of macros for constants
 - Prefer explicit over implicit
 - No heap allocations in steady-state library code
 
 ### Commits
+
 - Use [Conventional Commits](https://www.conventionalcommits.org/) format:
   - `feat:` new feature
   - `fix:` bug fix
@@ -30,6 +32,7 @@ Thank you for considering contributing to this project!
   - `chore:` maintenance tasks
 
 ### Pull Requests
+
 - Keep PRs focused (one feature/fix per PR)
 - Update documentation if needed
 - Add changelog entry under `[Unreleased]`
@@ -47,18 +50,22 @@ python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
 python scripts/generate_version.py check
 python tools/check_release_metadata.py
+doxygen Doxyfile
 python -m platformio test -e native
 python -m platformio run -e esp32s2dev
 python -m platformio run -e esp32s3dev
+git diff --check
 ```
 
 ### What We Accept
+
 - Bug fixes
 - Documentation improvements
 - Performance improvements (with benchmarks)
 - New examples (if they demonstrate a common use case)
 
 ### What We Probably Won't Accept
+
 - Breaking API changes without discussion
 - Heavy dependencies
 - Platform-specific code in the library core

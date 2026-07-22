@@ -18,13 +18,16 @@ namespace BME280 {
 
 /// Driver state for health monitoring
 enum class DriverState : uint8_t {
-  UNINIT,    ///< begin() not called or end() called
+  UNINIT,    ///< No successful session, end(), or an admitted initialization failed
   READY,     ///< Operational, consecutiveFailures == 0
   DEGRADED,  ///< 1 <= consecutiveFailures < offlineThreshold
   OFFLINE    ///< Diagnostic: consecutiveFailures >= offlineThreshold; does not block I2C
 };
 
 /// Return the canonical string for a driver health state.
+/// @param value Driver state to describe.
+/// @return Static canonical state name; invalid values return
+///         `UNKNOWN_DRIVER_STATE`.
 constexpr const char* toString(DriverState value) {
   switch (value) {
     case DriverState::UNINIT: return "UNINIT";
@@ -47,6 +50,8 @@ enum class JobKind : uint8_t {
 };
 
 /// Return the canonical string for a staged job kind.
+/// @param value Job kind to describe.
+/// @return Static canonical kind name; invalid values return `UNKNOWN_JOB_KIND`.
 constexpr const char* toString(JobKind value) {
   switch (value) {
     case JobKind::NONE: return "NONE";
@@ -71,6 +76,9 @@ enum class JobState : uint8_t {
 };
 
 /// Return the canonical string for a staged job state.
+/// @param value Job state to describe.
+/// @return Static canonical state name; invalid values return
+///         `UNKNOWN_JOB_STATE`.
 constexpr const char* toString(JobState value) {
   switch (value) {
     case JobState::IDLE: return "IDLE";
@@ -91,6 +99,9 @@ enum class CancelReason : uint8_t {
 };
 
 /// Return the canonical string for a cancellation reason.
+/// @param value Cancellation reason to describe.
+/// @return Static canonical reason name; invalid values return
+///         `UNKNOWN_CANCEL_REASON`.
 constexpr const char* toString(CancelReason value) {
   switch (value) {
     case CancelReason::OWNER_REQUEST: return "OWNER_REQUEST";
@@ -107,6 +118,9 @@ enum class ConversionState : uint8_t {
 };
 
 /// Return the canonical string for forced-conversion knowledge.
+/// @param value Conversion state to describe.
+/// @return Static canonical state name; invalid values return
+///         `UNKNOWN_CONVERSION_STATE`.
 constexpr const char* toString(ConversionState value) {
   switch (value) {
     case ConversionState::IDLE: return "IDLE";
@@ -130,6 +144,9 @@ enum class BusyReason : int32_t {
 };
 
 /// Return the canonical string for a BUSY detail reason.
+/// @param value Busy reason to describe.
+/// @return Static canonical reason name; invalid values return
+///         `UNKNOWN_BUSY_REASON`.
 constexpr const char* toString(BusyReason value) {
   switch (value) {
     case BusyReason::NONE: return "NONE";
@@ -172,6 +189,9 @@ enum class JobPhase : uint8_t {
 };
 
 /// Return the canonical string for a staged job phase.
+/// @param value Job phase to describe.
+/// @return Static canonical phase name; invalid values return
+///         `UNKNOWN_JOB_PHASE`.
 constexpr const char* toString(JobPhase value) {
   switch (value) {
     case JobPhase::NONE: return "NONE";
@@ -287,6 +307,9 @@ enum class SampleFreshness : uint8_t {
 };
 
 /// Return the canonical string for cached-sample freshness.
+/// @param value Freshness state to describe.
+/// @return Static canonical state name; invalid values return
+///         `UNKNOWN_SAMPLE_FRESHNESS`.
 constexpr const char* toString(SampleFreshness value) {
   switch (value) {
     case SampleFreshness::NONE: return "NONE";
@@ -308,6 +331,9 @@ enum class ConfigSyncState : uint8_t {
 };
 
 /// Return the canonical string for cached/hardware synchronization state.
+/// @param value Synchronization state to describe.
+/// @return Static canonical state name; invalid values return
+///         `UNKNOWN_CONFIG_SYNC_STATE`.
 constexpr const char* toString(ConfigSyncState value) {
   switch (value) {
     case ConfigSyncState::SYNCHRONIZED: return "SYNCHRONIZED";
@@ -324,6 +350,9 @@ enum class CalibrationState : uint8_t {
 };
 
 /// Return the canonical string for cached calibration validity.
+/// @param value Calibration state to describe.
+/// @return Static canonical state name; invalid values return
+///         `UNKNOWN_CALIBRATION_STATE`.
 constexpr const char* toString(CalibrationState value) {
   switch (value) {
     case CalibrationState::INVALID: return "INVALID";
@@ -396,6 +425,14 @@ struct SettingsSnapshot {
 ///   control, timeout policy, and the monotonic clock used by Config::nowMs.
 /// - Multi-register configuration failures are reported through
 ///   hardwareConfigDirty() and hardwareConfigDirtyError().
+///
+/// Hardware-operation admission contract:
+/// - A running/waiting staged job exclusively owns hardware access.
+/// - A retained cancellation result must be retrieved exactly once with
+///   pollJob() before another hardware-facing operation can start.
+/// - Fallible APIs that could access hardware return BUSY without I2C in either
+///   case. Status::detail is BusyReason::STAGED_JOB_ACTIVE or
+///   BusyReason::TERMINAL_RESULT_PENDING respectively.
 class BME280 {
 public:
   /// Construct an uninitialized driver instance.
@@ -427,6 +464,9 @@ public:
   // =========================================================================
   
   /// Initialize the driver with configuration.
+  /// Once admitted, calling this on an initialized instance clears its local
+  /// runtime state before configuration validation or I2C. Any later failure
+  /// leaves the instance uninitialized; previous cached state is not restored.
   /// Verifies chip ID 0x60, checks NVM readiness once, reads calibration,
   /// validates coefficients, and applies cached config. Call after device POR
   /// and I2C bus readiness; address NACK maps to DEVICE_NOT_FOUND while other
@@ -443,6 +483,9 @@ public:
   ///              timebase as Config::nowMs
   /// Measurement errors are retained in lastMeasurementStatus() and
   /// SettingsSnapshot::lastMeasurementStatus because tick() itself is void.
+  /// A status-read, raw-read, or compensation failure terminates the current
+  /// request; later tick() calls perform no I2C until requestMeasurement() is
+  /// called again.
   void tick(uint32_t nowMs);
   
   /// Unbind the driver and clear all cached state without performing I2C.
@@ -450,8 +493,11 @@ public:
   /// staged job is active.
   void end();
 
-  /// Check if begin() completed successfully and end() has not been called
-  /// @return true when the driver has completed begin() and has not been ended
+  /// Check whether the current initialization session is valid.
+  /// A later admitted begin() or startInitJob() clears the prior session; if
+  /// that initialization fails, this remains false until initialization
+  /// succeeds again.
+  /// @return true only while the current initialization session is valid
   bool isInitialized() const { return _initialized; }
 
   /// Get the cached configuration snapshot currently owned by the driver
@@ -469,6 +515,9 @@ public:
   // =========================================================================
 
   /// Start a staged initialization job. Poll with pollJob() until DONE/FAILED.
+  /// Like begin(), this clears prior local runtime state before validating the
+  /// new configuration. Admission failure caused by an active operation or a
+  /// pending retained cancellation result preserves the current session.
   /// Successful completion starts a new health session and clears dirty config
   /// state after the cached configuration has been applied.
   /// @param config Configuration including transport callbacks
@@ -527,18 +576,23 @@ public:
   JobPollResult pollJob(uint32_t nowMs, uint8_t maxInstructions = 1);
 
   /// Current staged job type.
+  /// @return Active/last terminal job kind, or JobKind::NONE.
   JobKind jobKind() const { return _jobKind; }
 
   /// Current staged job state.
+  /// @return Current staged runner state.
   JobState jobState() const { return _jobState; }
 
   /// Last staged job status.
+  /// @return Current or most recent staged job status.
   Status jobStatus() const { return _jobStatus; }
 
   /// Identity of the active or last terminal staged job.
+  /// @return Nonzero accepted job identity, or zero before any accepted job.
   uint32_t jobId() const { return _jobId; }
 
   /// Current staged job phase.
+  /// @return Current staged state-machine phase.
   JobPhase jobPhase() const { return _jobPhase; }
   
   // =========================================================================
@@ -567,10 +621,11 @@ public:
   /// @return Status::Ok() always
   Status getSettings(SettingsSnapshot& out) const;
 
-  /// True when a failed config/resync/reset operation may have left sensor
-  /// registers different from the cached settings. Cleared only by a complete
-  /// successful config resync in begin(), recover(), or softReset().
-  /// @return true when hardware register state needs a full resync
+  /// True while a multi-step update is in progress, or when a failed or
+  /// uncertain config/resync/reset operation may have left sensor registers
+  /// different from cached settings. Cleared only by a complete successful
+  /// configuration resync.
+  /// @return true while configuration is updating or requires a full resync
   bool hardwareConfigDirty() const {
     return _configSyncState == ConfigSyncState::UPDATE_IN_PROGRESS ||
            (_configSyncState == ConfigSyncState::RESYNC_REQUIRED &&
@@ -582,12 +637,15 @@ public:
   Status hardwareConfigDirtyError() const { return _hardwareConfigDirtyError; }
 
   /// Current synchronization state between cached settings and hardware.
+  /// @return Cached/hardware configuration synchronization state.
   ConfigSyncState configSyncState() const { return _configSyncState; }
 
   /// Current cached-calibration validity.
+  /// @return Current cached calibration validity state.
   CalibrationState calibrationState() const { return _calibrationState; }
 
   /// Current cached-settings generation. Zero means no apply has completed.
+  /// @return Current settings generation, or zero before a completed apply.
   uint32_t configGeneration() const { return _configGeneration; }
 
   /// Last measurement scheduler/capture status recorded by requestMeasurement()
@@ -627,6 +685,7 @@ public:
   uint32_t lastOkMs() const { return _lastOkMs; }
 
   /// True when lastOkMs() was captured from Config::nowMs or explicit poll/tick time.
+  /// @return true when lastOkMs() came from a real monotonic time source.
   bool lastOkTimeValid() const { return _lastOkTimeValid; }
   
   /// Timestamp of last failed I2C operation
@@ -634,23 +693,29 @@ public:
   uint32_t lastErrorMs() const { return _lastErrorMs; }
 
   /// True when lastErrorMs() was captured from a real injected/explicit timebase.
+  /// @return true when lastErrorMs() came from a real monotonic time source.
   bool lastErrorTimeValid() const { return _lastErrorTimeValid; }
   
-  /// Most recent error status
-  /// @return Last tracked error status
+  /// Most recent tracked transport or device-resynchronization error.
+  /// @return Last health-recorded error status.
   Status lastError() const { return _lastError; }
   
-  /// Consecutive failures since last success.
-  /// Saturates at UINT8_MAX and resets to zero on tracked I2C success.
-  /// @return Consecutive tracked failures
+  /// Consecutive health-recorded failures since the last tracked transfer
+  /// success. Recovery/reset semantic failures may be recorded after a
+  /// successful transfer when identity, calibration, NVM, or configuration
+  /// readiness is invalid.
+  /// Saturates at UINT8_MAX.
+  /// @return Consecutive health-recorded failures.
   uint8_t consecutiveFailures() const { return _consecutiveFailures; }
   
-  /// Total tracked I2C failures in the current health session.
+  /// Total transport and device-resynchronization failures recorded in the
+  /// current health session.
   /// Saturates at UINT32_MAX and is reset by begin(); it does not wrap.
   /// @return Tracked failure count since the most recent begin()
   uint32_t totalFailures() const { return _totalFailures; }
   
-  /// Total tracked I2C successes in the current health session.
+  /// Total successful tracked transport callbacks in the current health
+  /// session.
   /// Saturates at UINT32_MAX and is reset by begin(); it does not wrap.
   /// @return Tracked success count since the most recent begin()
   uint32_t totalSuccess() const { return _totalSuccess; }
@@ -661,10 +726,15 @@ public:
   
   /// Request a measurement (non-blocking).
   /// In FORCED mode: triggers measurement if idle.
-  /// In NORMAL mode: waits one estimated normal cycle before reading, so the
-  /// sample is fresh relative to the request.
+  /// If an existing forced conversion is detected, the scheduler reserves one
+  /// complete configured conversion interval plus readiness grace from the
+  /// detection time. In NORMAL mode it reserves the worst phase interval (two
+  /// conversions plus one standby interval) before reading, so the sample is
+  /// fresh relative to the request even when the request arrives just after a
+  /// conversion starts. All intervals use wrap-safe unsigned deadlines.
   /// Returns IN_PROGRESS if a request is accepted or an already-running forced
   /// conversion can be tracked, BUSY if a driver request is already pending,
+  /// or admission BUSY as described by the class hardware-operation contract,
   /// INVALID_CONFIG if Config::nowMs is missing, or
   /// INVALID_PARAM in sleep mode. Returns RESYNC_REQUIRED without I2C when
   /// cached configuration or calibration is not synchronized with the device.
@@ -672,10 +742,11 @@ public:
   Status requestMeasurement();
 
   /// Check if measurement is ready to read
-  /// @return true when getMeasurement() can consume a pending sample
+  /// @return true when getMeasurement() can consume a pending fresh sample
   bool measurementReady() const { return _measurementReady; }
 
   /// Current knowledge of forced-mode conversion activity.
+  /// @return Current forced-conversion knowledge state.
   ConversionState conversionState() const { return _conversionState; }
 
   /// True after at least one sample has been cached.
@@ -687,6 +758,7 @@ public:
   uint32_t sampleTimestampMs() const { return _sampleTimestampMs; }
 
   /// Sequence number of the latest committed sample, or zero before capture.
+  /// @return Latest nonzero committed sequence, or zero when no sample exists.
   uint32_t sampleSequence() const { return _hasSample ? _sampleSequence : 0; }
 
   /// Age of the cached sample in milliseconds.
@@ -707,13 +779,16 @@ public:
   bool sampleFresh(uint32_t nowMs, uint32_t maxAgeMs) const;
 
   /// Get measurement result (float).
-  /// Returns MEASUREMENT_NOT_READY until an unread cached measurement is ready
+  /// Returns MEASUREMENT_NOT_READY until an unread fresh measurement is ready.
+  /// Dirty configuration, a configuration-generation change, or a terminal
+  /// refresh error prevents stale cached data from being returned as success.
   /// Clears ready flag after successful read
   /// Does not invalidate cached raw/fixed-point samples.
   /// Numeric fields remain zero for skipped/invalid channels; check the
   /// matching validity flag before using a channel.
   /// @param[out] out Last cached compensated measurement as floats.
-  /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured.
+  /// @return Status::Ok() only for a fresh unread sample, otherwise
+  ///         MEASUREMENT_NOT_READY.
   Status getMeasurement(Measurement& out);
 
   /// Get raw ADC values.
@@ -736,7 +811,8 @@ public:
   Status getSampleEnvelope(SampleEnvelope& out) const;
 
   /// Get cached calibration coefficients.
-  /// @param[out] out Cached coefficients read during begin(), recover(), or softReset()
+  /// @param[out] out Cached coefficients read by the most recent successful
+  ///             synchronous or staged initialization, resynchronization, or reset
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), or
   ///         RESYNC_REQUIRED after device-state invalidation
   Status getCalibration(Calibration& out) const;
@@ -745,7 +821,8 @@ public:
   /// Preserves the last sample for explicitly stale diagnostics. A later
   /// initialization or resynchronization must reload calibration and fully
   /// apply settings before another measurement can start.
-  /// @return Status::Ok(), or BUSY while a staged job is active
+  /// @return Status::Ok(), or admission BUSY as described by the class
+  ///         hardware-operation contract
   Status invalidateDeviceState();
 
   /// Read raw calibration registers using exactly two bounded bursts:
@@ -887,8 +964,8 @@ public:
   /// @param[out] buf Destination buffer; must not be null
   /// @param len Number of bytes to read; must be nonzero
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
-  ///         INVALID_PARAM for null/zero buffers, BUSY while a staged job owns
-  ///         hardware access, or the original tracked transport status.
+  ///         INVALID_PARAM for null/zero buffers, admission BUSY as described
+  ///         by the class contract, or the original tracked transport status.
   Status readRegisters(uint8_t startReg, uint8_t* buf, size_t len);
 
   /// Write a contiguous register block through tracked I2C.
@@ -897,8 +974,9 @@ public:
   /// @param len Number of bytes to write; must be nonzero and fit the internal
   ///            bounded stack payload
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
-  ///         INVALID_PARAM for null/zero/oversized writes, BUSY while a staged
-  ///         job owns hardware access, or the original tracked transport status.
+  ///         INVALID_PARAM for null/zero/oversized writes, admission BUSY as
+  ///         described by the class contract, or the original tracked
+  ///         transport status.
   /// @note Diagnostic writes that overlap ctrl_hum (0xF2), ctrl_meas (0xF4),
   ///       config (0xF5), or reset (0xE0) mark hardwareConfigDirty() on
   ///       success. Transport failures that may have partially reached those
@@ -910,15 +988,17 @@ public:
   /// Read a single register through tracked I2C.
   /// @param reg Register address to read
   /// @param[out] value Register value
-  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), BUSY while
-  ///         a staged job owns hardware access, or the original transport status.
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), admission
+  ///         BUSY as described by the class contract, or the original transport
+  ///         status.
   Status readRegister(uint8_t reg, uint8_t& value);
 
   /// Write a single register through tracked I2C.
   /// @param reg Register address to write
   /// @param value Value to write
-  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), BUSY while
-  ///         a staged job owns hardware access, or the original transport status.
+  /// @return Status::Ok() on success, NOT_INITIALIZED before begin(), admission
+  ///         BUSY as described by the class contract, or the original transport
+  ///         status.
   /// @note Diagnostic writes to ctrl_hum (0xF2), ctrl_meas (0xF4), config
   ///       (0xF5), or reset (0xE0) mark hardwareConfigDirty() on success.
   ///       Transport failures that may have partially reached those registers
@@ -1030,6 +1110,9 @@ private:
                      const CompensatedSample& compensated,
                      int32_t tFine, uint32_t timestampMs);
   void _cancelMeasurementTrackingForStateChange();
+  uint32_t _measurementReadinessIntervalMs() const;
+  void _startMeasurementTracking(uint32_t startMs);
+  void _finishMeasurementRequest(const Status& status);
   void _invalidateSampleCache();
   void _advanceConfigGeneration();
   uint32_t _nowMs() const;

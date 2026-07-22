@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the BME280 serial HIL runner/docs contract."""
+"""Validate the serial HIL runner against its single maintained document."""
 
 from __future__ import annotations
 
@@ -12,14 +12,19 @@ import types
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "tools" / "run_i2c_hil.py"
-RUNBOOK = ROOT / "docs" / "I2C_HIL_RUNBOOK.md"
-TEMPLATE = ROOT / "docs" / "I2C_HIL_TARGET_TEMPLATE.md"
-MATRIX = ROOT / "docs" / "BME280_HARDWARE_VALIDATION_MATRIX.md"
-SUMMARY = ROOT / "docs" / "BME280_INDUSTRY_HARDENING_SUMMARY.md"
+VALIDATION = ROOT / "docs" / "HARDWARE_VALIDATION.md"
 README = ROOT / "README.md"
 DOCS_INDEX = ROOT / "docs" / "README.md"
 IDF_PORT = ROOT / "docs" / "IDF_PORT.md"
+SHARED_BUS = ROOT / "docs" / "PRODUCTION_SHARED_BUS_GUIDE.md"
 GITIGNORE = ROOT / ".gitignore"
+
+REMOVED_HIL_DOCS = (
+    ROOT / "docs" / "I2C_HIL_RUNBOOK.md",
+    ROOT / "docs" / "I2C_HIL_TARGET_TEMPLATE.md",
+    ROOT / "docs" / "BME280_HARDWARE_VALIDATION_MATRIX.md",
+    ROOT / "docs" / "reports" / "esp32s2-com28-hil-summary.md",
+)
 
 
 def fail(message: str) -> None:
@@ -33,6 +38,16 @@ def read(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def assert_contains(text: str, token: str, path: pathlib.Path) -> None:
+    if token not in text:
+        fail(f"{path.relative_to(ROOT)} is missing required text: {token}")
+
+
+def assert_all(text: str, tokens: tuple[str, ...], path: pathlib.Path) -> None:
+    for token in tokens:
+        assert_contains(text, token, path)
+
+
 def load_runner():
     spec = importlib.util.spec_from_file_location("run_i2c_hil_contract", RUNNER)
     if spec is None or spec.loader is None:
@@ -43,28 +58,21 @@ def load_runner():
     return module
 
 
-def extract_sequence(text: str, path: pathlib.Path) -> list[str]:
+def extract_sequence(text: str) -> list[str]:
     start = "<!-- HIL_DEFAULT_SEQUENCE_START -->"
     end = "<!-- HIL_DEFAULT_SEQUENCE_END -->"
     if start not in text or end not in text:
-        fail(f"{path.relative_to(ROOT)} is missing HIL default sequence markers")
+        fail("docs/HARDWARE_VALIDATION.md is missing sequence markers")
     block = text.split(start, 1)[1].split(end, 1)[0]
-    lines: list[str] = []
-    for raw in block.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("```"):
-            continue
-        lines.append(line)
-    return lines
-
-
-def assert_contains(text: str, needle: str, path: pathlib.Path) -> None:
-    if needle not in text:
-        fail(f"{path.relative_to(ROOT)} is missing required text: {needle}")
+    return [
+        line.strip()
+        for line in block.splitlines()
+        if line.strip() and not line.strip().startswith("```")
+    ]
 
 
 def runner_args(**overrides):
-    data = {
+    values = {
         "address": "0x76",
         "commands": None,
         "include_soak": False,
@@ -75,143 +83,75 @@ def runner_args(**overrides):
         "include_destructive": False,
         "include_fault_tests": False,
         "include_job_api": False,
+        "include_config_matrix": False,
+        "include_invalid_inputs": False,
+        "include_benchmarks": False,
+        "sample_rate_benchmark": False,
+        "soak_duration_s": 0.0,
+        "soak_cycle_stress_count": 50,
+        "soak_cycle_mix_count": 70,
+        "soak_cycle_idle_s": 0.0,
+        "soak_reset_interval": 20,
         "timeout": 8.0,
     }
-    data.update(overrides)
-    return types.SimpleNamespace(**data)
+    values.update(overrides)
+    return types.SimpleNamespace(**values)
 
 
-def main() -> int:
-    for path in (RUNNER, RUNBOOK, TEMPLATE, MATRIX, SUMMARY, README, DOCS_INDEX, IDF_PORT):
-        if not path.exists():
-            fail(f"missing required file: {path.relative_to(ROOT)}")
+def validate_default_plan(runner, validation_text: str) -> None:
+    executable, manual = runner.build_command_sequence(runner_args())
+    commands = [spec.command for spec in executable]
+    if extract_sequence(validation_text) != commands:
+        fail("documented default sequence differs from tools/run_i2c_hil.py")
 
-    py_compile.compile(str(RUNNER), doraise=True)
-    runner_text = read(RUNNER)
-    runbook_text = read(RUNBOOK)
-    template_text = read(TEMPLATE)
-    matrix_text = read(MATRIX)
-    summary_text = read(SUMMARY)
-    readme_text = read(README)
-    docs_index_text = read(DOCS_INDEX)
-    idf_port_text = read(IDF_PORT)
-    gitignore_text = read(GITIGNORE)
-
-    assert_contains(runner_text, "--dry-run", RUNNER)
-    assert_contains(runner_text, "python -m pip install pyserial", RUNNER)
-    assert_contains(runner_text, "hil_logs", RUNNER)
-    assert_contains(runner_text, "astimezone()", RUNNER)
-    assert_contains(gitignore_text, "hil_logs/", GITIGNORE)
-
-    runner = load_runner()
-    args = runner_args()
-    executable, manual = runner.build_command_sequence(args)
-    runner_sequence = [spec.command for spec in executable]
-
-    runbook_sequence = extract_sequence(runbook_text, RUNBOOK)
-    if runbook_sequence != runner_sequence:
-        fail("runbook command sequence differs from tools/run_i2c_hil.py")
-
-    default_commands = set(runner_sequence)
-    cfg_specs = [spec for spec in executable if spec.command == "cfg"]
-    if len(cfg_specs) != 2:
-        fail("default sequence must include initial and post-recover cfg commands")
-    for cfg_spec in cfg_specs:
-        for token in ("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"):
-            if token not in cfg_spec.expected:
-                fail(f"cfg evidence must require full output token: {token}")
-        if "Hardware config dirty:" not in cfg_spec.completion:
-            fail("cfg command must wait for the final dirty-state line")
-        if cfg_spec.timeout_s < 10.0:
-            fail("cfg command needs an extended bounded timeout window")
-    calib_specs = [spec for spec in executable if spec.command == "calib"]
-    if len(calib_specs) != 1:
-        fail("default sequence must include exactly one cached calib command")
-    calib_spec = calib_specs[0]
-    for token in ("Calibration (Cached)", "T1=", "P1=", "H1=", "Plausibility:"):
-        if token not in calib_spec.expected:
-            fail(f"cached calib evidence must require full output token: {token}")
-    if "Plausibility:" not in calib_spec.completion:
-        fail("cached calib command must wait for the final plausibility line")
-    if calib_spec.timeout_s < 10.0:
-        fail("cached calib command needs an extended bounded timeout window")
-    if "force" not in runner_sequence:
-        fail("default sequence must include forced-mode command")
-    force_index = runner_sequence.index("force")
-    expected_post_force = ["reg 0xF4", "status", "read"]
-    if runner_sequence[force_index + 1:force_index + 4] != expected_post_force:
-        fail("default sequence must capture post-force reg 0xF4, status, and read evidence")
-    for unsafe in ("wreg", "stress 500"):
-        if any(command.startswith(unsafe) for command in runner_sequence):
-            fail(f"unsafe or soak command is in default sequence: {unsafe}")
+    if commands.count("cfg") != 2 or commands.count("read") < 4:
+        fail("default plan lost required config or repeated-read evidence")
+    if commands[commands.index("force") + 1:commands.index("force") + 4] != [
+        "reg 0xF4", "status", "read"
+    ]:
+        fail("default plan lost post-force sleep/status evidence")
+    if commands[commands.index("reset") + 1] != "status":
+        fail("default plan lost post-reset status evidence")
+    if commands[commands.index("recover") + 1:commands.index("recover") + 3] != [
+        "cfg", "status"
+    ]:
+        fail("default plan lost post-recover config/status evidence")
+    if any(spec.command.startswith("wreg") for spec in executable):
+        fail("default plan contains a destructive raw write")
     if not any(item.destructive for item in manual):
-        fail("manual checklist does not include destructive raw-write opt-in item")
-    if not any(item.command == "stress 500" for item in manual):
-        fail("manual checklist does not include skipped soak item")
-    if not any(item.command == "normal on" and item.group == "soak-normal" for item in manual):
-        fail("manual checklist does not include skipped normal-mode soak item")
-    if "chipid" not in default_commands:
-        fail("default sequence must include chipid identity check")
-    if "scan" not in default_commands:
-        fail("default sequence must include scan reachability check")
-    if runner_sequence.count("read") < 4:
-        fail("default sequence must include repeated read evidence")
-    if runner_sequence[runner_sequence.index("reset") + 1] != "status":
-        fail("default sequence must capture post-reset status/im_update evidence")
-    if runner_sequence[runner_sequence.index("recover") + 1] != "cfg":
-        fail("default sequence must capture config evidence after recover")
-    assert_contains(runner_text, "CTRL_MEAS_RE", RUNNER)
-    assert_contains(runner_text, "ctrl_meas mode bits", RUNNER)
-    assert_contains(runner_text, "group", RUNNER)
-    assert_contains(runner_text, "expected_any", RUNNER)
-    assert_contains(runner_text, "validators", RUNNER)
-    assert_contains(runner_text, "command_plan.json", RUNNER)
-    assert_contains(runner_text, "results.csv", RUNNER)
-    assert_contains(runner_text, "environment.txt", RUNNER)
-    assert_contains(runner_text, "hardware_matrix_fragment.md", RUNNER)
-    assert_contains(runner_text, "failure_analysis.md", RUNNER)
-    assert_contains(runner_text, "manifest.json", RUNNER)
-    assert_contains(runner_text, "BME280_RAW_WRITE", RUNNER)
-    assert_contains(runner_text, "runner_command", RUNNER)
-    assert_contains(runner_text, "runner_args", RUNNER)
-    assert_contains(runner_text, "summary_md", RUNNER)
-    assert_contains(runner_text, "--include-job-api", RUNNER)
-    assert_contains(runner_text, "--require-pass", RUNNER)
-    assert_contains(runner_text, "--fail-on-review", RUNNER)
-    assert_contains(runner_text, "VALIDATOR_JOB_DONE_OR_FAILED", RUNNER)
-    assert_contains(runner_text, "VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED", RUNNER)
-    assert_contains(runner_text, "VALIDATOR_JOB_CANCEL_TIMED_OUT", RUNNER)
-    assert_contains(runner_text, "VALIDATOR_JOB_TIMED_OUT_RETRIEVAL", RUNNER)
-    assert_contains(runner_text, "VALIDATOR_JOB_IDLE_NO_RESULT", RUNNER)
-    assert_contains(runner_text, "reclassify_job_api_correlation", RUNNER)
+        fail("manual checklist lost destructive-work visibility")
 
-    destructive_args = runner_args(include_destructive=True)
-    destructive_sequence = [spec.command for spec in runner.build_command_sequence(destructive_args)[0]]
-    if "wreg 0xF4 0x00" not in destructive_sequence:
-        fail("--include-destructive sequence does not include expected raw write")
-    wreg_index = destructive_sequence.index("wreg 0xF4 0x00")
-    if "recover" not in destructive_sequence[wreg_index + 1:]:
-        fail("--include-destructive sequence must include recovery after raw write")
-    if "cfg" not in destructive_sequence[wreg_index + 1:]:
-        fail("--include-destructive sequence must include config evidence after raw write")
-    if "status" not in destructive_sequence[wreg_index + 1:]:
-        fail("--include-destructive sequence must include dirty-state evidence after raw write")
+    cfg_specs = [spec for spec in executable if spec.command == "cfg"]
+    for spec in cfg_specs:
+        for token in ("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"):
+            if token not in spec.expected:
+                fail(f"cfg evidence is missing parser token: {token}")
+    calib = [spec for spec in executable if spec.command == "calib"]
+    if len(calib) != 1 or "Plausibility:" not in calib[0].completion:
+        fail("cached calibration evidence no longer reaches plausibility output")
 
-    soak_args = runner_args(include_normal_soak=True, normal_soak_count=3)
-    soak_executable = runner.build_command_sequence(soak_args)[0]
-    soak_sequence = [spec.command for spec in soak_executable]
-    if soak_sequence[-7:] != ["normal on", "read", "read", "read", "normal off", "cfg", "status"]:
-        fail("--include-normal-soak sequence must include normal on, repeated reads, normal off, cfg, and status")
-    soak_cfg_specs = [spec for spec in soak_executable if spec.command == "cfg" and spec.group == "soak-normal"]
-    if len(soak_cfg_specs) != 1:
-        fail("--include-normal-soak sequence must include one soak-normal cfg command")
-    if "Hardware config dirty:" not in soak_cfg_specs[0].expected:
-        fail("--include-normal-soak cfg evidence must require dirty-state output")
-    if "Hardware config dirty:" not in soak_cfg_specs[0].completion:
-        fail("--include-normal-soak cfg command must wait for dirty-state output")
 
-    job_args = runner_args(include_job_api=True)
-    expected_job_sequence = [
+def validate_optional_plans(runner) -> None:
+    destructive = [
+        spec.command
+        for spec in runner.build_command_sequence(
+            runner_args(include_destructive=True)
+        )[0]
+    ]
+    raw_index = destructive.index("wreg 0xF4 0x00")
+    if not all(command in destructive[raw_index + 1:] for command in ("recover", "cfg", "status")):
+        fail("destructive plan does not restore and record configuration")
+
+    normal = [
+        spec.command
+        for spec in runner.build_command_sequence(
+            runner_args(include_normal_soak=True, normal_soak_count=3)
+        )[0]
+    ]
+    if normal[-7:] != ["normal on", "read", "read", "read", "normal off", "cfg", "status"]:
+        fail("normal soak plan has an unexpected command shape")
+
+    expected_jobs = [
         "job status",
         "job start init",
         "job poll 1",
@@ -230,172 +170,250 @@ def main() -> int:
         "job force 3",
         "drv",
     ]
-    job_specs = [spec for spec in runner.build_command_sequence(job_args)[0] if spec.group == "job-api"]
-    actual_job_sequence = [spec.command for spec in job_specs]
-    if actual_job_sequence != expected_job_sequence:
-        fail("--include-job-api sequence does not include the expected job-api command order")
-    if not any(runner.VALIDATOR_JOB_DONE_OR_FAILED in spec.validators for spec in job_specs):
-        fail("job-api commands must validate terminal job state")
-    if not any(runner.VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED in spec.validators for spec in job_specs):
-        fail("job-api commands must validate instruction budgets")
-    if not any(runner.VALIDATOR_JOB_CANCEL_TIMED_OUT in spec.validators for spec in job_specs):
-        fail("job-api commands must validate deadline cancellation")
-    if not any(runner.VALIDATOR_JOB_TIMED_OUT_RETRIEVAL in spec.validators for spec in job_specs):
-        fail("job-api commands must validate zero-budget terminal retrieval")
-    if not any(runner.VALIDATOR_JOB_IDLE_NO_RESULT in spec.validators for spec in job_specs):
-        fail("job-api commands must validate exactly-once terminal retrieval")
-    if actual_job_sequence.index("job resync 1") >= actual_job_sequence.index("job reset 1"):
-        fail("job-api sequence must exercise non-reset resync separately before explicit reset")
+    job_specs = [
+        spec
+        for spec in runner.build_command_sequence(
+            runner_args(include_job_api=True)
+        )[0]
+        if spec.group == "job-api"
+    ]
+    if [spec.command for spec in job_specs] != expected_jobs:
+        fail("staged-job HIL plan has an unexpected command shape")
+    required_validators = {
+        runner.VALIDATOR_JOB_DONE_OR_FAILED,
+        runner.VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,
+        runner.VALIDATOR_JOB_CANCEL_TIMED_OUT,
+        runner.VALIDATOR_JOB_TIMED_OUT_RETRIEVAL,
+        runner.VALIDATOR_JOB_IDLE_NO_RESULT,
+    }
+    actual_validators = {
+        validator for spec in job_specs for validator in spec.validators
+    }
+    if not required_validators.issubset(actual_validators):
+        fail("staged-job plan lost terminal/budget/cancellation validators")
 
-    fault_args = runner_args(include_fault_tests=True)
-    _, fault_manual = runner.build_command_sequence(fault_args)
+    _, fault_manual = runner.build_command_sequence(
+        runner_args(include_fault_tests=True)
+    )
     if not any("Requested via --include-fault-tests" in item.notes for item in fault_manual):
-        fail("--include-fault-tests must be visible in manual checklist notes")
+        fail("fault-test opt-in is not visible in the manual checklist")
 
-    for path, text in ((RUNBOOK, runbook_text), (SUMMARY, summary_text), (README, readme_text), (IDF_PORT, idf_port_text)):
-        assert_contains(text, "scan", path)
-    for path, text in ((RUNBOOK, runbook_text), (SUMMARY, summary_text), (MATRIX, matrix_text)):
-        assert_contains(text, "ACK", path)
-        assert_contains(text, "0x60", path)
-    for path, text in ((RUNBOOK, runbook_text), (SUMMARY, summary_text), (README, readme_text)):
-        assert_contains(text, "No physical", path)
+    config_specs = [
+        spec
+        for spec in runner.build_command_sequence(
+            runner_args(include_config_matrix=True)
+        )[0]
+        if spec.group == "config-matrix"
+    ]
+    if [spec.command for spec in config_specs[-2:]] != ["mode forced", "cfg"]:
+        fail("configuration matrix does not restore and capture forced policy")
+    config_commands = [spec.command for spec in config_specs]
+    required_enum_commands = {
+        *(f"osrs t {value}" for value in range(1, 6)),
+        *(f"osrs p {value}" for value in range(0, 6)),
+        *(f"osrs h {value}" for value in range(0, 6)),
+        *(f"filter {value}" for value in range(0, 5)),
+        *(f"standby {value}" for value in range(0, 8)),
+    }
+    if not required_enum_commands.issubset(config_commands):
+        fail("configuration matrix lost legal enum-value coverage")
+    if not any(spec.expected_settings for spec in config_specs if spec.command == "cfg"):
+        fail("configuration matrix lost exact register readback validators")
 
-    for result_token in (
-        "PASS",
-        "OPERATOR_CHECK_REQUIRED",
-        "REVIEW_REQUIRED",
-        "SERIAL_OK_OR_REVIEW",
-        "UNKNOWN",
-        "PASS_WITH_RESET_BUSY_RECOVERED",
-        "FAIL",
-        "TIMEOUT",
-        "SKIPPED_DRY_RUN",
-        "SKIPPED_UNSAFE",
+    invalid_specs = [
+        spec
+        for spec in runner.build_command_sequence(
+            runner_args(include_invalid_inputs=True)
+        )[0]
+        if spec.group == "invalid-input"
+    ]
+    if [spec.command for spec in invalid_specs] != [
+        spec.command for spec in runner.INVALID_INPUT_COMMANDS
+    ]:
+        fail("invalid-input opt-in lost command coverage")
+
+    benchmark_specs = [
+        spec
+        for spec in runner.build_command_sequence(
+            runner_args(include_benchmarks=True)
+        )[0]
+        if spec.group == "benchmark"
+    ]
+    if [spec.command for spec in benchmark_specs] != [
+        spec.command for spec in runner.BENCHMARK_COMMANDS
+    ]:
+        fail("benchmark opt-in lost command coverage")
+
+    duration_args = runner_args(soak_duration_s=60.0)
+    duration_specs = runner.duration_soak_cycle_commands(duration_args, 1)
+    if not {"stress 50", "stress_mix 70", "status", "drv"}.issubset(
+        {spec.command for spec in duration_specs}
     ):
-        assert_contains(runbook_text, result_token, RUNBOOK)
-
-    for field in (
-        "Operator",
-        "Date/time and timezone",
-        "Git commit",
-        "Worktree state / dirty flag",
-        "Runner command",
-        "Runner arguments",
-        "Firmware `version` output",
-        "Library version",
-        "MCU board model",
-        "MCU target",
-        "BME280 module or sensor board model",
-        "VDD",
-        "VDDIO",
-        "SDA pin",
-        "SCL pin",
-        "I2C speed",
-        "I2C pull-ups",
-        "Pull-up location",
-        "SDO state",
-        "CSB state",
-        "serial_transcript.txt",
-        "command_plan.json",
-        "results.csv",
-        "environment.txt",
-        "hardware_matrix_fragment.md",
-        "failure_analysis.md",
-        "manifest.json",
-        "Exact command transcript path",
-        "Runner final verdict",
-        "Operator notes",
-        "Operator sign-off",
-        "Temperature reference reading",
-        "BME280 temperature reading",
-        "Temperature tolerance / uncertainty",
-        "Humidity reference reading",
-        "BME280 humidity reading",
-        "Pressure reference reading",
-        "BME280 pressure reading",
-        "Reading timestamp",
+        fail("duration-soak cycle lost required safe commands")
+    if any(spec.command.startswith("wreg") for spec in duration_specs):
+        fail("duration-soak cycle contains a destructive raw write")
+    first = duration_specs[0]
+    required = runner.duration_command_timeout_s(first, duration_args)
+    if runner.duration_command_fits(required - 0.001, first, duration_args):
+        fail("duration soak can start a command without its full timeout window")
+    grouped = [
+        [spec.command for spec in group]
+        for group in runner.duration_soak_command_groups(
+            runner_args(soak_reset_interval=20), 140
+        )
+    ]
+    if ["normal on", "read", "normal off"] not in grouped:
+        fail("duration soak does not reserve normal-mode cleanup as one group")
+    if ["reset", "recover"] not in grouped:
+        fail("duration soak does not reserve reset recovery as one group")
+    final_cleanup = runner.final_cleanup_commands()
+    if [spec.command for spec in final_cleanup] != [
+        "normal off", "recover", "cfg", "status", "drv"
+    ]:
+        fail("final cleanup has an unexpected command shape")
+    if any(spec.group != "final-cleanup" for spec in final_cleanup):
+        fail("final cleanup rows lost their dedicated result group")
+    if any(spec.timeout_s <= 0.0 or spec.timeout_s > 10.0 for spec in final_cleanup):
+        fail("final cleanup has an unbounded per-command timeout")
+    cleanup_by_command = {spec.command: spec for spec in final_cleanup}
+    if "Hardware config dirty: false" not in cleanup_by_command["cfg"].expected:
+        fail("final cleanup cfg does not prove clean hardware configuration")
+    if "dirty=false" not in cleanup_by_command["status"].expected:
+        fail("final cleanup status does not require clean driver state")
+    if cleanup_by_command["status"].validators != (
+        runner.VALIDATOR_STATUS_NOT_MEASURING,
+        runner.VALIDATOR_STATUS_IM_UPDATE_CLEAR,
     ):
-        assert_contains(template_text, field, TEMPLATE)
-
-    for read_cmd in ("normal on", "normal off", "cfg"):
-        assert_contains(matrix_text, read_cmd, MATRIX)
-    for field in (
-        "Firmware `version` output",
-        "Library version",
-        "Git commit hash",
-        "Worktree state / dirty flag",
-        "HIL runner command",
-        "HIL runner arguments",
-        "MCU board model",
-        "MCU target",
-        "BME280 module or board model",
-        "VDD / VDDIO",
-        "Pull-up values and location",
-        "SDO state",
-        "CSB state",
-        "SDA/SCL pins and bus speed",
-        "Serial port and baud",
-        "Command groups",
-        "Artifact manifest path",
-        "Environmental reference instruments",
-        "Exact command transcript path",
-        "Runner final verdict",
-        "Operator notes / sign-off",
+        fail("final cleanup status lost measuring/NVM-clear validators")
+    if cleanup_by_command["drv"].validators != (
+        runner.VALIDATOR_DRIVER_ZERO_CONSECUTIVE,
     ):
-        assert_contains(matrix_text, field, MATRIX)
-    for field in (
-        "Library version as printed by `version`",
-        "HIL runner command and exact arguments",
-        "MCU target",
-        "Reference readings, BME280 readings, tolerance or uncertainty",
-        "Exact serial command transcript path",
-        "Runner final verdict",
-        "Manifest path",
-    ):
-        assert_contains(runbook_text, field, RUNBOOK)
-    assert_contains(runbook_text, "reg 0xF4", RUNBOOK)
-    assert_contains(runbook_text, "post-`force`", RUNBOOK)
-    assert_contains(runbook_text, "--confirm-raw-write BME280_RAW_WRITE", RUNBOOK)
-    assert_contains(runbook_text, "--include-normal-soak", RUNBOOK)
-    assert_contains(runbook_text, "command file", RUNBOOK)
-    assert_contains(runbook_text, "stress Errors=0", RUNBOOK)
-    assert_contains(matrix_text, "reg 0xF4", MATRIX)
-    assert_contains(matrix_text, "post-force", MATRIX)
-    assert_contains(matrix_text, "manifest.json", MATRIX)
-    assert_contains(matrix_text, "command_plan.json", MATRIX)
-    assert_contains(matrix_text, "normal-mode soak", MATRIX)
+        fail("final cleanup driver row lost zero-consecutive-failures validator")
 
-    for text, path in ((docs_index_text, DOCS_INDEX), (readme_text, README), (summary_text, SUMMARY)):
-        assert_contains(text, "BME280_HARDWARE_VALIDATION_MATRIX.md", path)
-        assert_contains(text, "I2C_HIL_RUNBOOK.md", path)
 
-    forbidden_report_claims = (
-        "Hardware run: PASS",
-        "Hardware validation: PASS",
-        "Physical HIL validation: PASS",
+def validate_documentation(validation_text: str) -> None:
+    assert_all(
+        validation_text,
+        (
+            "No physical HIL run tied to a clean `v2.0.0` commit",
+            "scan` proves only",
+            "`0x60`",
+            "--include-job-api",
+            "--include-normal-soak",
+            "--include-destructive --confirm-raw-write BME280_RAW_WRITE",
+            "--require-pass",
+            "--fail-on-review",
+            "Operator; date/time and timezone",
+            "Git commit",
+            "worktree state / dirty flag",
+            "firmware `version` output",
+            "firmware-reported library version, commit, and clean",
+            "cannot qualify exact build provenance",
+            "MCU board model and target",
+            "VDD; VDDIO",
+            "pull-up values and location",
+            "verified SDO and CSB state",
+            "Reference instrument models",
+            "serial_transcript.txt",
+            "command_plan.json",
+            "results.csv",
+            "environment.txt",
+            "operator_checklist.md",
+            "hardware_matrix_fragment.md",
+            "failure_analysis.md",
+            "manifest.json",
+            "planning budget",
+            "recorded exact elapsed time",
+            "prepends its deterministic",
+        ),
+        VALIDATION,
     )
-    scanned_docs = (runbook_text, summary_text, matrix_text, readme_text, idf_port_text)
-    for claim in forbidden_report_claims:
-        if any(claim in text for text in scanned_docs):
-            fail(f"docs contain unsupported hardware claim: {claim}")
-
-    stale_terms = (
-        "phase reports",
-        "BME280_PHASE_",
-        "BME280_PRE_HIL_READINESS_REPORT",
-        "BME280_PROMPTS_",
-        "I2C_HIL_SELFTEST_REPORT",
-        "IDF_PORT_IMPLEMENTATION.md",
-        "CODEX_PROMPT_BME280_DRIVER.md",
+    assert_all(
+        validation_text,
+        (
+            "PASS_WITH_RESET_BUSY_RECOVERED",
+            "OPERATOR_CHECK_REQUIRED",
+            "REVIEW_REQUIRED",
+            "SERIAL_OK_OR_REVIEW",
+            "UNKNOWN",
+            "FAIL` / `TIMEOUT",
+            "SKIPPED_DRY_RUN` / `SKIPPED_UNSAFE",
+        ),
+        VALIDATION,
     )
-    for term in stale_terms:
-        if any(term in text for text in scanned_docs):
-            fail(f"docs contain stale industry-readiness term: {term}")
 
-    assert_contains(matrix_text, "tools/run_i2c_hil.py", MATRIX)
-    assert_contains(matrix_text, "stress 10 as an automated forced-measurement stress substitute", MATRIX)
-    assert_contains(summary_text, "merged industry-readiness work", SUMMARY)
-    assert_contains(summary_text, "The CLI does not support counted read commands", SUMMARY)
+
+def main() -> int:
+    for path in (RUNNER, VALIDATION, README, DOCS_INDEX, IDF_PORT, SHARED_BUS):
+        if not path.exists():
+            fail(f"missing required file: {path.relative_to(ROOT)}")
+    for path in REMOVED_HIL_DOCS:
+        if path.exists():
+            fail(f"superseded HIL document still exists: {path.relative_to(ROOT)}")
+
+    py_compile.compile(str(RUNNER), doraise=True)
+    runner = load_runner()
+    parser_ok, parser_failures = runner.parser_self_test()
+    if not parser_ok:
+        fail("runner parser self-test failed: " + ", ".join(parser_failures))
+
+    validation_text = read(VALIDATION)
+    validate_default_plan(runner, validation_text)
+    validate_optional_plans(runner)
+    validate_documentation(validation_text)
+
+    runner_text = read(RUNNER)
+    assert_all(
+        runner_text,
+        (
+            "--dry-run",
+            "python -m pip install pyserial",
+            "hil_logs",
+            "astimezone()",
+            "manifest.json",
+            "summary.json",
+            "results.csv",
+            "command_plan.json",
+            "reclassify_version_provenance(",
+            "dirty host or firmware source cannot qualify exact build provenance",
+            "duration_command_fits(",
+            "BUSY_REASON_NVM_UPDATE",
+            "run_automatic_recovery(",
+            "run_final_cleanup(",
+            "run_live_plan(",
+            "duration_soak_command_groups(",
+            "expected_settings",
+        ),
+        RUNNER,
+    )
+    assert_contains(read(GITIGNORE), "hil_logs/", GITIGNORE)
+
+    for path in (README, DOCS_INDEX, IDF_PORT, SHARED_BUS):
+        assert_contains(read(path), "HARDWARE_VALIDATION.md", path)
+    assert_all(
+        read(SHARED_BUS),
+        (
+            "Owner-Managed Integration Checklist",
+            "`pollJob(nowMs, 1)`",
+            "original end-to-end deadline",
+            "checked fixed-point conversion helpers",
+            "definite address NACK",
+            "`invalidateDeviceState()`",
+            "sampleFreshness()",
+            "candidate selection, retries, aggregate health",
+        ),
+        SHARED_BUS,
+    )
+    combined = "\n".join(read(path) for path in (README, DOCS_INDEX, IDF_PORT, SHARED_BUS))
+    for removed in REMOVED_HIL_DOCS:
+        if removed.name in combined:
+            fail(f"maintained docs still reference {removed.name}")
+    claim_text = "\n".join(
+        read(path) for path in (README, DOCS_INDEX, IDF_PORT, SHARED_BUS, VALIDATION)
+    )
+    for unsupported in ("Hardware run: PASS", "Physical HIL: PASS", "HIL validated: PASS"):
+        if unsupported in claim_text:
+            fail(f"maintained docs contain unsupported hardware claim: {unsupported}")
 
     print("HIL contract PASSED")
     return 0

@@ -1,6 +1,6 @@
 # BME280 ESP-IDF Port
 
-Last updated: 2026-07-19
+Last updated: 2026-07-22
 
 This document is the maintained ESP-IDF note for the BME280 library. It replaces
 the older separate implementation report.
@@ -200,6 +200,12 @@ idf.py -C examples/idf/basic set-target esp32s2
 idf.py -C examples/idf/basic build
 ```
 
+The example CMake configuration embeds the repository's short Git commit and
+clean/dirty state in the CLI `version` output. Both tracked and untracked files
+make the build dirty. If Git metadata is unavailable it reports `unknown`, and
+the HIL runner treats that firmware provenance as review-only rather than an
+exact-build qualification.
+
 Do not claim local pure ESP-IDF validation unless those exact builds were run
 and recorded.
 
@@ -218,9 +224,8 @@ hardware result, record:
 - environmental reference notes;
 - fault/recovery and soak results if run.
 
-Use `docs/I2C_HIL_RUNBOOK.md`,
-`docs/I2C_HIL_TARGET_TEMPLATE.md`, and
-`docs/BME280_HARDWARE_VALIDATION_MATRIX.md` for that evidence.
+Use `docs/HARDWARE_VALIDATION.md` for the procedure, evidence schema, and
+result ledger.
 
 For production shared-bus application structure, use
 `docs/PRODUCTION_SHARED_BUS_GUIDE.md`. The shipped Arduino and ESP-IDF examples

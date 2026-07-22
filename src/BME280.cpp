@@ -15,7 +15,6 @@ static constexpr size_t MAX_WRITE_LEN = 16;
 static constexpr uint16_t NVM_READY_MAX_POLLS = 255;
 static constexpr uint16_t MEASURING_READY_MAX_POLLS = 255;
 static constexpr uint32_t MEASUREMENT_MARGIN_US = 1000;
-static constexpr uint32_t MAX_STANDBY_TIME_MS = 1000;
 static constexpr int64_t HUMIDITY_MAX_X4096 = 419430400;
 
 class ScopedTimeContext {
@@ -158,6 +157,33 @@ static bool isValidStandby(Standby standby) {
 
 static bool isValidMode(Mode mode) {
   return mode == Mode::SLEEP || mode == Mode::FORCED || mode == Mode::NORMAL;
+}
+
+static uint32_t standbyTimeMs(Standby standby) {
+  switch (standby) {
+    case Standby::MS_0_5:  return 1;    // rounded up from 0.5
+    case Standby::MS_62_5: return 63;   // rounded up from 62.5
+    case Standby::MS_125:  return 125;
+    case Standby::MS_250:  return 250;
+    case Standby::MS_500:  return 500;
+    case Standby::MS_1000: return 1000;
+    case Standby::MS_10:   return 10;
+    case Standby::MS_20:   return 20;
+    default:               return 125;  // safe fallback
+  }
+}
+
+// Forced-mode tracking reserves one complete conversion even when the actual
+// start is ambiguous. A normal-mode request can arrive just after a conversion
+// starts, so freshness relative to that request requires the remainder of that
+// conversion, one standby interval, and a complete next conversion.
+static uint32_t measurementReadinessIntervalMs(
+    const SensorSettings& settings) {
+  const uint32_t measurementMs = estimateMeasurementTimeMs(settings);
+  if (settings.mode == Mode::NORMAL) {
+    return (2U * measurementMs) + standbyTimeMs(settings.standby);
+  }
+  return measurementMs;
 }
 
 static Status mapPresenceError(const Status& st) {
@@ -469,8 +495,7 @@ Status BME280::_prepareBeginConfig(const Config& config) {
     Filter::OFF, Standby::MS_1000, Mode::NORMAL
   };
   const uint32_t maximumBaseIntervalMs =
-      ::BME280::estimateMeasurementTimeMs(maximumDurationSettings) +
-      MAX_STANDBY_TIME_MS;
+      measurementReadinessIntervalMs(maximumDurationSettings);
   const uint32_t maximumWrapSafeIntervalMs =
       static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
   if (config.conversionReadyTimeoutMs >
@@ -558,15 +583,13 @@ void BME280::tick(uint32_t nowMs) {
   }
 
   if (_config.mode == Mode::SLEEP) {
-    _measurementRequested = false;
-    _lastMeasurementStatus = Status::Error(Err::INVALID_PARAM, "Device is in sleep mode");
+    _finishMeasurementRequest(
+        Status::Error(Err::INVALID_PARAM, "Device is in sleep mode"));
     return;
   }
 
   if (_config.mode == Mode::FORCED || _config.mode == Mode::NORMAL) {
-    const uint32_t waitMs = (_config.mode == Mode::NORMAL)
-        ? estimateNormalCycleMs()
-        : estimateMeasurementTimeMs();
+    const uint32_t waitMs = _measurementReadinessIntervalMs();
     const uint32_t deadline = _measurementStartMs + waitMs;
     if (!deadlineReached(nowMs, deadline)) {
       return;
@@ -576,14 +599,11 @@ void BME280::tick(uint32_t nowMs) {
   bool measuring = false;
   Status st = isMeasuring(measuring);
   if (!st.ok()) {
-    _lastMeasurementStatus = st;
     if (_config.mode == Mode::FORCED &&
         _conversionState != ConversionState::IDLE) {
       _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
-      _measurementRequested = false;
-      _measurementDeadlineMs = 0;
-      _measurementStatusPolls = 0;
     }
+    _finishMeasurementRequest(st);
     return;
   }
   if (measuring) {
@@ -592,14 +612,11 @@ void BME280::tick(uint32_t nowMs) {
     }
     if (deadlineReached(nowMs, _measurementDeadlineMs) ||
         _measurementStatusPolls >= MEASURING_READY_MAX_POLLS) {
-      _measurementRequested = false;
-      _measurementDeadlineMs = 0;
-      _measurementStatusPolls = 0;
-      _lastMeasurementStatus =
-          Status::Error(Err::TIMEOUT, "Measurement ready timeout");
       if (_config.mode == Mode::FORCED) {
         _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
       }
+      _finishMeasurementRequest(
+          Status::Error(Err::TIMEOUT, "Measurement ready timeout"));
       return;
     }
     _measurementStatusPolls++;
@@ -617,16 +634,13 @@ void BME280::tick(uint32_t nowMs) {
 
   st = _readRawData(candidateRaw);
   if (!st.ok()) {
-    _lastMeasurementStatus = st;
+    _finishMeasurementRequest(st);
     return;
   }
 
   st = _compensate(candidateRaw, candidateCompensated, candidateTFine);
   if (!st.ok()) {
-    _lastMeasurementStatus = st;
-    _measurementRequested = false;
-    _measurementDeadlineMs = 0;
-    _measurementStatusPolls = 0;
+    _finishMeasurementRequest(st);
     return;
   }
 
@@ -1536,7 +1550,8 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
           _conversionState = ConversionState::IN_PROGRESS;
           if (!_jobDeadlineActive) {
-            _jobDeadlineMs = nowMs + _config.conversionReadyTimeoutMs;
+            _jobDeadlineMs = nowMs + _measurementReadinessIntervalMs() +
+                             _config.conversionReadyTimeoutMs;
             _jobDeadlineActive = true;
             _jobWaitPolls = 0;
           }
@@ -1582,12 +1597,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         }
         _jobForcedTriggerMayHaveReached = true;
         _conversionState = ConversionState::IN_PROGRESS;
-        _measurementRequested = true;
-        _measurementReady = false;
-        _measurementStartMs = nowMs;
-        _measurementDeadlineMs = nowMs + estimateMeasurementTimeMs() +
-                                 _config.conversionReadyTimeoutMs;
-        _measurementStatusPolls = 0;
+        _startMeasurementTracking(nowMs);
         _jobDeadlineMs = nowMs + estimateMeasurementTimeMs();
         _jobDeadlineActive = true;
         _jobPhase = JobPhase::FORCE_WAIT_TIME;
@@ -1601,7 +1611,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           _lastMeasurementStatus = _jobStatus;
           return _jobResult(instructionsUsed);
         }
-        _jobDeadlineMs = nowMs + _config.conversionReadyTimeoutMs;
+        _jobDeadlineMs = _measurementDeadlineMs;
         _jobDeadlineActive = true;
         _jobWaitPolls = 0;
         _jobPhase = JobPhase::FORCE_READ_STATUS;
@@ -1800,11 +1810,8 @@ Status BME280::requestMeasurement() {
     if (measuring) {
       // A conversion can still be running after config writes in forced mode.
       // Track completion instead of forcing the caller to re-issue the request.
-      _measurementRequested = true;
       const uint32_t nowMs = _nowMs();
-      _measurementStartMs = nowMs - estimateMeasurementTimeMs();
-      _measurementDeadlineMs = nowMs + _config.conversionReadyTimeoutMs;
-      _measurementStatusPolls = 0;
+      _startMeasurementTracking(nowMs);
       _conversionState = ConversionState::IN_PROGRESS;
       st = Status::Error(Err::IN_PROGRESS, "Measurement already in progress");
       _lastMeasurementStatus = st;
@@ -1823,25 +1830,15 @@ Status BME280::requestMeasurement() {
       return st;
     }
 
-    _measurementRequested = true;
     _conversionState = ConversionState::IN_PROGRESS;
-    _measurementStartMs = _nowMs();
-    _measurementDeadlineMs =
-        _measurementStartMs + estimateMeasurementTimeMs() +
-        _config.conversionReadyTimeoutMs;
-    _measurementStatusPolls = 0;
+    _startMeasurementTracking(_nowMs());
 
     st = Status::Error(Err::IN_PROGRESS, "Measurement started");
     _lastMeasurementStatus = st;
     return st;
   }
 
-  _measurementRequested = true;
-  _measurementStartMs = _nowMs();
-  _measurementDeadlineMs =
-      _measurementStartMs + estimateNormalCycleMs() +
-      _config.conversionReadyTimeoutMs;
-  _measurementStatusPolls = 0;
+  _startMeasurementTracking(_nowMs());
   Status st = Status::Error(Err::IN_PROGRESS, "Measurement scheduled");
   _lastMeasurementStatus = st;
   return st;
@@ -1853,6 +1850,11 @@ Status BME280::getMeasurement(Measurement& out) {
   }
   if (!_measurementReady) {
     return Status::Error(Err::MEASUREMENT_NOT_READY, "Measurement not ready");
+  }
+  if (sampleFreshness() != SampleFreshness::FRESH) {
+    _measurementReady = false;
+    return Status::Error(Err::MEASUREMENT_NOT_READY,
+                         "Unread measurement is stale");
   }
 
   out.temperatureC = static_cast<float>(_compSample.tempC_x100) / 100.0f;
@@ -2425,17 +2427,7 @@ uint32_t BME280::estimateMeasurementTimeMs() const {
 }
 
 uint32_t BME280::getStandbyTimeMs() const {
-  switch (_config.standby) {
-    case Standby::MS_0_5:  return 1;    // rounded up from 0.5
-    case Standby::MS_62_5: return 63;   // rounded up from 62.5
-    case Standby::MS_125:  return 125;
-    case Standby::MS_250:  return 250;
-    case Standby::MS_500:  return 500;
-    case Standby::MS_1000: return 1000;
-    case Standby::MS_10:   return 10;
-    case Standby::MS_20:   return 20;
-    default:               return 125;  // safe fallback
-  }
+  return standbyTimeMs(_config.standby);
 }
 
 uint32_t BME280::estimateNormalCycleMs() const {
@@ -2538,10 +2530,8 @@ Status BME280::writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len) 
   const Status st = writeRegs(startReg, buf, len);
   if (touchesConfig) {
     if (st.ok()) {
-      _invalidateSampleCache();
       _markHardwareConfigDirty(diagnosticRawWriteDirtyStatus(startReg));
     } else if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
-      _invalidateSampleCache();
       _markHardwareConfigDirty(st);
     }
   }
@@ -2663,6 +2653,9 @@ void BME280::_markHardwareConfigDirty(const Status& st) {
     _hardwareConfigDirtyError = st;
   }
   _configSyncState = ConfigSyncState::RESYNC_REQUIRED;
+  // Retain the last committed sample for explicitly stale diagnostics, but
+  // revoke current/unread readiness as soon as hardware state is uncertain.
+  _cancelMeasurementTrackingForStateChange();
 }
 
 void BME280::_clearHardwareConfigDirty() {
@@ -3220,6 +3213,28 @@ void BME280::_cancelMeasurementTrackingForStateChange() {
   _measurementDeadlineMs = 0;
   _measurementStatusPolls = 0;
   _lastMeasurementStatus = Status::Error(Err::RESYNC_REQUIRED);
+}
+
+uint32_t BME280::_measurementReadinessIntervalMs() const {
+  return measurementReadinessIntervalMs(sensorSettings());
+}
+
+void BME280::_startMeasurementTracking(uint32_t startMs) {
+  _measurementRequested = true;
+  _measurementReady = false;
+  _measurementStartMs = startMs;
+  _measurementDeadlineMs = startMs + _measurementReadinessIntervalMs() +
+                           _config.conversionReadyTimeoutMs;
+  _measurementStatusPolls = 0;
+}
+
+void BME280::_finishMeasurementRequest(const Status& status) {
+  _measurementRequested = false;
+  _measurementReady = false;
+  _measurementStartMs = 0;
+  _measurementDeadlineMs = 0;
+  _measurementStatusPolls = 0;
+  _lastMeasurementStatus = status;
 }
 
 void BME280::_invalidateSampleCache() {

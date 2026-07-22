@@ -21,7 +21,7 @@ enum class Err : uint8_t {
   CONVERSION_NOT_READY = MEASUREMENT_NOT_READY, ///< Alias for cross-library uniformity
   COMPENSATION_ERROR,        ///< Compensation math failed
   BUSY,                      ///< Device is busy
-  IN_PROGRESS,               ///< Operation scheduled; call tick() to complete
+  IN_PROGRESS,               ///< Operation accepted; advance with tick() or pollJob() as documented
 
   // I2C transport details (append-only to preserve existing values)
   I2C_NACK_ADDR,             ///< I2C address not acknowledged
@@ -88,10 +88,13 @@ struct Status {
   constexpr Status(Err c, int32_t d) : code(c), detail(d), msg(toString(c)) {}
 
   /// Copy while re-canonicalizing message ownership.
+  /// @param other Status to copy.
   constexpr Status(const Status& other)
       : code(other.code), detail(other.detail), msg(toString(other.code)) {}
 
   /// Assign while re-canonicalizing message ownership.
+  /// @param other Status to copy.
+  /// @return Reference to this status.
   constexpr Status& operator=(const Status& other) {
     code = other.code;
     detail = other.detail;

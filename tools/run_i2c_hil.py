@@ -61,7 +61,14 @@ FAILURE_PATTERNS = (
     re.compile(r"\[E\]"),
 )
 CTRL_MEAS_RE = re.compile(r"Reg\s+0xF4\s*=\s*0x([0-9A-Fa-f]{1,2})")
+CFG_CTRL_HUM_RE = re.compile(r"^\s*ctrl_hum:\s*0x([0-9A-Fa-f]{1,2})", re.MULTILINE)
+CFG_CTRL_MEAS_RE = re.compile(r"^\s*ctrl_meas:\s*0x([0-9A-Fa-f]{1,2})", re.MULTILINE)
+CFG_CONFIG_RE = re.compile(r"^\s*config:\s*0x([0-9A-Fa-f]{1,2})", re.MULTILINE)
 STATUS_RE = re.compile(r"Status:\s*0x([0-9A-Fa-f]{1,2})\s*\(measuring=(\d),\s*im_update=(\d)\)")
+STATUS_RESULT_RE = re.compile(
+    r"^\s*Status:\s*([A-Z_]+)\s*\(code=(\d+),\s*detail=(-?\d+)\)",
+    re.MULTILINE,
+)
 STRESS_ERRORS_RE = re.compile(r"\bErrors:\s*(\d+)\b")
 STRESS_DURATION_RE = re.compile(r"\bDuration:\s*(\d+)\s*ms\b")
 STRESS_RATE_RE = re.compile(r"\bRate:\s*([0-9]+(?:\.[0-9]+)?)\s*(samples|ops)/s\b")
@@ -70,6 +77,8 @@ SELFTEST_RESULT_RE = re.compile(r"Selftest result:\s*pass=\s*(\d+)\s*fail=\s*(\d
 CONSECUTIVE_FAILURES_RE = re.compile(r"Consecutive failures:\s*(\d+)")
 TOTAL_FAILURES_RE = re.compile(r"Total failures:\s*(\d+)")
 CHIP_ID_RE = re.compile(r"Chip ID:\s*0x([0-9A-Fa-f]{1,2})|Reg\s+0xD0\s*=\s*0x([0-9A-Fa-f]{1,2})")
+LIBRARY_VERSION_RE = re.compile(r"BME280 library version:\s*(\S+)")
+LIBRARY_COMMIT_RE = re.compile(r"BME280 library commit:\s*(\S+)\s*\(([^)]+)\)")
 JOB_STATE_RE = re.compile(r"Job state:\s*([A-Z_]+)")
 JOB_BOUNDARY_RE = re.compile(r"Boundary:\s*([A-Z_]+)")
 JOB_ID_RE = re.compile(r"Job ID:\s*(\d+)")
@@ -102,6 +111,9 @@ VALIDATOR_JOB_CANCEL_TIMED_OUT = "job_cancel_timed_out"
 VALIDATOR_JOB_TIMED_OUT_RETRIEVAL = "job_timed_out_retrieval"
 VALIDATOR_JOB_IDLE_NO_RESULT = "job_idle_no_result"
 JOB_CLI_DEFAULT_BUDGET = 1
+# Keep these in sync with the public v2 Err and BusyReason numeric contracts.
+ERR_BUSY_CODE = 11
+BUSY_REASON_NVM_UPDATE = 5
 
 
 @dataclasses.dataclass(frozen=True)
@@ -114,6 +126,7 @@ class CommandSpec:
     unknowns: tuple[str, ...] = ()
     completion: tuple[str, ...] = ()
     validators: tuple[str, ...] = ()
+    expected_settings: tuple[tuple[str, int], ...] = ()
     failures: tuple[str, ...] = ()
     timeout_s: float = 5.0
     pre_delay_s: float = 0.0
@@ -337,6 +350,7 @@ BASE_COMMANDS: tuple[CommandSpec, ...] = (
         unknowns=("Status: BUSY",),
         completion=("Status:",),
         timeout_s=8.0,
+        recovery_command="recover",
         notes=(
             "Soft reset is volatile and expected to be safe for BME280. "
             "A bounded BUSY result means NVM copy was still in progress and "
@@ -492,196 +506,164 @@ def normal_soak_commands(count: int, interval_s: float) -> tuple[CommandSpec, ..
     )
 
 
-CONFIG_MATRIX_COMMANDS: tuple[CommandSpec, ...] = (
-    CommandSpec(
-        command="mode sleep",
-        purpose="Enter sleep before safe configuration boundary changes.",
+def config_matrix_set(command: str, purpose: str) -> CommandSpec:
+    return CommandSpec(
+        command=command,
+        purpose=purpose,
         group="config-matrix",
         expected=("Status: OK",),
         timeout_s=5.0,
         requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="osrs t 1",
-        purpose="Set temperature oversampling to minimum enabled value.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="osrs p 1",
-        purpose="Set pressure oversampling to minimum enabled value.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="osrs h 1",
-        purpose="Set humidity oversampling to minimum enabled value.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="filter 0",
-        purpose="Set IIR filter boundary value OFF.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="standby 0",
-        purpose="Set standby boundary value 0.5 ms.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
+    )
+
+
+def config_matrix_readback(purpose: str, **settings: int) -> CommandSpec:
+    return CommandSpec(
         command="cfg",
-        purpose="Capture register/cache settings after minimum boundary configuration.",
+        purpose=purpose,
         group="config-matrix",
         expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
         completion=("Hardware config dirty:",),
+        expected_settings=tuple(settings.items()),
         timeout_s=10.0,
         requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="osrs t 5",
-        purpose="Set temperature oversampling to maximum BME280 value X16.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="osrs p 5",
-        purpose="Set pressure oversampling to maximum BME280 value X16.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="osrs h 5",
-        purpose="Set humidity oversampling to maximum BME280 value X16.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="filter 4",
-        purpose="Set IIR filter maximum value X16.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="standby 7",
-        purpose="Set standby boundary value 20 ms.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="timing",
-        purpose="Capture estimated measurement timing at maximum oversampling boundary.",
-        group="config-matrix",
-        expected=("Estimated measurement time", "Estimated normal cycle"),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="force",
-        purpose="Run one forced measurement at maximum oversampling boundary.",
-        group="config-matrix",
-        expected=("Temp:", "Pressure:", "Humidity:"),
-        timeout_s=15.0,
-        operator_check=True,
-        requires_opt_in="--include-config-matrix",
-        notes="Operator must judge environmental plausibility.",
-    ),
-    CommandSpec(
-        command="raw",
-        purpose="Capture raw cached ADC after maximum oversampling boundary measurement.",
-        group="config-matrix",
-        expected=("Raw ADC", "Valid channels: T=", "Cached sample age"),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="comp",
-        purpose="Capture fixed-point compensated sample after maximum oversampling boundary measurement.",
-        group="config-matrix",
-        expected=("Compensated", "Valid channels: T="),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="mode sleep",
-        purpose="Return to sleep before restoring default example configuration.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="osrs t 1",
-        purpose="Restore default temperature oversampling.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="osrs p 1",
-        purpose="Restore default pressure oversampling.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="osrs h 1",
-        purpose="Restore default humidity oversampling.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="filter 0",
-        purpose="Restore default filter setting.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="standby 2",
-        purpose="Restore default 125 ms standby setting.",
-        group="config-matrix",
-        expected=("Status: OK",),
-        timeout_s=5.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-    CommandSpec(
-        command="cfg",
-        purpose="Capture restored register/cache settings after boundary matrix.",
-        group="config-matrix",
-        expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
-        completion=("Hardware config dirty:",),
-        timeout_s=10.0,
-        requires_opt_in="--include-config-matrix",
-    ),
-)
+    )
+
+
+def build_config_matrix_commands() -> tuple[CommandSpec, ...]:
+    """Exercise every legal public enum value and verify register readback."""
+    specs: list[CommandSpec] = [
+        config_matrix_set(
+            "mode sleep", "Enter sleep before safe configuration changes."
+        )
+    ]
+
+    # Temperature SKIP has no valid measurement combination in this driver:
+    # pressure/humidity enabled would lack t_fine, while all channels skipped is
+    # rejected. Values 1..5 are therefore the complete legal temperature set.
+    for value in range(1, 6):
+        specs.extend((
+            config_matrix_set(
+                f"osrs t {value}",
+                f"Exercise legal temperature oversampling enum value {value}.",
+            ),
+            config_matrix_readback(
+                f"Verify temperature oversampling enum value {value}.",
+                osrs_t=value,
+                osrs_p=1,
+                osrs_h=1,
+            ),
+        ))
+    specs.append(config_matrix_set("osrs t 1", "Restore temperature oversampling X1."))
+
+    for channel, evidence_key in (("p", "osrs_p"), ("h", "osrs_h")):
+        for value in range(0, 6):
+            expected = {"osrs_t": 1, "osrs_p": 1, "osrs_h": 1}
+            expected[evidence_key] = value
+            specs.extend((
+                config_matrix_set(
+                    f"osrs {channel} {value}",
+                    f"Exercise legal {channel} oversampling enum value {value}.",
+                ),
+                config_matrix_readback(
+                    f"Verify {channel} oversampling enum value {value}.",
+                    **expected,
+                ),
+            ))
+        specs.append(config_matrix_set(
+            f"osrs {channel} 1", f"Restore {channel} oversampling X1."
+        ))
+
+    for value in range(0, 5):
+        specs.extend((
+            config_matrix_set(
+                f"filter {value}", f"Exercise legal filter enum value {value}."
+            ),
+            config_matrix_readback(
+                f"Verify filter enum value {value}.", filter=value, standby=2
+            ),
+        ))
+    specs.append(config_matrix_set("filter 0", "Restore default filter OFF."))
+
+    for value in range(0, 8):
+        specs.extend((
+            config_matrix_set(
+                f"standby {value}", f"Exercise legal standby enum value {value}."
+            ),
+            config_matrix_readback(
+                f"Verify standby enum value {value}.", filter=0, standby=value
+            ),
+        ))
+
+    specs.extend((
+        config_matrix_set("osrs t 5", "Select maximum temperature oversampling."),
+        config_matrix_set("osrs p 5", "Select maximum pressure oversampling."),
+        config_matrix_set("osrs h 5", "Select maximum humidity oversampling."),
+        config_matrix_set("filter 4", "Select maximum IIR filter coefficient."),
+        config_matrix_readback(
+            "Verify maximum-value configuration before measurement.",
+            osrs_t=5,
+            osrs_p=5,
+            osrs_h=5,
+            filter=4,
+            standby=7,
+        ),
+        CommandSpec(
+            command="timing",
+            purpose="Capture timing at maximum oversampling.",
+            group="config-matrix",
+            expected=("Estimated measurement time", "Estimated normal cycle"),
+            timeout_s=5.0,
+            requires_opt_in="--include-config-matrix",
+        ),
+        CommandSpec(
+            command="force",
+            purpose="Run a forced measurement at maximum oversampling.",
+            group="config-matrix",
+            expected=("Temp:", "Pressure:", "Humidity:"),
+            timeout_s=15.0,
+            operator_check=True,
+            requires_opt_in="--include-config-matrix",
+            notes="Operator must judge environmental plausibility.",
+        ),
+        CommandSpec(
+            command="raw",
+            purpose="Capture raw ADC values at maximum oversampling.",
+            group="config-matrix",
+            expected=("Raw ADC", "Valid channels: T=", "Cached sample age"),
+            timeout_s=5.0,
+            requires_opt_in="--include-config-matrix",
+        ),
+        CommandSpec(
+            command="comp",
+            purpose="Capture compensated values at maximum oversampling.",
+            group="config-matrix",
+            expected=("Compensated", "Valid channels: T="),
+            timeout_s=5.0,
+            requires_opt_in="--include-config-matrix",
+        ),
+        config_matrix_set("mode sleep", "Enter sleep before restoring defaults."),
+        config_matrix_set("osrs t 1", "Restore temperature oversampling X1."),
+        config_matrix_set("osrs p 1", "Restore pressure oversampling X1."),
+        config_matrix_set("osrs h 1", "Restore humidity oversampling X1."),
+        config_matrix_set("filter 0", "Restore default filter OFF."),
+        config_matrix_set("standby 2", "Restore default 125 ms standby."),
+        config_matrix_set(
+            "mode forced", "Restore default forced policy; hardware remains asleep."
+        ),
+        config_matrix_readback(
+            "Verify restored default register settings.",
+            osrs_t=1,
+            osrs_p=1,
+            osrs_h=1,
+            filter=0,
+            standby=2,
+        ),
+    ))
+    return tuple(specs)
+
+
+CONFIG_MATRIX_COMMANDS: tuple[CommandSpec, ...] = build_config_matrix_commands()
 
 
 INVALID_INPUT_COMMANDS: tuple[CommandSpec, ...] = (
@@ -1036,6 +1018,22 @@ def worktree_state() -> str:
     return "dirty" if status else "clean"
 
 
+def repository_provenance() -> dict[str, str]:
+    return {
+        "branch": git_value(["branch", "--show-current"]),
+        "commit": git_value(["rev-parse", "HEAD"]),
+        "worktree": worktree_state(),
+    }
+
+
+def expected_library_version() -> str:
+    try:
+        data = json.loads((ROOT / "library.json").read_text(encoding="utf-8"))
+        return str(data["version"])
+    except (OSError, KeyError, TypeError, ValueError):
+        return "unavailable"
+
+
 def parse_address(value: str) -> str:
     text = value.strip().lower()
     try:
@@ -1135,6 +1133,9 @@ def build_command_sequence(args: argparse.Namespace) -> tuple[list[CommandSpec],
         errors = custom_command_safety_errors(commands, args)
         if errors:
             raise ValueError("Custom command file contains gated commands: " + "; ".join(errors))
+        if not any(spec.command.strip().lower() == "version" for spec in commands):
+            version_spec = next(spec for spec in BASE_COMMANDS if spec.command == "version")
+            commands.insert(0, version_spec.formatted(address=args.address))
         return commands, []
 
     executable = [cmd.formatted(address=args.address) for cmd in BASE_COMMANDS]
@@ -1268,14 +1269,38 @@ def completion_tokens_match(spec: CommandSpec, output: str) -> bool:
 
 def extract_parsed_evidence(output: str) -> dict:
     evidence: dict[str, object] = {}
+    if match := LIBRARY_VERSION_RE.search(output):
+        evidence["library_version"] = match.group(1)
+    if match := LIBRARY_COMMIT_RE.search(output):
+        evidence["library_commit"] = match.group(1)
+        evidence["library_worktree"] = match.group(2)
     if match := CTRL_MEAS_RE.search(output):
         ctrl_meas = int(match.group(1), 16)
         evidence["ctrl_meas"] = f"0x{ctrl_meas:02X}"
         evidence["ctrl_meas_mode_bits"] = ctrl_meas & 0x03
+    if match := CFG_CTRL_HUM_RE.search(output):
+        ctrl_hum = int(match.group(1), 16)
+        evidence["cfg_ctrl_hum"] = f"0x{ctrl_hum:02X}"
+        evidence["osrs_h"] = ctrl_hum & 0x07
+    if match := CFG_CTRL_MEAS_RE.search(output):
+        cfg_ctrl_meas = int(match.group(1), 16)
+        evidence["cfg_ctrl_meas"] = f"0x{cfg_ctrl_meas:02X}"
+        evidence["osrs_t"] = (cfg_ctrl_meas >> 5) & 0x07
+        evidence["osrs_p"] = (cfg_ctrl_meas >> 2) & 0x07
+        evidence["cfg_mode_bits"] = cfg_ctrl_meas & 0x03
+    if match := CFG_CONFIG_RE.search(output):
+        config = int(match.group(1), 16)
+        evidence["cfg_config"] = f"0x{config:02X}"
+        evidence["standby"] = (config >> 5) & 0x07
+        evidence["filter"] = (config >> 2) & 0x07
     if match := STATUS_RE.search(output):
         evidence["status_register"] = f"0x{int(match.group(1), 16):02X}"
         evidence["measuring"] = int(match.group(2))
         evidence["im_update"] = int(match.group(3))
+    if match := STATUS_RESULT_RE.search(output):
+        evidence["status_name"] = match.group(1)
+        evidence["status_code"] = int(match.group(2))
+        evidence["status_detail"] = int(match.group(3))
     if match := STRESS_ERRORS_RE.search(output):
         evidence["stress_errors"] = int(match.group(1))
     if match := STRESS_DURATION_RE.search(output):
@@ -1470,6 +1495,15 @@ def validate_parsed_output(spec: CommandSpec, output: str) -> tuple[str | None, 
             reasons.append("cancellation terminal was delivered exactly once")
         else:
             return RESULT_REVIEW, f"unknown runner validator: {validator}"
+    for name, expected in spec.expected_settings:
+        actual = evidence.get(name)
+        if actual is None:
+            return RESULT_REVIEW, f"configuration field {name} was not parsed from cfg output."
+        if actual != expected:
+            return RESULT_FAIL, (
+                f"configuration field {name}={actual}, expected {expected}."
+            )
+        reasons.append(f"{name}={expected}")
     if reasons:
         return None, "; ".join(reasons)
     return None, ""
@@ -1513,6 +1547,80 @@ def row_is_pass(row: dict, command: str | None = None) -> bool:
     if command is not None and row.get("command") != command:
         return False
     return row.get("serial_result") == RESULT_PASS
+
+
+def reclassify_version_provenance(
+    results: list[dict],
+    *,
+    expected_version: str,
+    start_provenance: dict[str, str],
+    end_provenance: dict[str, str],
+) -> int:
+    """Reject stale firmware and expose repository changes during a HIL run."""
+    row = next((item for item in results if item.get("command") == "version"), None)
+    if row is None or row.get("serial_result") in (RESULT_TIMEOUT, RESULT_FAIL):
+        return 0
+
+    evidence = row.get("parsed_evidence", {})
+    failures: list[str] = []
+    reviews: list[str] = []
+    firmware_version = str(evidence.get("library_version", ""))
+    firmware_commit = str(evidence.get("library_commit", ""))
+    firmware_worktree = str(evidence.get("library_worktree", "")).lower()
+    host_commit = start_provenance.get("commit", "")
+    host_worktree = start_provenance.get("worktree", "").lower()
+
+    if not firmware_version:
+        reviews.append("firmware library version was not parsed")
+    elif expected_version == "unavailable":
+        reviews.append("host library version is unavailable")
+    elif firmware_version != expected_version:
+        failures.append(
+            f"firmware library version {firmware_version} != host {expected_version}"
+        )
+
+    if not firmware_commit or firmware_commit == "unknown":
+        reviews.append("firmware commit was not parsed or is unknown")
+    elif host_commit == "unavailable":
+        reviews.append("host commit is unavailable")
+    elif not (host_commit.startswith(firmware_commit) or firmware_commit.startswith(host_commit)):
+        failures.append(
+            f"firmware commit {firmware_commit} does not match host {host_commit}"
+        )
+
+    if not firmware_worktree or firmware_worktree == "unknown":
+        reviews.append("firmware worktree state was not parsed or is unknown")
+    elif host_worktree in ("clean", "dirty") and firmware_worktree != host_worktree:
+        failures.append(
+            f"firmware worktree {firmware_worktree} != host {host_worktree}"
+        )
+
+    if host_worktree == "dirty" or firmware_worktree == "dirty":
+        reviews.append(
+            "dirty host or firmware source cannot qualify exact build provenance"
+        )
+    elif host_worktree not in ("clean", "dirty"):
+        reviews.append("host worktree state is unavailable")
+
+    if end_provenance != start_provenance:
+        reviews.append("repository branch/commit/worktree changed during the HIL run")
+
+    issues = failures + reviews
+    if not issues:
+        suffix = "firmware version/commit/worktree match the captured host provenance"
+        prior = str(row.get("classification_reason", "")).strip()
+        row["classification_reason"] = f"{prior} {suffix}".strip()
+        return 0
+
+    if failures:
+        row["serial_result"] = RESULT_FAIL
+    elif row.get("serial_result") not in (RESULT_FAIL, RESULT_TIMEOUT):
+        row["serial_result"] = RESULT_REVIEW
+    prior = str(row.get("classification_reason", "")).strip()
+    row["classification_reason"] = "; ".join(
+        part for part in (prior, *issues) if part
+    )
+    return len(issues)
 
 
 def reclassify_job_api_correlation(results: list[dict]) -> int:
@@ -1592,12 +1700,13 @@ def reclassify_job_api_correlation(results: list[dict]) -> int:
 
 
 def row_is_reset_nvm_busy(row: dict) -> bool:
-    clean = row_output(row)
+    evidence = row.get("parsed_evidence", {})
     return (
         row.get("command") == "reset"
         and row.get("serial_result") == RESULT_UNKNOWN
-        and "Status: BUSY" in clean
-        and "NVM update in progress" in clean
+        and evidence.get("status_name") == "BUSY"
+        and evidence.get("status_code") == ERR_BUSY_CODE
+        and evidence.get("status_detail") == BUSY_REASON_NVM_UPDATE
     )
 
 
@@ -1729,6 +1838,7 @@ def run_serial_command(
     saw_output = False
     matched_expected = False
     matched_failure = False
+    command_sent = False
     chunks: list[str] = []
 
     boundary = f"\n--- COMMAND {spec.command!r} @ {timestamp()} ---\n"
@@ -1742,42 +1852,61 @@ def run_serial_command(
         transcript.flush()
         if verbose:
             print(f"PRE_DELAY {spec.pre_delay_s:.3f}s before command")
-        time.sleep(spec.pre_delay_s)
     if command_pacing_s > 0.0:
         transcript.write(f"COMMAND_PACING {command_pacing_s:.3f}s before command\n")
         transcript.flush()
         if verbose:
             print(f"COMMAND_PACING {command_pacing_s:.3f}s before command")
-        time.sleep(command_pacing_s)
 
-    ser.write((spec.command + "\n").encode("utf-8"))
-    ser.flush()
-
-    while True:
-        chunk = read_available(ser)
-        if chunk:
-            saw_output = True
-            chunks.append(chunk)
-            transcript.write(chunk)
-            transcript.flush()
-            if verbose:
-                print(chunk, end="", flush=True)
-            last_rx = time.monotonic()
-            clean = strip_ansi("".join(chunks))
-            matched_expected = output_has_expected(spec, clean)
-            matched_failure = output_has_failure(spec, clean)
-
-        now = time.monotonic()
-        if saw_output and (matched_expected or matched_failure) and now - last_rx >= idle_after_match_s:
-            completion = "MATCHED_FAILURE" if matched_failure else "MATCHED_EXPECTED"
-            break
-        if saw_output and not spec.expected and now - last_rx >= idle_after_output_s:
-            completion = "SERIAL_IDLE_NO_EXPECTED_TOKENS"
-            break
-        if now >= deadline:
+    pre_command_delay_s = spec.pre_delay_s + command_pacing_s
+    remaining_before_delay_s = max(0.0, deadline - time.monotonic())
+    if pre_command_delay_s >= remaining_before_delay_s:
+        completion = RESULT_TIMEOUT
+        transcript.write(
+            "PRE_COMMAND_TIMEOUT: delay/pacing would consume the command deadline; "
+            "command not sent.\n"
+        )
+        transcript.flush()
+    else:
+        if pre_command_delay_s > 0.0:
+            time.sleep(pre_command_delay_s)
+        if time.monotonic() >= deadline:
             completion = RESULT_TIMEOUT
-            break
-        time.sleep(0.05)
+            transcript.write(
+                "PRE_COMMAND_TIMEOUT: deadline elapsed during delay/pacing; "
+                "command not sent.\n"
+            )
+            transcript.flush()
+        else:
+            ser.write((spec.command + "\n").encode("utf-8"))
+            ser.flush()
+            command_sent = True
+
+            while True:
+                chunk = read_available(ser)
+                if chunk:
+                    saw_output = True
+                    chunks.append(chunk)
+                    transcript.write(chunk)
+                    transcript.flush()
+                    if verbose:
+                        print(chunk, end="", flush=True)
+                    last_rx = time.monotonic()
+                    clean = strip_ansi("".join(chunks))
+                    matched_expected = output_has_expected(spec, clean)
+                    matched_failure = output_has_failure(spec, clean)
+
+                now = time.monotonic()
+                if saw_output and (matched_expected or matched_failure) and now - last_rx >= idle_after_match_s:
+                    completion = "MATCHED_FAILURE" if matched_failure else "MATCHED_EXPECTED"
+                    break
+                if saw_output and not spec.expected and now - last_rx >= idle_after_output_s:
+                    completion = "SERIAL_IDLE_NO_EXPECTED_TOKENS"
+                    break
+                if now >= deadline:
+                    completion = RESULT_TIMEOUT
+                    break
+                time.sleep(0.05)
 
     output = "".join(chunks)
     elapsed = time.monotonic() - start
@@ -1799,11 +1928,13 @@ def run_serial_command(
         "expected_any": list(spec.expected_any),
         "unknowns": list(spec.unknowns),
         "validators": list(spec.validators),
+        "expected_settings": dict(spec.expected_settings),
         "serial_result": result,
         "operator_result": RESULT_OPERATOR if spec.operator_check else "",
         "completion": completion,
         "elapsed_s": round(elapsed, 3),
         "pre_delay_s": spec.pre_delay_s,
+        "command_sent": command_sent,
         "notes": spec.notes,
         "classification_reason": reason,
         "destructive": spec.destructive,
@@ -1829,11 +1960,13 @@ def dry_run_result(spec: CommandSpec) -> dict:
         "expected_any": list(spec.expected_any),
         "unknowns": list(spec.unknowns),
         "validators": list(spec.validators),
+        "expected_settings": dict(spec.expected_settings),
         "serial_result": result,
         "operator_result": RESULT_OPERATOR if spec.operator_check else "",
         "completion": "DRY_RUN",
         "elapsed_s": 0.0,
         "pre_delay_s": spec.pre_delay_s,
+        "command_sent": False,
         "notes": spec.notes,
         "classification_reason": "Dry-run only; no serial command was sent.",
         "destructive": spec.destructive,
@@ -1858,6 +1991,7 @@ def session_error_result(message: str) -> dict:
         "completion": "EXCEPTION",
         "elapsed_s": 0.0,
         "pre_delay_s": 0.0,
+        "command_sent": False,
         "notes": "",
         "classification_reason": message,
         "destructive": False,
@@ -1871,6 +2005,15 @@ def session_error_result(message: str) -> dict:
 def parser_self_test() -> tuple[bool, list[str]]:
     checks: list[tuple[str, bool]] = []
     checks.append(("chip id parser", extract_parsed_evidence("Chip ID: 0x60").get("chip_id") == "0x60"))
+    canonical_busy = extract_parsed_evidence(
+        "  Status: BUSY (code=11, detail=5)\n  Message: BUSY\n"
+    )
+    checks.append((
+        "canonical reset BUSY parser",
+        canonical_busy.get("status_name") == "BUSY"
+        and canonical_busy.get("status_code") == ERR_BUSY_CODE
+        and canonical_busy.get("status_detail") == BUSY_REASON_NVM_UPDATE,
+    ))
     checks.append(
         (
             "ctrl_meas sleep validator",
@@ -1896,6 +2039,24 @@ def parser_self_test() -> tuple[bool, list[str]]:
             == 0,
         )
     )
+    checks.append((
+        "configuration readback validator",
+        classify_output(
+            CommandSpec(
+                command="cfg",
+                purpose="self-test",
+                expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
+                expected_settings=(("osrs_t", 1), ("osrs_p", 1),
+                                   ("osrs_h", 1), ("filter", 0),
+                                   ("standby", 2)),
+            ),
+            (
+                "ctrl_hum: 0x01\nctrl_meas: 0x24\nconfig: 0x40\n"
+                "Hardware config dirty: false\n"
+            ),
+            "MATCHED_EXPECTED",
+        )[0] == RESULT_PASS,
+    ))
     checks.append(
         (
             "stress_mix validator",
@@ -2140,6 +2301,7 @@ def duration_soak_cycle_commands(args: argparse.Namespace, cycle_index: int) -> 
                     completion=("Status:",),
                     timeout_s=8.0,
                     requires_opt_in="--soak-duration-s",
+                    recovery_command="recover",
                 ),
                 CommandSpec(
                     command="recover",
@@ -2161,6 +2323,222 @@ def duration_soak_cycle_commands(args: argparse.Namespace, cycle_index: int) -> 
             )
         )
     return tuple(specs)
+
+
+def duration_command_timeout_s(spec: CommandSpec, args: argparse.Namespace) -> float:
+    """Return the complete command window required before starting a soak row."""
+    return float(spec.timeout_s if spec.timeout_s > 0 else args.timeout)
+
+
+def duration_command_fits(
+    remaining_s: float, spec: CommandSpec, args: argparse.Namespace
+) -> bool:
+    """Return whether a row's full bounded timeout fits in the soak budget."""
+    return remaining_s >= duration_command_timeout_s(spec, args)
+
+
+def duration_soak_command_groups(
+    args: argparse.Namespace, cycle_index: int
+) -> tuple[tuple[CommandSpec, ...], ...]:
+    """Group state-changing rows with the command that restores a safe state."""
+    specs = duration_soak_cycle_commands(args, cycle_index)
+    groups: list[tuple[CommandSpec, ...]] = []
+    index = 0
+    while index < len(specs):
+        spec = specs[index]
+        if not spec.recovery_command:
+            groups.append((spec,))
+            index += 1
+            continue
+        recovery_index = next(
+            (
+                candidate
+                for candidate in range(index + 1, len(specs))
+                if specs[candidate].command == spec.recovery_command
+            ),
+            -1,
+        )
+        if recovery_index < 0:
+            raise ValueError(
+                f"duration-soak recovery command {spec.recovery_command!r} "
+                f"is missing after {spec.command!r}"
+            )
+        groups.append(tuple(specs[index:recovery_index + 1]))
+        index = recovery_index + 1
+    return tuple(groups)
+
+
+def duration_group_timeout_s(
+    group: tuple[CommandSpec, ...], args: argparse.Namespace
+) -> float:
+    """Return the sum of complete row windows reserved for a soak group."""
+    return sum(duration_command_timeout_s(spec, args) for spec in group)
+
+
+def recovery_spec_after(
+    specs: list[CommandSpec] | tuple[CommandSpec, ...],
+    current_index: int,
+    recovery_command: str,
+) -> CommandSpec | None:
+    """Find the planned bounded cleanup command following the current row."""
+    return next(
+        (
+            spec
+            for spec in specs[current_index + 1:]
+            if spec.command == recovery_command
+        ),
+        None,
+    )
+
+
+def run_automatic_recovery(
+    ser,
+    transcript,
+    args: argparse.Namespace,
+    recovery_spec: CommandSpec,
+    failed_command: str,
+) -> dict:
+    """Run one bounded, no-pacing cleanup after a hard command failure."""
+    notes = (
+        f"Automatic bounded cleanup after hard result from {failed_command!r}. "
+        "The original failure remains authoritative."
+    )
+    cleanup_spec = dataclasses.replace(
+        recovery_spec,
+        purpose=f"Automatic cleanup after {failed_command!r}.",
+        group="automatic-recovery",
+        pre_delay_s=0.0,
+        recovery_command=None,
+        notes=notes,
+    )
+    row = run_serial_command(
+        ser,
+        cleanup_spec,
+        transcript,
+        timeout_s=duration_command_timeout_s(cleanup_spec, args),
+        idle_after_output_s=args.idle_timeout_s,
+        idle_after_match_s=args.idle_after_match_s,
+        command_pacing_s=0.0,
+        verbose=args.verbose,
+    )
+    row["automatic_recovery"] = True
+    return row
+
+
+def final_cleanup_commands() -> tuple[CommandSpec, ...]:
+    """Return the fixed, bounded, non-destructive final cleanup sequence."""
+    return (
+        CommandSpec(
+            command="normal off",
+            purpose="Final cleanup: request sleep mode.",
+            group="final-cleanup",
+            expected=("Status: OK",),
+            timeout_s=5.0,
+        ),
+        CommandSpec(
+            command="recover",
+            purpose="Final cleanup: resynchronize driver and hardware state.",
+            group="final-cleanup",
+            expected=("Status: OK",),
+            timeout_s=8.0,
+        ),
+        CommandSpec(
+            command="cfg",
+            purpose="Final cleanup: capture configuration evidence.",
+            group="final-cleanup",
+            expected=(
+                "ctrl_hum", "ctrl_meas", "config",
+                "Hardware config dirty: false",
+            ),
+            completion=("Hardware config dirty:",),
+            timeout_s=10.0,
+        ),
+        CommandSpec(
+            command="status",
+            purpose="Final cleanup: capture device status evidence.",
+            group="final-cleanup",
+            expected=("Status: 0x", "Driver:", "dirty=false"),
+            validators=(
+                VALIDATOR_STATUS_NOT_MEASURING,
+                VALIDATOR_STATUS_IM_UPDATE_CLEAR,
+            ),
+            timeout_s=5.0,
+        ),
+        CommandSpec(
+            command="drv",
+            purpose="Final cleanup: capture driver health evidence.",
+            group="final-cleanup",
+            expected=("Driver Health", "Total"),
+            validators=(VALIDATOR_DRIVER_ZERO_CONSECUTIVE,),
+            timeout_s=5.0,
+        ),
+    )
+
+
+def command_exception_result(
+    spec: CommandSpec, message: str, completion: str
+) -> dict:
+    """Represent a command exception without losing command identity."""
+    row = session_error_result(message)
+    row.update({
+        "command": spec.command,
+        "purpose": spec.purpose,
+        "group": spec.group,
+        "expected": list(spec.expected),
+        "expected_any": list(spec.expected_any),
+        "unknowns": list(spec.unknowns),
+        "validators": list(spec.validators),
+        "expected_settings": dict(spec.expected_settings),
+        "completion": completion,
+        "notes": spec.notes,
+        "requires_opt_in": spec.requires_opt_in,
+        "recovery_command": spec.recovery_command,
+    })
+    return row
+
+
+def run_final_cleanup(
+    ser,
+    transcript,
+    args: argparse.Namespace,
+    *,
+    trigger: str,
+) -> list[dict]:
+    """Attempt every final cleanup row with no pacing and bounded timeouts."""
+    rows: list[dict] = []
+    transcript.write(f"\n--- FINAL CLEANUP START trigger={trigger} ---\n")
+    transcript.flush()
+    if getattr(args, "verbose", False):
+        print(f"\n--- FINAL CLEANUP START trigger={trigger} ---")
+    for step, spec in enumerate(final_cleanup_commands(), start=1):
+        try:
+            row = run_serial_command(
+                ser,
+                spec,
+                transcript,
+                timeout_s=spec.timeout_s,
+                idle_after_output_s=args.idle_timeout_s,
+                idle_after_match_s=args.idle_after_match_s,
+                command_pacing_s=0.0,
+                verbose=args.verbose,
+            )
+        except Exception as exc:  # continue best-effort through link failures
+            row = command_exception_result(
+                spec,
+                f"Final cleanup command {spec.command!r} failed: {exc}",
+                "FINAL_CLEANUP_EXCEPTION",
+            )
+        row["cleanup_trigger"] = trigger
+        row["cleanup_step"] = step
+        row["parsed_evidence"] = {
+            **row.get("parsed_evidence", {}),
+            "cleanup_trigger": trigger,
+            "cleanup_step": step,
+        }
+        rows.append(row)
+    transcript.write(f"\n--- FINAL CLEANUP END trigger={trigger} ---\n")
+    transcript.flush()
+    return rows
 
 
 def run_duration_soak(ser, transcript, args: argparse.Namespace) -> tuple[list[dict], dict]:
@@ -2190,43 +2568,62 @@ def run_duration_soak(ser, transcript, args: argparse.Namespace) -> tuple[list[d
     while time.monotonic() < deadline:
         cycle += 1
         stop_for_deadline = False
-        for spec in duration_soak_cycle_commands(args, cycle):
+        for group in duration_soak_command_groups(args, cycle):
             remaining_s = deadline - time.monotonic()
-            if remaining_s <= 0.0:
+            group_timeout_s = duration_group_timeout_s(group, args)
+            if remaining_s < group_timeout_s:
+                commands = ", ".join(spec.command for spec in group)
+                stop_reason = (
+                    f"deadline window too short for next safe group [{commands}] "
+                    f"(remaining={max(0.0, remaining_s):.3f}s, "
+                    f"required={group_timeout_s:.3f}s)"
+                )
                 stop_for_deadline = True
                 break
-            if remaining_s < 1.0:
-                stop_reason = "deadline reached before next command"
-                stop_for_deadline = True
-                break
-            timeout_s = min(spec.timeout_s if spec.timeout_s > 0 else args.timeout, remaining_s)
-            row = run_serial_command(
-                ser,
-                spec,
-                transcript,
-                timeout_s=timeout_s,
-                idle_after_output_s=args.idle_timeout_s,
-                idle_after_match_s=args.idle_after_match_s,
-                command_pacing_s=args.command_pacing_s,
-                verbose=args.verbose,
-            )
-            row["soak_cycle"] = cycle
-            rows.append(row)
-            if row["serial_result"] in (RESULT_FAIL, RESULT_TIMEOUT):
-                stop_reason = f"stopped after {row['serial_result']} from {spec.command}"
-                end_wall = timestamp()
-                elapsed = time.monotonic() - start
-                transcript.write(f"\n--- DURATION SOAK STOP {end_wall} reason={stop_reason} ---\n")
-                transcript.flush()
-                return rows, {
-                    "requested_duration_s": requested_s,
-                    "executed": True,
-                    "start": start_wall,
-                    "end": end_wall,
-                    "elapsed_s": round(elapsed, 3),
-                    "cycles": cycle,
-                    "stop_reason": stop_reason,
-                }
+            active_recovery = ""
+            for group_index, spec in enumerate(group):
+                timeout_s = duration_command_timeout_s(spec, args)
+                row = run_serial_command(
+                    ser,
+                    spec,
+                    transcript,
+                    timeout_s=timeout_s,
+                    idle_after_output_s=args.idle_timeout_s,
+                    idle_after_match_s=args.idle_after_match_s,
+                    command_pacing_s=args.command_pacing_s,
+                    verbose=args.verbose,
+                )
+                row["soak_cycle"] = cycle
+                rows.append(row)
+                if spec.recovery_command and row.get("command_sent", True):
+                    active_recovery = spec.recovery_command
+                if row["serial_result"] in (RESULT_FAIL, RESULT_TIMEOUT):
+                    if active_recovery and spec.command != active_recovery:
+                        recovery_spec = recovery_spec_after(
+                            group, group_index, active_recovery
+                        )
+                        if recovery_spec is not None:
+                            cleanup = run_automatic_recovery(
+                                ser, transcript, args, recovery_spec, spec.command
+                            )
+                            cleanup["soak_cycle"] = cycle
+                            rows.append(cleanup)
+                    stop_reason = f"stopped after {row['serial_result']} from {spec.command}"
+                    end_wall = timestamp()
+                    elapsed = time.monotonic() - start
+                    transcript.write(f"\n--- DURATION SOAK STOP {end_wall} reason={stop_reason} ---\n")
+                    transcript.flush()
+                    return rows, {
+                        "requested_duration_s": requested_s,
+                        "executed": True,
+                        "start": start_wall,
+                        "end": end_wall,
+                        "elapsed_s": round(elapsed, 3),
+                        "cycles": cycle,
+                        "stop_reason": stop_reason,
+                    }
+                if active_recovery and spec.command == active_recovery:
+                    active_recovery = ""
         if stop_for_deadline:
             break
         idle_s = float(getattr(args, "soak_cycle_idle_s", 0.0))
@@ -2251,8 +2648,116 @@ def run_duration_soak(ser, transcript, args: argparse.Namespace) -> tuple[list[d
     }
 
 
+def empty_soak_summary(args: argparse.Namespace) -> dict:
+    return {
+        "requested_duration_s": float(getattr(args, "soak_duration_s", 0.0)),
+        "executed": False,
+        "start": "",
+        "end": "",
+        "elapsed_s": 0.0,
+        "cycles": 0,
+        "stop_reason": "not requested",
+    }
+
+
+def run_live_plan(
+    ser,
+    transcript,
+    args: argparse.Namespace,
+    executable: list[CommandSpec],
+) -> tuple[list[dict], dict]:
+    """Run fixed/soak plans and always perform required final cleanup."""
+    results: list[dict] = []
+    soak_summary = empty_soak_summary(args)
+    fixed_hard_stop: dict | None = None
+    active_recovery = ""
+
+    for spec_index, spec in enumerate(executable):
+        timeout_s = spec.timeout_s if spec.timeout_s > 0 else args.timeout
+        try:
+            row = run_serial_command(
+                ser,
+                spec,
+                transcript,
+                timeout_s=timeout_s,
+                idle_after_output_s=args.idle_timeout_s,
+                idle_after_match_s=args.idle_after_match_s,
+                command_pacing_s=args.command_pacing_s,
+                verbose=args.verbose,
+            )
+        except Exception as exc:
+            row = command_exception_result(
+                spec,
+                f"Fixed-plan command {spec.command!r} failed: {exc}",
+                "FIXED_PLAN_EXCEPTION",
+            )
+        results.append(row)
+        if spec.recovery_command and row.get("command_sent", True):
+            active_recovery = spec.recovery_command
+        if row["serial_result"] in (RESULT_FAIL, RESULT_TIMEOUT):
+            if active_recovery and spec.command != active_recovery:
+                recovery_spec = recovery_spec_after(
+                    executable, spec_index, active_recovery
+                )
+                if recovery_spec is not None:
+                    try:
+                        results.append(run_automatic_recovery(
+                            ser, transcript, args, recovery_spec, spec.command
+                        ))
+                    except Exception as exc:
+                        cleanup_spec = dataclasses.replace(
+                            recovery_spec, group="automatic-recovery"
+                        )
+                        results.append(command_exception_result(
+                            cleanup_spec,
+                            f"Automatic recovery {recovery_spec.command!r} failed: {exc}",
+                            "AUTOMATIC_RECOVERY_EXCEPTION",
+                        ))
+            transcript.write(
+                "Stopping fixed plan after hard failure and any declared "
+                "bounded cleanup.\n"
+            )
+            fixed_hard_stop = row
+            break
+        if active_recovery and spec.command == active_recovery:
+            active_recovery = ""
+
+    if fixed_hard_stop is None:
+        try:
+            soak_rows, soak_summary = run_duration_soak(ser, transcript, args)
+            results.extend(soak_rows)
+        except Exception as exc:
+            message = f"Duration soak failed: {exc}"
+            results.append(session_error_result(message))
+            soak_summary = {
+                **empty_soak_summary(args),
+                "executed": True,
+                "stop_reason": message,
+            }
+
+    cleanup_trigger = ""
+    if fixed_hard_stop is not None:
+        cleanup_trigger = (
+            f"fixed-plan {fixed_hard_stop['serial_result']} "
+            f"from {fixed_hard_stop['command']}"
+        )
+    elif float(getattr(args, "soak_duration_s", 0.0)) > 0.0:
+        cleanup_trigger = f"duration-soak stop: {soak_summary['stop_reason']}"
+    if cleanup_trigger:
+        results.extend(run_final_cleanup(
+            ser, transcript, args, trigger=cleanup_trigger
+        ))
+
+    return results, soak_summary
+
+
 def final_verdict(results: Iterable[dict], *, dry_run: bool) -> str:
-    serial_results = [row["serial_result"] for row in results]
+    # Final cleanup is best-effort evidence. It must not replace the verdict
+    # established by the fixed plan or requested duration soak.
+    serial_results = [
+        row["serial_result"] for row in results
+        if row.get("group") != "final-cleanup"
+    ]
     if dry_run:
         return "INCOMPLETE"
     if any(result in (RESULT_FAIL, RESULT_TIMEOUT) for result in serial_results):
@@ -2295,6 +2800,9 @@ def write_summary_md(path: pathlib.Path, summary: dict) -> None:
         f"Branch: `{summary['branch']}`",
         f"Commit: `{summary['commit']}`",
         f"Worktree: `{summary['worktree']}`",
+        f"End provenance: `{json.dumps(summary['end_provenance'], sort_keys=True)}`",
+        f"Provenance changed during run: `{summary['provenance_changed']}`",
+        f"Firmware provenance issues: `{summary['version_provenance_issues']}`",
         f"Port: `{summary['port']}`",
         f"Baud: `{summary['baud']}`",
         f"I2C address: `{summary['address']}`",
@@ -2311,7 +2819,7 @@ def write_summary_md(path: pathlib.Path, summary: dict) -> None:
         "",
         "## Duration Soak",
         "",
-        f"Requested duration: `{summary.get('soak', {}).get('requested_duration_s', 0.0)}` s",
+        f"Requested duration budget: `{summary.get('soak', {}).get('requested_duration_s', 0.0)}` s",
         f"Executed: `{summary.get('soak', {}).get('executed', False)}`",
         f"Start: `{summary.get('soak', {}).get('start', '')}`",
         f"End: `{summary.get('soak', {}).get('end', '')}`",
@@ -2330,6 +2838,10 @@ def write_summary_md(path: pathlib.Path, summary: dict) -> None:
             + row.get("expected_any", [])
             + row.get("unknowns", [])
             + row.get("validators", [])
+            + [
+                f"{name}={value}"
+                for name, value in row.get("expected_settings", {}).items()
+            ]
         )
         lines.append(
             f"| `{safe_cell(row['group'])}` | `{safe_cell(row['command'])}` | {safe_cell(row['purpose'])} | "
@@ -2371,9 +2883,14 @@ def write_results_csv(path: pathlib.Path, results: list[dict]) -> None:
         "completion",
         "elapsed_s",
         "pre_delay_s",
+        "command_sent",
         "classification_reason",
         "soak_cycle",
         "parsed_evidence",
+        "expected_settings",
+        "automatic_recovery",
+        "cleanup_trigger",
+        "cleanup_step",
         "unknowns",
         "requires_opt_in",
         "destructive",
@@ -2461,6 +2978,8 @@ def write_environment(path: pathlib.Path, summary: dict) -> None:
         f"branch={summary['branch']}",
         f"commit={summary['commit']}",
         f"worktree={summary['worktree']}",
+        f"end_provenance={json.dumps(summary['end_provenance'], sort_keys=True)}",
+        f"provenance_changed={summary['provenance_changed']}",
         f"runner_command={summary['runner_command']}",
         f"runner_args={json.dumps(summary['runner_args'])}",
         f"port={summary['port']}",
@@ -2494,6 +3013,9 @@ def write_hardware_matrix_fragment(path: pathlib.Path, summary: dict) -> None:
         f"| Branch | `{summary['branch']}` |",
         f"| Commit | `{summary['commit']}` |",
         f"| Worktree state / dirty flag | `{summary['worktree']}` |",
+        f"| End provenance | `{safe_cell(json.dumps(summary['end_provenance'], sort_keys=True))}` |",
+        f"| Provenance changed during run | `{summary['provenance_changed']}` |",
+        f"| Firmware provenance issues | `{summary['version_provenance_issues']}` |",
         f"| HIL runner command | `{summary['runner_command']}` |",
         f"| HIL runner arguments | `{json.dumps(summary['runner_args'])}` |",
         f"| Serial port and baud | `{summary['port']}` / `{summary['baud']}` |",
@@ -2517,7 +3039,8 @@ def write_failure_analysis(path: pathlib.Path, summary: dict) -> None:
     actionable = [
         row
         for row in summary["results"]
-        if row["serial_result"] in (RESULT_FAIL, RESULT_TIMEOUT, RESULT_REVIEW, RESULT_SERIAL_REVIEW)
+        if row["serial_result"]
+        in (RESULT_FAIL, RESULT_TIMEOUT, RESULT_REVIEW, RESULT_SERIAL_REVIEW, RESULT_UNKNOWN)
     ]
     lines = [
         "# I2C HIL Failure Analysis",
@@ -2611,6 +3134,9 @@ def write_manifest(path: pathlib.Path, summary: dict, artifact_files: dict[str, 
         "branch": summary["branch"],
         "commit": summary["commit"],
         "worktree": summary["worktree"],
+        "end_provenance": summary["end_provenance"],
+        "provenance_changed": summary["provenance_changed"],
+        "version_provenance_issues": summary["version_provenance_issues"],
         "command_sequence": summary["command_sequence"],
         "opt_in_flags": summary["environment"]["opt_in_flags"],
         "artifacts": hashes,
@@ -2628,6 +3154,7 @@ def write_transcript_header(
     log_dir: pathlib.Path,
     *,
     runner_argv: list[str],
+    provenance: dict[str, str],
 ) -> None:
     transcript.write("# I2C HIL serial transcript\n")
     transcript.write(f"timestamp={timestamp()}\n")
@@ -2637,9 +3164,9 @@ def write_transcript_header(
     transcript.write(f"baud={args.baud}\n")
     transcript.write(f"address={args.address}\n")
     transcript.write(f"log_dir={log_dir}\n")
-    transcript.write(f"branch={git_value(['branch', '--show-current'])}\n")
-    transcript.write(f"commit={git_value(['rev-parse', 'HEAD'])}\n")
-    transcript.write(f"worktree={worktree_state()}\n")
+    transcript.write(f"branch={provenance['branch']}\n")
+    transcript.write(f"commit={provenance['commit']}\n")
+    transcript.write(f"worktree={provenance['worktree']}\n")
     for key, value in environment_record(args).items():
         if isinstance(value, dict):
             transcript.write(f"{key}={json.dumps(value, sort_keys=True)}\n")
@@ -2682,7 +3209,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Include bounded staged-job start/poll/cancel/resync/reset checks.",
     )
-    parser.add_argument("--soak-duration-s", type=parse_nonnegative_float, default=0.0, help="Run a duration-based safe soak loop after the fixed plan.")
+    parser.add_argument("--soak-duration-s", type=parse_nonnegative_float, default=0.0, help="Planning budget for the safe soak loop after the fixed plan; artifacts record actual elapsed time.")
     parser.add_argument("--soak-cycle-stress-count", type=parse_positive_int, default=50, help="Forced stress count per duration-soak cycle.")
     parser.add_argument("--soak-cycle-mix-count", type=parse_positive_int, default=70, help="stress_mix count per duration-soak cycle.")
     parser.add_argument("--soak-cycle-idle-s", type=parse_nonnegative_float, default=0.0, help="Idle delay between duration-soak cycles.")
@@ -2750,6 +3277,8 @@ def main(argv: list[str] | None = None) -> int:
             print(error, file=sys.stderr)
         return 2
 
+    start_provenance = repository_provenance()
+
     out_base = pathlib.Path(args.out)
     if not out_base.is_absolute():
         out_base = ROOT / out_base
@@ -2778,7 +3307,13 @@ def main(argv: list[str] | None = None) -> int:
         "stop_reason": "not requested",
     }
     with transcript_path.open("w", encoding="utf-8", newline="") as transcript:
-        write_transcript_header(transcript, args, log_dir, runner_argv=runner_argv)
+        write_transcript_header(
+            transcript,
+            args,
+            log_dir,
+            runner_argv=runner_argv,
+            provenance=start_provenance,
+        )
         if args.dry_run:
             transcript.write("DRY RUN: no serial port opened and no commands sent.\n")
             for spec in executable:
@@ -2811,26 +3346,10 @@ def main(argv: list[str] | None = None) -> int:
                         if args.verbose:
                             print("--- BOOT/INITIAL OUTPUT ---")
                             print(boot, end="")
-                    for spec in executable:
-                        timeout_s = spec.timeout_s if spec.timeout_s > 0 else args.timeout
-                        results.append(
-                            run_serial_command(
-                                ser,
-                                spec,
-                                transcript,
-                                timeout_s=timeout_s,
-                                idle_after_output_s=args.idle_timeout_s,
-                                idle_after_match_s=args.idle_after_match_s,
-                                command_pacing_s=args.command_pacing_s,
-                                verbose=args.verbose,
-                            )
-                        )
-                        if results[-1]["serial_result"] in (RESULT_FAIL, RESULT_TIMEOUT):
-                            transcript.write("Stopping fixed plan after hard failure.\n")
-                            break
-                    if not any(row["serial_result"] in (RESULT_FAIL, RESULT_TIMEOUT) for row in results):
-                        soak_rows, soak_summary = run_duration_soak(ser, transcript, args)
-                        results.extend(soak_rows)
+                    live_rows, soak_summary = run_live_plan(
+                        ser, transcript, args, executable
+                    )
+                    results.extend(live_rows)
             except Exception as exc:
                 message = f"Serial session failed: {exc}"
                 transcript.write(message + "\n")
@@ -2838,16 +3357,28 @@ def main(argv: list[str] | None = None) -> int:
                     print(message, file=sys.stderr)
                 results.append(session_error_result(message))
 
+    end_provenance = repository_provenance()
     reset_busy_recovered_count = reclassify_recovered_reset_busy(results)
     job_api_correlation_failures = reclassify_job_api_correlation(results)
+    version_provenance_issues = 0
+    if not args.dry_run:
+        version_provenance_issues = reclassify_version_provenance(
+            results,
+            expected_version=expected_library_version(),
+            start_provenance=start_provenance,
+            end_provenance=end_provenance,
+        )
     summary = {
         "run_id": log_dir.name,
         "datetime": timestamp(),
         "runner_command": format_runner_command(runner_argv),
         "runner_args": runner_argv,
-        "branch": git_value(["branch", "--show-current"]),
-        "commit": git_value(["rev-parse", "HEAD"]),
-        "worktree": worktree_state(),
+        "branch": start_provenance["branch"],
+        "commit": start_provenance["commit"],
+        "worktree": start_provenance["worktree"],
+        "end_provenance": end_provenance,
+        "provenance_changed": end_provenance != start_provenance,
+        "version_provenance_issues": version_provenance_issues,
         "job_api_correlation_failures": job_api_correlation_failures,
         "port": args.port or "DRY_RUN",
         "baud": args.baud,

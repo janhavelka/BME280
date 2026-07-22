@@ -1,60 +1,39 @@
-# BME280 Documentation Map
+# BME280 Documentation
 
-This directory keeps the maintained supporting documentation for the BME280
-library. It is split into operator-facing docs, engineering reference docs, and
-source evidence.
+This directory contains maintained integration, hardware-validation, and
+chip-reference documentation. Public API details live in the Doxygen comments
+under `include/BME280/`; release history lives in `../CHANGELOG.md`.
 
-## Maintained Docs
+## Maintained Documents
 
-- `../README.md`: public usage, API, build, validation, and limitations.
-- `../CHANGELOG.md`: release-facing change history.
-- `../AGENTS.md`: repository engineering rules for future changes.
-- `IDF_PORT.md`: ESP-IDF component and native example boundary.
-- `BME280_Register_Reference.md`: register, bitfield, timing, and calibration
-  notes used by the implementation.
-- `BME280_INDUSTRY_HARDENING_SUMMARY.md`: current summary of the hardening work
-  and remaining release gates.
-- `PRODUCTION_SHARED_BUS_GUIDE.md`: production shared-bus integration guidance
-  for application-owned bus, locking, scheduling, timeout, and recovery policy.
-- `I2C_HIL_RUNBOOK.md`: serial HIL procedure and evidence rules.
-- `I2C_HIL_TARGET_TEMPLATE.md`: per-target evidence form for a physical run.
-- `BME280_HARDWARE_VALIDATION_MATRIX.md`: committed hardware validation ledger.
+- `../README.md`: installation, quick start, API overview, behavior, and
+  validation commands.
+- `IDF_PORT.md`: native ESP-IDF component and transport boundary.
+- `PRODUCTION_SHARED_BUS_GUIDE.md`: application-owned bus, locking, scheduling,
+  deadlines, and recovery guidance.
+- `HARDWARE_VALIDATION.md`: the single HIL procedure, evidence schema, current
+  ledger, and historical-result boundary.
+- `BME280_Register_Reference.md`: implementation-facing register, calibration,
+  and timing notes.
+- `BME280_datasheet.pdf`: Bosch BME280 datasheet used as primary device
+  evidence. Verify critical values against the PDF when changing protocol,
+  compensation, timing, or electrical contracts.
 
-The repository metadata describes the `2.0.0` major release. The immutable
-`v2.0.0` tag identifies its exact CI-qualified commit. Keep release-facing
-history in `CHANGELOG.md`; do not infer a different version from branch state.
+Completed hardening and product-fit audits are not maintained as parallel user
+manuals. Their durable results are represented by the current code, public API
+comments, `../README.md`, and `../CHANGELOG.md`; Git history retains the original
+review records.
 
-## Source Evidence
+## Generated and Local Artifacts
 
-- `BME280_datasheet.pdf`: vendor datasheet used for implementation checks.
-- `extracted-md/`: compact extracted notes used for quick review.
-- `pdf-extracted-md/`: full extracted datasheet text.
+These paths are intentionally ignored and are not release evidence by default:
 
-The extracted markdown is not a second user manual. Treat it as reference
-material when changing register behavior, compensation math, timing, or hardware
-contracts.
+- `docs/doxygen/` — generated HTML API documentation;
+- `hil_logs/` — HIL plans and run artifacts;
+- `.pio/` — PlatformIO builds and dependencies;
+- `BME280-*.tar.gz` — generated package archives.
 
-## Audit Records
-
-Prompt-scoped audit, phase, and merge-gate reports are intentionally not kept as
-release-facing documentation. Durable conclusions from that work are folded into
-the maintained docs above and the current release notes in `../CHANGELOG.md`.
-
-## Local Artifacts
-
-The following outputs are local artifacts and should not be committed:
-
-- `docs/doxygen/`
-- `hil_logs/`
-- `.pio/`
-- generated `BME280-*.tar.gz` package archives unless intentionally publishing
-  a release artifact
-
-## Validation Claims
-
-Software checks verify build, test, package, and documentation contracts. They do
-not prove physical wiring, pull-up values, sensor accuracy, humidity handling,
-fault recovery, or long-duration stability.
-
-Only update `BME280_HARDWARE_VALIDATION_MATRIX.md` with observed hardware
-results. Use `NOT RUN` or `unknown` rather than guessing.
+Software checks and generated serial summaries do not prove physical wiring,
+bus margin, sensor accuracy, humidity handling, fault recovery, or field
+stability. Use `HARDWARE_VALIDATION.md` and record `NOT RUN` or `unknown` for
+facts that were not observed.

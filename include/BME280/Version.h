@@ -12,30 +12,37 @@
 #include <stdint.h>
 
 #ifndef BME280_VERSION_STRING
+/// Semantic version from library.json.
 #define BME280_VERSION_STRING "2.0.0"
 #endif
 
 #ifndef BME280_BUILD_DATE
+/// Build date supplied by the build system, or compiler date fallback.
 #define BME280_BUILD_DATE __DATE__
 #endif
 
 #ifndef BME280_BUILD_TIME
+/// Build time supplied by the build system, or compiler time fallback.
 #define BME280_BUILD_TIME __TIME__
 #endif
 
 #ifndef BME280_BUILD_TIMESTAMP
+/// Combined build date and time string.
 #define BME280_BUILD_TIMESTAMP BME280_BUILD_DATE " " BME280_BUILD_TIME
 #endif
 
 #ifndef BME280_GIT_COMMIT
+/// Source commit supplied by the build system, or `unknown` fallback.
 #define BME280_GIT_COMMIT "unknown"
 #endif
 
 #ifndef BME280_GIT_STATUS
+/// Source worktree state supplied by the build system, or `unknown` fallback.
 #define BME280_GIT_STATUS "unknown"
 #endif
 
 #ifndef BME280_VERSION_FULL
+/// Version, commit, timestamp, and worktree state for diagnostics.
 #define BME280_VERSION_FULL BME280_VERSION_STRING " (" BME280_GIT_COMMIT ", " BME280_BUILD_TIMESTAMP ", " BME280_GIT_STATUS ")"
 #endif
 

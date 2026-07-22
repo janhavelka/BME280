@@ -3,11 +3,11 @@
 Production-oriented BME280 I2C driver for ESP32 systems using
 Arduino/PlatformIO or ESP-IDF.
 
-Validation status: host/native tests, guard scripts, package checks, and
-Arduino PlatformIO builds are supported in this repository. Physical BME280
-hardware validation and local pure ESP-IDF `idf.py` builds are not claimed
-unless a hardware matrix, HIL artifact package, or validation log records the
-exact commands and setup.
+Validation status: host/native tests, guard scripts, package checks, Arduino
+PlatformIO builds, and CI ESP-IDF builds are supported in this repository. A
+local one-hour ESP32-S2/COM5 serial run passed every deterministic row for a
+dirty `2.0.0` build, but it is not release-qualifying hardware evidence. See
+`docs/HARDWARE_VALIDATION.md` for the results and exact boundary.
 
 Release status: `2.0.0` is the current major release. It contains the
 external-owner and transport-contract hardening described in the changelog and
@@ -80,6 +80,7 @@ void setup() {
   cfg.nowMs = appNowMs;
   cfg.i2cAddress = 0x76;
   cfg.i2cTimeoutMs = 50;
+  cfg.nvmReadyTimeoutMs = 10;
   cfg.conversionReadyTimeoutMs = 20;
   
   auto status = device.begin(cfg);
@@ -106,12 +107,15 @@ counts. Adapters must not retry, recover the bus, or return driver-level
 `Status` values. The core maps results to canonical `I2C_*` status codes and
 retains only numeric adapter detail, never adapter-owned message storage.
 
-Bus timeout ownership remains in `transport::initWire()`. `i2cTimeoutMs` bounds
-each transport callback; the separate `conversionReadyTimeoutMs` is chip-level
-grace after the estimated conversion or idle time. Inject `Config::nowMs` for
-synchronous scheduling and meaningful timestamps; absent an injected or
-explicit poll/tick time, timestamp values are zero and the matching validity
-flag is false.
+Bus timeout ownership in the Arduino example remains in
+`transport::initWire()`: its callbacks do not reconfigure `Wire` from the
+per-call `timeoutMs` argument. Keep `Config::i2cTimeoutMs` equal to that fixed
+Wire timeout, as the quick start does. A production shared-bus callback must
+treat `i2cTimeoutMs` as one end-to-end budget covering lock acquisition and the
+transfer. The separate `conversionReadyTimeoutMs` is chip-level grace after the
+estimated conversion or idle time. Inject `Config::nowMs` for synchronous
+scheduling and meaningful timestamps; absent an injected or explicit poll/tick
+time, timestamp values are zero and the matching validity flag is false.
 `common/I2cTransport.h` is example-only glue; when manually copying only `include/` and
 `src/`, provide equivalent `Config::i2cWrite` and `Config::i2cWriteRead` callbacks in
 your application.
@@ -150,7 +154,7 @@ Humidity readings are for non-condensing environments. Soldering/reflow, contami
 
 ## Health Monitoring
 
-The driver tracks I2C communication health:
+The driver tracks communication and device-resynchronization health:
 
 ```cpp
 // Check state
@@ -170,15 +174,19 @@ Serial.printf("Failures: %u consecutive, %lu session total\n",
 ```
 
 `begin()` starts a new health session and resets the total success/failure
-counters. `totalSuccess()` and `totalFailures()` saturate at `UINT32_MAX`;
+counters. Successful tracked transfers increment `totalSuccess()`. Transport
+failures, plus semantic chip-ID/calibration/NVM/config-readiness failures found
+during recovery, reset, or staged resynchronization, increment
+`totalFailures()` and may move the driver to `DEGRADED` or `OFFLINE`.
+`totalSuccess()` and `totalFailures()` saturate at `UINT32_MAX`;
 `consecutiveFailures()` saturates at `UINT8_MAX` and resets to zero on the next
-tracked I2C success. The counters do not wrap.
+tracked transfer success. The counters do not wrap.
 
 ### Driver States
 
 | State | Description |
 |-------|-------------|
-| `UNINIT` | `begin()` not called or `end()` called |
+| `UNINIT` | No successful current session: never initialized, ended, or an admitted `begin()` / init job failed |
 | `READY` | Operational, no recent failures |
 | `DEGRADED` | 1+ failures, below offline threshold |
 | `OFFLINE` | Failure threshold reached; diagnostic only and does not block an explicit owner-directed operation |
@@ -187,10 +195,10 @@ tracked I2C success. The counters do not wrap.
 
 ### Lifecycle
 
-- `Status begin(const Config& config)` - Initialize driver, verify chip ID `0x60`, check NVM readiness once, read calibration, apply config, and start a new health session
+- `Status begin(const Config& config)` - Reset local runtime state, initialize the driver, verify chip ID `0x60`, check NVM readiness once, read calibration, apply config, and start a new health session
 - `void tick(uint32_t nowMs)` - Process pending compatibility measurement operations; the supplied time is authoritative for this call and must share the application's monotonic timebase
 - `void end()` - Zero-I2C, idempotent unbind that clears callbacks and cached runtime state; it does not put the sensor to sleep
-- `bool isInitialized()` - True after successful `begin()` until `end()`
+- `bool isInitialized()` - True only while the current initialization session remains valid; an admitted failed `begin()` or init job clears it
 - `const Config& getConfig()` - Cached configuration snapshot owned by the driver
 - `SensorSettings sensorSettings()` - Compact zero-I2C snapshot of typed chip settings, separate from transport/time/health policy
 
@@ -198,12 +206,13 @@ tracked I2C success. The counters do not wrap.
 
 - `Status probe()` - Check device presence and chip ID through raw I2C without health tracking
 - `Status recover()` - Synchronous non-reset resync; verifies identity, checks NVM readiness once, reloads calibration, reapplies cached config, and invalidates cached samples on success
+- `Status invalidateDeviceState()` - Zero-I2C owner boundary for removal, hotplug, or possible device replacement; measurements remain blocked until full initialization/resync reloads identity, calibration, and configuration
 - `Status getSettings(SettingsSnapshot& out)` - Populate a snapshot of cached config and runtime state (no I2C)
 - `Status lastMeasurementStatus()` - Last measurement request, polling, raw-read, or compensation status retained because `tick()` is void
 
 ### Staged I2C Jobs
 
-- `Status startInitJob(const Config& config)` - Validate/cache configuration and start chunked initialization without I2C
+- `Status startInitJob(const Config& config)` - Reset local runtime state, validate/cache configuration, and start chunked initialization without I2C
 - `Status startForcedMeasurementJob()` - Start a chunked forced-mode sample without I2C
 - `Status startApplyConfigJob()` - Start a cached-config apply without I2C
 - `Status startApplySettingsJob(const SensorSettings& settings)` - Validate and stage a whole typed settings update without I2C, then reuse the bounded apply job
@@ -236,11 +245,18 @@ expired owner deadline is represented by
 driver's current chip-phase deadline and must not replace or renew the owner
 deadline.
 
+`begin()` and `startInitJob()` are initialization boundaries, not transactional
+reconfiguration calls. Once admitted, each clears the previous local runtime
+state before validating the new configuration or touching I2C. If validation,
+identity, calibration, or configuration then fails, the instance remains
+`UNINIT`; the previous initialized session and cached sample are not restored.
+Use typed setters or `startApplySettingsJob()` for runtime settings changes.
+
 ### Measurement
 
 - `Status requestMeasurement()` - Start a forced measurement or schedule a fresh normal-mode cycle; returns `IN_PROGRESS` when accepted
-- `bool measurementReady()` - True after `tick()` captures and compensates a sample
-- `Status getMeasurement(Measurement& out)` - Get floating-point temperature, pressure, and humidity plus per-channel validity flags
+- `bool measurementReady()` - True after `tick()` captures and compensates a fresh unread sample
+- `Status getMeasurement(Measurement& out)` - Consume a fresh unread floating-point measurement; stale cached data is never returned as success
 - `Status getRawSample(RawSample& out)` - Get the latest raw ADC sample plus per-channel validity flags after at least one capture
 - `Status getCompensatedSample(CompensatedSample& out)` - Get fixed-point compensated values plus per-channel validity flags after at least one capture
 - `Status getSampleEnvelope(SampleEnvelope& out)` - Get the atomically committed raw/fixed-point sample, timestamp, sequence, and config generation
@@ -251,8 +267,17 @@ deadline.
 
 Forced mode is an on-demand policy: `begin()` and `setMode(FORCED)` keep the hardware in
 sleep until `requestMeasurement()` writes the forced-mode trigger. Normal-mode requests
-wait one estimated normal cycle before reading registers, so the returned sample is fresh
-relative to the request.
+wait the worst phase interval (two maximum configured conversions plus one standby
+interval) before reading registers, so the returned sample is fresh relative to the
+request even if it arrived just after a conversion started. Ambiguous existing forced
+conversions receive one complete configured conversion interval plus readiness grace.
+All of these deadlines remain wrap-safe across `uint32_t` rollover.
+
+A terminal status-read, raw-read, or compensation error ends the compatibility
+request. Later `tick()` calls perform no I2C until the owner explicitly calls
+`requestMeasurement()` again. If configuration becomes dirty, any pending/unread
+readiness is cleared immediately while the last `SampleEnvelope` remains available
+and is classified stale for diagnostics.
 
 `ConversionState` exposes whether a forced conversion is `IDLE`, known
 `IN_PROGRESS`, or `UNKNOWN_AFTER_TRIGGER_ERROR`. A trigger timeout or a
@@ -292,6 +317,12 @@ stale-but-readable samples after errors or uncertain hardware configuration.
 Temperature oversampling must be enabled whenever pressure or humidity is enabled because
 Bosch compensation requires `t_fine`. At least one measured channel must be enabled.
 Invalid combinations are rejected in `begin()` and typed setters before touching I2C.
+
+Configuration validation also requires address `0x76` or `0x77`; nonzero
+`i2cTimeoutMs` and `nvmReadyTimeoutMs` values below `INT32_MAX`; and a nonzero
+`conversionReadyTimeoutMs` small enough that the maximum measurement plus
+standby interval remains wrap-safe. An `offlineThreshold` of zero is normalized
+to one in the driver's cached configuration.
 
 `startApplySettingsJob()` stages the desired settings in the same
 `APPLY_CONFIG` state machine used by `startApplyConfigJob()`; it does not create
@@ -467,9 +498,11 @@ job to restore synchronization after manual register edits.
 `begin()` starts a new health session and resets the tracked success/failure
 counters. Total success/failure counters saturate at `UINT32_MAX`, and
 consecutive failures saturate at `UINT8_MAX`; they do not wrap. `IN_PROGRESS`
-is treated as non-failure activity for health tracking. Pre-`begin()`
-validation and transport setup errors do not transition the driver into
-`DEGRADED` or `OFFLINE`.
+is treated as non-failure activity. In an initialized session, recovery/reset
+and staged resynchronization also record semantic chip-ID, calibration, NVM,
+and config-readiness failures even when the immediately preceding transport
+callback succeeded. Pre-`begin()` validation and transport setup errors do not
+transition the driver into `DEGRADED` or `OFFLINE`.
 
 ### Timing
 
@@ -563,40 +596,6 @@ Not part of the library. These simulate project-level glue and keep examples sel
 - Rebuild dependent firmware: public result/settings layouts and callback
   signatures changed, so this is a major-version migration.
 
-## Migration From v1.6.x
-
-- Rebuild dependent firmware: `SettingsSnapshot` changed public layout by
-  adding `sampleFreshness`, and applications can now use `sampleFreshness()` or
-  `sampleFresh(nowMs, maxAgeMs)` instead of inferring freshness from cached data
-  presence alone.
-- `OFFLINE` is now diagnostic rather than a transport gate. The application
-  retains retry, resync, reset, and retirement policy.
-- The staged API distinguishes non-reset `resync` (legacy `recover`) from
-  explicit `soft-reset`, adds zero-I2C cancellation and job identity, and
-  requires the caller to capture natural terminal results from the completing
-  poll.
-
-## Migration From v1.5.x
-
-- Check `temperatureValid`, `pressureValid`, and `humidityValid` before using
-  measurement fields. Skipped or invalid channels leave numeric fields at zero.
-- Rebuild dependent firmware when upgrading: `Measurement`, `RawSample`,
-  `CompensatedSample`, and `SettingsSnapshot` have changed public layout since
-  `v1.5.0`.
-- Do not copy or move `BME280::BME280` instances. Own one instance and pass it
-  by reference or pointer.
-- Use typed setters for normal configuration. `writeRegister()` and
-  `writeRegisters()` are diagnostic raw access; reset/control/config writes mark
-  dirty state and require `recover()`, `begin()`, or a successful `softReset()`
-  to resync.
-- After successful `recover()` or any `softReset()` attempt, request a fresh
-  measurement before using cached sample data.
-- PlatformIO Arduino builds do not imply local pure ESP-IDF `idf.py` validation.
-  Record exact `idf.py` command results before claiming local pure ESP-IDF
-  builds.
-- No physical hardware validation is claimed unless the hardware matrix or HIL
-  artifacts record real board evidence.
-
 ## Validation
 
 ```bash
@@ -607,6 +606,7 @@ python tools/check_idf_example_contract.py
 python scripts/generate_version.py check
 python tools/check_release_metadata.py
 python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py tools/check_release_metadata.py
+python tools/test_run_i2c_hil_parser.py
 python tools/run_i2c_hil.py --parser-self-test
 python tools/run_i2c_hil.py --dry-run
 python tools/run_i2c_hil.py --dry-run --include-job-api
@@ -617,6 +617,7 @@ python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
 python -m platformio pkg pack
 python tools/check_package_contents.py
+git diff --check
 ```
 
 Remove the generated package tarball after local validation unless you are
@@ -643,28 +644,25 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 ## Documentation
 
 - `CHANGELOG.md` - full release history
-- `docs/TUNNELMONITOR_FIT_REPORT.md` - TunnelMonitor API classification and adapter notes
 - `AGENTS.md` - repository engineering rules for future changes
 - `CONTRIBUTING.md` - contribution workflow
 - `docs/README.md` - maintained documentation map
 - `docs/IDF_PORT.md` - ESP-IDF portability guidance
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
-- `docs/BME280_INDUSTRY_HARDENING_SUMMARY.md` - maintained summary of the merged hardening work
 - `docs/PRODUCTION_SHARED_BUS_GUIDE.md` - production shared-bus integration guidance
-- `docs/BME280_HARDWARE_VALIDATION_MATRIX.md` - explicit hardware validation status
-- `docs/I2C_HIL_RUNBOOK.md` - serial HIL runner procedure and evidence rules
-- `docs/I2C_HIL_TARGET_TEMPLATE.md` - per-target HIL evidence template
-- `docs/extracted-md/00_document_inventory.md` - index for extracted datasheet notes
+- `docs/HARDWARE_VALIDATION.md` - consolidated HIL procedure, evidence schema,
+  current status, and historical-result boundary
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
 The `2.0.0` changelog entry records the breaking transport migration, bounded
 owner-job contracts, state/cache integrity work, typed settings/helpers, and
-validation scope. The `v2.0.0` tag identifies the exact release commit after
-its remote CI workflow passes.
+validation scope. The `v2.0.0` tag identifies the exact released commit.
 
 ## Known Limitations
 
-- No physical BME280 hardware validation is claimed until the hardware matrix or HIL artifacts record board, wiring, address, commands, and results.
+- No qualified `v2.0.0` physical HIL result is committed. The local one-hour
+  ESP32-S2 run and historical pre-v2 results are explicitly non-qualifying in
+  `docs/HARDWARE_VALIDATION.md`.
 - Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v5.3.2 on ESP32-S2 and ESP32-S3.
 - The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should follow `docs/PRODUCTION_SHARED_BUS_GUIDE.md` and add application-owned locking, scheduling, timeout, and recovery policy around the injected transport.
 - Generated Doxygen HTML, HIL logs, PlatformIO build output, and package

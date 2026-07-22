@@ -7,7 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes.
+### Changed
+
+- Consolidated the HIL runbook, target template, validation matrix, and legacy
+  ESP32-S2 summary into one `docs/HARDWARE_VALIDATION.md` procedure and ledger.
+  Historical pre-v2 serial results are retained with an explicit non-qualifying
+  evidence boundary.
+- Hardened HIL evidence generation with firmware/host version and commit
+  comparison for PlatformIO and ESP-IDF, dirty/change review gates, exhaustive
+  config-enum readback, safe-state duration grouping, bounded best-effort final
+  cleanup with explicit safe-state evidence, and UNKNOWN failure analysis.
+- Recorded a local one-hour ESP32-S2/COM5 regression run for the dirty `2.0.0`
+  working tree while retaining an explicit non-qualifying boundary for missing
+  clean provenance, fixture metadata, references, physical faults, and the
+  TunnelMonitor shared-bus runtime.
+- Made Doxygen generation strict for the documented public API and completed
+  parameter/return documentation for enum helpers, status/result factories,
+  state accessors, and generated version metadata.
+- Clarified destructive re-initialization behavior, configuration bounds,
+  health-counter semantics, and the limits of automated HIL verdicts in the
+  public documentation.
+- Folded durable owner/deadline/validity/hotplug integration conclusions into
+  the generic shared-bus guide.
+- Updated the documentation map, contribution gate, and security support and
+  callback-boundary guidance for the current `2.0.x` release.
+
+### Fixed
+
+- Reserved a full configured conversion window when reconciling ambiguous
+  forced measurements and the worst normal-mode phase (two conversions plus
+  standby) when promising a sample fresh relative to a request. The shared
+  readiness bound now also drives wrap-safe timeout validation.
+- Made dirty configuration transitions revoke pending/unread measurement
+  readiness without discarding the last stale `SampleEnvelope`, and prevented
+  `getMeasurement()` from returning non-fresh cached data as success.
+- Made terminal status-read, raw-read, and compensation failures end the
+  compatibility measurement request so subsequent `tick()` calls perform no
+  I2C until an explicit new request.
+- Fixed duration-soak and fixed-plan hard-stop orchestration so the HIL runner
+  always attempts `normal off`, `recover`, `cfg`, `status`, and `drv` in order;
+  cleanup failures remain visible without replacing the root run verdict.
+
+### Removed
+
+- Completed industry-hardening and TunnelMonitor audit reports whose durable
+  conclusions are already represented by the v2 code, API contracts, and
+  release notes. Git history remains the archive.
+- Redundant generated datasheet text/summary extracts; the Bosch PDF and the
+  maintained register reference remain the device sources in the repository.
 
 ## [2.0.0] - 2026-07-22
 
