@@ -295,10 +295,12 @@ def validate_documentation(validation_text: str) -> None:
     assert_all(
         validation_text,
         (
-            "No physical HIL run tied to a clean `v2.0.0` commit",
+            "No physical HIL run tied to the current source, a clean commit",
             "scan` proves only",
             "`0x60`",
             "--include-job-api",
+            "--dry-run --include-job-api --out .pio/hil_dry_runs",
+            "--out hil_logs",
             "--include-normal-soak",
             "--include-destructive --confirm-raw-write BME280_RAW_WRITE",
             "--require-pass",
@@ -387,6 +389,7 @@ def main() -> int:
         RUNNER,
     )
     assert_contains(read(GITIGNORE), "hil_logs/", GITIGNORE)
+    assert_contains(read(README), "--out .pio/hil_dry_runs", README)
 
     for path in (README, DOCS_INDEX, IDF_PORT, SHARED_BUS):
         assert_contains(read(path), "HARDWARE_VALIDATION.md", path)

@@ -2,7 +2,6 @@
 /// @brief Native contract tests for BME280 lifecycle and health behavior.
 
 #include <unity.h>
-#include <cstring>
 #include <type_traits>
 
 #include "Arduino.h"
@@ -391,13 +390,6 @@ void advanceJobPastCalibrationValidation(BME280::BME280& dev, FakeBus& bus,
         static_cast<uint32_t>(expectedLengths[i]),
         static_cast<uint32_t>(bus.readLengthLog[readLogStart + i]));
   }
-}
-
-Config makeConfigNoNowMs(FakeBus& bus) {
-  Config cfg = makeConfig(bus);
-  cfg.nowMs = nullptr;
-  cfg.timeUser = nullptr;
-  return cfg;
 }
 
 void putLe16(FakeBus& bus, uint8_t reg, uint16_t value) {

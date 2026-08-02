@@ -8,7 +8,7 @@
 #include <driver/i2c_master.h>
 #include <esp_err.h>
 
-#include "BME280/BME280.h"
+#include "BME280/Config.h"
 
 struct IdfI2cContext {
   i2c_master_bus_handle_t bus = nullptr;
@@ -18,8 +18,7 @@ struct IdfI2cContext {
 };
 
 IdfI2cContext& bme280IdfI2cContext();
-bool bme280IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
-                      uint8_t address);
+bool bme280IdfInitI2c(int sda, int scl, uint32_t freqHz, uint8_t address);
 void bme280IdfDeinitI2c();
 
 BME280::TransportResult idfI2cWrite(uint8_t addr, const uint8_t* data,

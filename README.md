@@ -4,10 +4,9 @@ Production-oriented BME280 I2C driver for ESP32 systems using
 Arduino/PlatformIO or ESP-IDF.
 
 Validation status: host/native tests, guard scripts, package checks, Arduino
-PlatformIO builds, and CI ESP-IDF builds are supported in this repository. A
-local one-hour ESP32-S2/COM5 serial run passed every deterministic row for a
-dirty `2.0.0` build, but it is not release-qualifying hardware evidence. See
-`docs/HARDWARE_VALIDATION.md` for the results and exact boundary.
+PlatformIO builds, and CI ESP-IDF builds are supported in this repository. No
+reviewable physical HIL package for the current source is committed; see
+`docs/HARDWARE_VALIDATION.md` for the procedure and exact evidence boundary.
 
 Release status: `2.0.0` is the current major release. It contains the
 external-owner and transport-contract hardening described in the changelog and
@@ -76,7 +75,7 @@ void setup() {
   BME280::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = transport::configUser();
+  cfg.i2cUser = &Wire;
   cfg.nowMs = appNowMs;
   cfg.i2cAddress = 0x76;
   cfg.i2cTimeoutMs = 50;
@@ -549,16 +548,11 @@ Not part of the library. These simulate project-level glue and keep examples sel
 |------|---------|
 | `BoardConfig.h` | Pin definitions and Wire init for supported boards |
 | `BuildConfig.h` | Compile-time `LOG_LEVEL` configuration |
-| `Log.h` | Serial logging macros (`LOGE`/`LOGW`/`LOGI`/`LOGD`/`LOGT`/`LOGV`) |
+| `Log.h` | Serial logging macros (`LOGE`/`LOGW`/`LOGI`) |
 | `I2cTransport.h` | Wire-based I2C transport adapter (`wireWrite`, `wireWriteRead`, `initWire`) |
-| `I2cScanner.h` | I2C bus scanner with table output and bus recovery |
-| `BusDiag.h` | Bus diagnostics wrapper (scan + probe) |
+| `I2cScanner.h` | I2C bus scanner with table output |
 | `CliStyle.h` | Shared ANSI colors and CLI formatting helpers |
-| `CliShell.h` | Serial command-line shell with line editing |
-| `CommandHandler.h` | Command parsing helpers (`readLine`, `match`, `parseInt`) |
 | `HealthView.h` | Compact health status display |
-| `HealthDiag.h` | Verbose health diagnostics with color, snapshots, and `HealthMonitor` |
-| `TransportAdapter.h` | Transport function pointer adapter |
 
 ## Behavioral Contracts
 
@@ -598,6 +592,11 @@ Not part of the library. These simulate project-level glue and keep examples sel
 
 ## Validation
 
+The repository's Arduino example environments exact-pin pioarduino
+`platform-espressif32` `55.03.311`, which supplies Arduino-ESP32 `3.3.11` and
+ESP-IDF `5.5.5`. This pin keeps repository builds reproducible; consuming
+applications continue to select and own their platform version.
+
 ```bash
 python tools/check_core_timing_guard.py
 python tools/check_cli_contract.py
@@ -608,8 +607,8 @@ python tools/check_release_metadata.py
 python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py tools/check_release_metadata.py
 python tools/test_run_i2c_hil_parser.py
 python tools/run_i2c_hil.py --parser-self-test
-python tools/run_i2c_hil.py --dry-run
-python tools/run_i2c_hil.py --dry-run --include-job-api
+python tools/run_i2c_hil.py --dry-run --out .pio/hil_dry_runs
+python tools/run_i2c_hil.py --dry-run --include-job-api --out .pio/hil_dry_runs
 doxygen Doxyfile
 python -m platformio test -e native
 python -m platformio test -e native_sanitized
@@ -622,6 +621,9 @@ git diff --check
 
 Remove the generated package tarball after local validation unless you are
 preparing a release artifact.
+
+The package manifest exports the library, examples, and maintained
+documentation while excluding development-only CI, test, and validation tools.
 
 Optional local ESP-IDF checks, when `idf.py` is installed:
 
@@ -651,7 +653,7 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - `docs/BME280_Register_Reference.md` - register reference and bitfield notes
 - `docs/PRODUCTION_SHARED_BUS_GUIDE.md` - production shared-bus integration guidance
 - `docs/HARDWARE_VALIDATION.md` - consolidated HIL procedure, evidence schema,
-  current status, and historical-result boundary
+  current status, and qualification boundary
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
 The `2.0.0` changelog entry records the breaking transport migration, bounded
@@ -660,14 +662,15 @@ validation scope. The `v2.0.0` tag identifies the exact released commit.
 
 ## Known Limitations
 
-- No qualified `v2.0.0` physical HIL result is committed. The local one-hour
-  ESP32-S2 run and historical pre-v2 results are explicitly non-qualifying in
-  `docs/HARDWARE_VALIDATION.md`.
+- No reviewable physical HIL package for the current source is committed.
+  `docs/HARDWARE_VALIDATION.md` defines the qualification and retention policy.
 - Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v5.3.2 on ESP32-S2 and ESP32-S3.
 - The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should follow `docs/PRODUCTION_SHARED_BUS_GUIDE.md` and add application-owned locking, scheduling, timeout, and recovery policy around the injected transport.
-- Generated Doxygen HTML, HIL logs, PlatformIO build output, and package
-  tarballs are local artifacts unless a release process explicitly records
-  them.
+- Generated Doxygen HTML, dry-run HIL plans, PlatformIO build output, and
+  package tarballs are disposable local artifacts. Preserve a complete real
+  HIL package, including its transcript and manifest, in durable tracked
+  storage or an immutable release asset before cleaning the ignored scratch
+  directory.
 
 ## License
 

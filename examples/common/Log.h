@@ -13,8 +13,8 @@
 #include "examples/common/BuildConfig.h"
 
 // Compile-time validation
-#if LOG_LEVEL < 0 || LOG_LEVEL > 4
-#error "LOG_LEVEL must be 0-4 (0=off, 1=error, 2=info, 3=debug, 4=trace)"
+#if LOG_LEVEL < 0 || LOG_LEVEL > 2
+#error "LOG_LEVEL must be 0-2 (0=off, 1=error, 2=info)"
 #endif
 
 #ifndef LOG_SERIAL
@@ -25,9 +25,7 @@
 #define LOG_COLOR_RED    "\033[31m"
 #define LOG_COLOR_GREEN  "\033[32m"
 #define LOG_COLOR_YELLOW "\033[33m"
-#define LOG_COLOR_BLUE   "\033[34m"
 #define LOG_COLOR_CYAN   "\033[36m"
-#define LOG_COLOR_GRAY   "\033[90m"
 #define LOG_COLOR_RESULT(ok) ((ok) ? LOG_COLOR_GREEN : LOG_COLOR_RED)
 #define LOG_COLOR_STATE(online, failures) \
   ((online) ? (((failures) > 0U) ? LOG_COLOR_YELLOW : LOG_COLOR_GREEN) : LOG_COLOR_RED)
@@ -66,24 +64,4 @@ inline void log_begin(unsigned long baud = 115200) {
 #define LOGI(fmt, ...) \
   do { \
     if (LOG_LEVEL >= 2) LOG_PRINT_WITH_TAG(LOG_COLOR_CYAN, "I", fmt, ##__VA_ARGS__); \
-  } while (0)
-
-/// @brief Log debug message (level >= 3)
-#define LOGD(fmt, ...) \
-  do { \
-    if (LOG_LEVEL >= 3) LOG_PRINT_WITH_TAG(LOG_COLOR_BLUE, "D", fmt, ##__VA_ARGS__); \
-  } while (0)
-
-/// @brief Log trace message (level >= 4)
-#define LOGT(fmt, ...) \
-  do { \
-    if (LOG_LEVEL >= 4) LOG_PRINT_WITH_TAG(LOG_COLOR_GRAY, "T", fmt, ##__VA_ARGS__); \
-  } while (0)
-
-// Conditional verbose logging (runtime switch)
-#define LOGV(verbose, fmt, ...) \
-  do { \
-    if (verbose) { \
-      LOG_PRINT_WITH_TAG(LOG_COLOR_GRAY, "V", fmt, ##__VA_ARGS__); \
-    } \
   } while (0)

@@ -200,8 +200,4 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
   return true;
 }
 
-inline void* configUser() {
-  return &Wire;
-}
-
 }  // namespace transport

@@ -1,6 +1,6 @@
 # BME280 Hardware Validation
 
-Last updated: 2026-07-22
+Last updated: 2026-08-01
 
 This is the single maintained hardware-in-the-loop (HIL) procedure, evidence
 schema, and result ledger for the library. It replaces the former HIL runbook,
@@ -13,14 +13,14 @@ corresponding physical evidence is absent.
 
 ## Current Validation Status
 
-No physical HIL run tied to a clean `v2.0.0` commit and complete evidence
-schema is committed. A local one-hour ESP32-S2 run completed on 2026-07-22, but
-its firmware and host worktree were dirty and several fixture fields were not
-verified. It is useful regression evidence, not a release-qualification claim.
+No physical HIL run tied to the current source, a clean commit, and the complete
+evidence schema is committed. Previously summarized local and historical runs
+had no retained evidence packages in this checkout, so their unreviewable
+counts have been removed rather than presented as current validation evidence.
 
 | Target or condition | Current status | Evidence boundary |
 | --- | --- | --- |
-| ESP32-S2, Arduino/PlatformIO, address `0x76` | LOCAL ONE-HOUR SERIAL HIL / NOT RELEASE-QUALIFYING | The 2026-07-22 COM5 run passed every deterministic row for a dirty `2.0.0` build. Exact clean-build provenance, module/rail/pull-up/strap evidence, references, protected faults, and shared-bus behavior remain open. |
+| ESP32-S2, Arduino/PlatformIO, address `0x76` | NOT RUN | No reviewable physical runtime artifact is committed. |
 | ESP32-S2, native ESP-IDF | NOT RUN | No physical runtime artifact is committed. |
 | ESP32-S3, Arduino/PlatformIO | NOT RUN | Build evidence is not hardware evidence. |
 | ESP32-S3, native ESP-IDF | NOT RUN | No physical runtime artifact is committed. |
@@ -29,59 +29,6 @@ verified. It is useful regression evidence, not a release-qualification claim.
 | Protected fault injection | NOT RUN | No protected address-NACK, timeout, bus/data fault, or recovery artifact is committed. |
 | Production shared-bus contention | NOT RUN | No application-owned locking/scheduling coexistence artifact is committed. |
 | Logic-analyzer burst coherency | NOT RUN | No capture proving one `0xF7..0xFE` transaction is committed. |
-
-### Local ESP32-S2 `2.0.0` Run
-
-Run `i2c_20260722_163553` used the Arduino `esp32s2dev` diagnostic CLI on
-`COM5`, address `0x76`, GPIO8/GPIO9, and the configured 400 kHz bus. The
-firmware reported library `2.0.0`, base commit `f6fc7bf`, and a dirty build.
-The dirty firmware included post-tag `Unreleased` fixes and therefore is not
-the published `v2.0.0` artifact despite reporting the same base version. The
-host stayed on the same dirty commit for the run. The artifact directory is
-local under `hil_logs/` and is intentionally ignored by Git.
-
-| Recorded item | Result |
-| --- | --- |
-| Duration soak | 3,603.663 seconds, 1,201 cycles; stopped before starting the next group whose reserved window would exceed the deadline |
-| Result rows | 4,282 PASS; 2,614 OPERATOR_CHECK_REQUIRED; 61 PASS_WITH_RESET_BUSY_RECOVERED; 1 provenance REVIEW_REQUIRED; 0 FAIL/TIMEOUT/UNKNOWN |
-| Workload totals | 61,110 forced samples; 84,140 mixed operations; 203 normal-mode reads; exhaustive legal oversampling/filter/standby matrix; invalid-input, benchmark, staged-job, and opted-in raw-write/recovery groups |
-| Reset evidence | All 61 reset NVM-BUSY observations were followed immediately by successful recover/status evidence proving READY, `dirty=false`, `measuring=0`, and `im_update=0` |
-| Observed batch ranges | 27.38 to 28.50 degC; 99,143 to 99,189 Pa; 27.67 to 31.72% RH; these are plausibility observations only, not accuracy results |
-| Integrity | The manifest hashes for all ten listed artifacts were rechecked after the run and matched |
-
-The audit found that the runner version used for the hour did not append its
-intended final safe-state rows after an ordinary duration deadline stop. That
-host-tool defect did not alter the completed workload or its row
-classifications. The runner was fixed and run `i2c_20260722_174458` then passed
-the exact bounded cleanup sequence: `normal off`, `recover`, `cfg`, `status`,
-and `drv`. Its final evidence proved clean configuration, `measuring=0`,
-`im_update=0`, and zero consecutive failures.
-
-This local evidence does not qualify `v2.0.0`: the source was dirty, the exact
-board/module, rails, pull-ups, SDO/CSB straps, and reference instruments were
-not independently recorded, protected physical fault injection was not
-performed, and the test was a standalone ESP32-S2 diagnostic fixture rather
-than the ESP32-S3 TunnelMonitor shared-bus runtime.
-
-### Historical ESP32-S2 Runs
-
-These results are retained only as pre-v2 development history. They were run on
-one ESP32-S2 Arduino fixture on `COM28`, address `0x76`, chip ID `0x60`,
-SDA/SCL GPIO8/GPIO9, and 400 kHz. SDO and CSB state were inferred rather than
-independently recorded. Because the raw packages and release identity are
-missing, none of these rows qualifies `v2.0.0` or any untested target.
-
-| Date | Run | Recorded classifier result |
-| --- | --- | --- |
-| 2026-06-22 | Functional serial HIL | 61 PASS, 22 OPERATOR_CHECK_REQUIRED, 1 reset/NVM UNKNOWN, 0 FAIL, 0 TIMEOUT |
-| 2026-06-22 to 2026-06-23 | 8-hour soak | 11,497 PASS, 7,297 OPERATOR_CHECK_REQUIRED, 35 reset/NVM UNKNOWN, 0 FAIL, 0 TIMEOUT |
-| 2026-06-23 to 2026-06-24 | 20-hour soak | 83,313 PASS, 51,701 OPERATOR_CHECK_REQUIRED, 1,206 reset/NVM UNKNOWN, 0 FAIL, 0 TIMEOUT |
-| 2026-06-24 | 180-second reset classifier | 354 PASS, 127 OPERATOR_CHECK_REQUIRED, 54 PASS_WITH_RESET_BUSY_RECOVERED, 0 UNKNOWN/FAIL/TIMEOUT |
-| 2026-06-24 | 60-second reset classifier | 132 PASS, 48 OPERATOR_CHECK_REQUIRED, 19 PASS_WITH_RESET_BUSY_RECOVERED, 0 UNKNOWN/FAIL/TIMEOUT |
-
-The recovered reset classification is valid only when an immediate `recover`
-and status capture prove `im_update=0`, `measuring=0`, driver `READY`, and clean
-hardware configuration. It is not an accuracy or fault-injection result.
 
 ## HIL Procedure
 
@@ -98,8 +45,11 @@ hardware configuration. It is not an accuracy or fault-injection result.
    staged v2 API.
 6. Review `summary.md`, `results.csv`, `operator_checklist.md`, the transcript,
    and manual reference/fault evidence together.
-7. Preserve the selected artifact directory and its `manifest.json`. Add a new
-   ledger row here only when the evidence package is available.
+7. Preserve the complete selected artifact directory and its `manifest.json`.
+   Before ordinary cleanup, promote every real or review-worthy run from the
+   ignored `hil_logs/` scratch area to durable tracked storage or an immutable
+   release asset. Add a ledger row here only when that evidence remains
+   available.
 
 Install `pyserial` only for a real serial run:
 
@@ -130,7 +80,7 @@ Verify the runner before hardware access:
 
 ```bash
 python tools/run_i2c_hil.py --parser-self-test
-python tools/run_i2c_hil.py --dry-run --include-job-api
+python tools/run_i2c_hil.py --dry-run --include-job-api --out .pio/hil_dry_runs
 ```
 
 Example evidence run (PowerShell line continuation shown):
@@ -256,7 +206,7 @@ Every qualifying run must include:
 
 | Category | Required fields |
 | --- | --- |
-| Provenance | Operator; date/time and timezone; branch; Git commit; worktree state / dirty flag; runner command and arguments; command groups and opt-ins; firmware `version` output; library version; runner final verdict; sign-off. |
+| Provenance | Operator; date/time and timezone; branch; Git commit; worktree state / dirty flag; runner command and arguments; command groups and opt-ins; firmware `version` output; library version; exact pioarduino platform, Arduino core, and ESP-IDF versions where applicable; runner final verdict; sign-off. |
 | Target | Framework; build target; MCU board model and target; serial port/baud; BME280 module and visible marking; fixture description. |
 | Electrical | VDD; VDDIO; supply/current limit; SDA/SCL pins and speed; pull-up values and location; address; verified SDO and CSB state; reset/interrupt wiring or `N/A`. |
 | Environmental | Reference instrument models/calibration state; reference and BME280 readings; tolerances/uncertainty; timestamp; stability/altitude notes; per-channel decision. Use `NOT RUN` when no reference was used. |

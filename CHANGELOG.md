@@ -9,18 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated the exact-pinned Arduino example platform from pioarduino
+  `platform-espressif32` `54.03.20` to `55.03.311` (Arduino-ESP32 `3.3.11`,
+  ESP-IDF `5.5.5`), migrated the ESP32-S2 upload reset value to esptool 5
+  syntax, and removed obsolete or incorrect PSRAM flags from the no-PSRAM
+  ESP32-S3 board profile.
 - Consolidated the HIL runbook, target template, validation matrix, and legacy
   ESP32-S2 summary into one `docs/HARDWARE_VALIDATION.md` procedure and ledger.
-  Historical pre-v2 serial results are retained with an explicit non-qualifying
-  evidence boundary.
+  Only results backed by an available complete evidence package belong in the
+  current ledger.
 - Hardened HIL evidence generation with firmware/host version and commit
   comparison for PlatformIO and ESP-IDF, dirty/change review gates, exhaustive
   config-enum readback, safe-state duration grouping, bounded best-effort final
   cleanup with explicit safe-state evidence, and UNKNOWN failure analysis.
-- Recorded a local one-hour ESP32-S2/COM5 regression run for the dirty `2.0.0`
-  working tree while retaining an explicit non-qualifying boundary for missing
-  clean provenance, fixture metadata, references, physical faults, and the
-  TunnelMonitor shared-bus runtime.
 - Made Doxygen generation strict for the documented public API and completed
   parameter/return documentation for enum helpers, status/result factories,
   state accessors, and generated version metadata.
@@ -31,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the generic shared-bus guide.
 - Updated the documentation map, contribution gate, and security support and
   callback-boundary guidance for the current `2.0.x` release.
+- Defined a curated PlatformIO package surface containing the runtime library,
+  examples, and maintained documentation while excluding development-only
+  repository internals.
+- Centralized Bosch calibration-byte decoding shared by synchronous and staged
+  initialization paths without changing their distinct I2C sequencing.
 
 ### Fixed
 
@@ -50,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Unused example helpers, logging branches, test stubs, copied
+  TunnelMonitor-only version-generator logic, redundant build filters, and the
+  false PSRAM declaration for the selected no-PSRAM ESP32-S3 board.
+- Stale product-specific integration planning and unreviewable local/historical
+  HIL summaries whose complete evidence packages are absent. Real transcripts
+  and manifests remain protected by the maintained evidence-retention policy.
 - Completed industry-hardening and TunnelMonitor audit reports whose durable
   conclusions are already represented by the v2 code, API contracts, and
   release notes. Git history remains the archive.

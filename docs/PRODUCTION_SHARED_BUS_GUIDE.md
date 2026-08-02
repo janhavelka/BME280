@@ -382,63 +382,6 @@ These are integration requirements, not hardware-validation claims. Validate
 the final adapter with its actual queue, deadline, hotplug, shared-bus, and fault
 policy.
 
-### TunnelMonitor-node Integration Boundary
-
-The `TunnelMonitor-node` repository was reviewed at commit `0dc40d1` on branch
-`prompt-45-platformization` on 2026-07-22. At that baseline it does not yet
-depend on this library: BME280 register access and compensation still live in
-`I2cTask`, and the maintained implementation plan assigns their atomic
-replacement to the later BME280/ENV module slice. Do not add an interim wrapper
-around that duplicate protocol path.
-
-That plan currently names the exact `v2.0.0` tag. The readiness, stale-sample,
-terminal-tick, and HIL cleanup fixes in this repository's `Unreleased` section
-are post-tag changes and are not present in `v2.0.0`. Before integrating them,
-publish a normal patch release and update TunnelMonitor to that exact annotated
-tag. Do not substitute a dirty working tree, branch, or moving selector.
-
-For the planned integration, preserve these concrete mappings:
-
-- `I2cTask` remains the sole physical-bus, queue, lock, immutable-deadline, and
-  recovery owner. One private `Bme280Module` owns one `BME280` instance.
-- Each library transport callback calls the owner's `transferOnce` exactly
-  once. It passes the remaining callback budget after lock/queue time, maps
-  exact byte counts, and performs no retry or bus recovery.
-- Admit initialization with zero-I2C `startInitJob(config)` and advance jobs
-  with `pollJob(nowMs, 1)`. The original TunnelMonitor command deadline remains
-  authoritative across initialization, candidate fallback, conversion, and
-  result publication; no child/library phase renews it.
-- At the owner deadline, call zero-I2C
-  `cancelJob(CancelReason::DEADLINE_EXPIRED)`, retrieve the retained terminal
-  once with `pollJob(nowMs, 0)`, and do not start another hardware operation
-  before that drain.
-- Only an initial, definite address NACK may classify the optional `0x76`
-  candidate as absent. After an ACK/probe, identity mismatch, calibration
-  failure, timeout, data NACK, bus error, short transfer, or compensation error
-  is a fault, not absence.
-- On bus invalidation or possible hot replacement, cancel/drain as applicable,
-  call zero-I2C `invalidateDeviceState()`, clear the cached ENV candidate, and
-  require complete staged initialization before accepting a new sample.
-- Publish one atomic current measurement only when temperature, humidity, and
-  pressure are all valid and `sampleFreshness()` is `FRESH`. Never report a
-  stale last-good BME280 sample as the result of a failed current ENV request.
-- Preserve the product-owned candidate order SHT3x `0x44`, SHT3x `0x45`, then
-  BME280 `0x76`, its at-most-one retained logical result, and its existing
-  units. Candidate selection and aggregate ENV health do not belong in this
-  chip library.
-- Use `startResyncJob()` after owner-directed bus recovery. Do not turn a bus
-  recovery into an automatic BME280 soft reset; use `startSoftResetJob()` only
-  for an explicit device-reset policy.
-
-The local one-hour COM5 run in `HARDWARE_VALIDATION.md` exercised the standalone
-ESP32-S2 CLI and the library's staged API, including one-callback polling and
-deadline cancellation. It does not validate TunnelMonitor's ESP32-S3 target,
-shared queue, candidate fallback, hotplug behavior, application deadline,
-result lifetime, or coexistence with the other I2C devices. Those cases require
-the `native` and `native_hil_fram` module tests, both `tunnelmonitor_wifi` and
-`tunnelmonitor_wifi_hil` builds, and authorized HIL after the production module
-replaces the old direct path.
-
 ## Shared Bus With Other Devices
 
 Every device adapter on the bus should use the same bus manager and finite

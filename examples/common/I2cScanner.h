@@ -15,38 +15,6 @@
 namespace i2c_scanner {
 
 /**
- * @brief Attempt to recover a stuck I2C bus by toggling SCL.
- * @param sda SDA pin number
- * @param scl SCL pin number
- */
-inline void recoverBus(int sda, int scl) {
-  Wire.end();
-
-  pinMode(scl, OUTPUT);
-  pinMode(sda, INPUT_PULLUP);
-
-  for (int i = 0; i < 9; i++) {
-    digitalWrite(scl, LOW);
-    delayMicroseconds(5);
-    digitalWrite(scl, HIGH);
-    delayMicroseconds(5);
-    if (digitalRead(sda)) {
-      break;
-    }
-  }
-
-  pinMode(sda, OUTPUT);
-  digitalWrite(sda, LOW);
-  delayMicroseconds(5);
-  digitalWrite(scl, HIGH);
-  delayMicroseconds(5);
-  digitalWrite(sda, HIGH);
-  delayMicroseconds(5);
-
-  Wire.begin(sda, scl);
-}
-
-/**
  * @brief Scan I2C bus and print found devices.
  * @param wire Reference to Wire object (must be initialized).
  * @param timeoutMs Timeout per address probe in milliseconds (default 50ms).
@@ -99,10 +67,6 @@ inline void scan(TwoWire& wire, uint16_t timeoutMs = 50) {
   if (count > 0) {
     LOGI("Common addresses: 0x3C/0x3D=OLED, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280");
   }
-}
-
-inline void scanDefault(uint16_t timeoutMs = 50) {
-  scan(Wire, timeoutMs);
 }
 
 }  // namespace i2c_scanner

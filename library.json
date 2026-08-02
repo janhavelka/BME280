@@ -44,6 +44,25 @@
   "headers": [
     "BME280/BME280.h"
   ],
+  "export": {
+    "include": [
+      "CMakeLists.txt",
+      "CHANGELOG.md",
+      "LICENSE",
+      "README.md",
+      "idf_component.yml",
+      "library.json",
+      "include/*",
+      "src/*",
+      "examples/*",
+      "docs/README.md",
+      "docs/IDF_PORT.md",
+      "docs/PRODUCTION_SHARED_BUS_GUIDE.md",
+      "docs/HARDWARE_VALIDATION.md",
+      "docs/BME280_Register_Reference.md",
+      "docs/BME280_datasheet.pdf"
+    ]
+  },
   "build": {
     "includeDir": "include",
     "srcDir": "src"

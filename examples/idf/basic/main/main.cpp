@@ -35,9 +35,7 @@ constexpr char LOG_COLOR_RESET[] = "\033[0m";
 constexpr char LOG_COLOR_RED[] = "\033[31m";
 constexpr char LOG_COLOR_GREEN[] = "\033[32m";
 constexpr char LOG_COLOR_YELLOW[] = "\033[33m";
-constexpr char LOG_COLOR_BLUE[] = "\033[34m";
 constexpr char LOG_COLOR_CYAN[] = "\033[36m";
-constexpr char LOG_COLOR_GRAY[] = "\033[90m";
 constexpr size_t HELP_COMMAND_WIDTH = 32U;
 constexpr uint8_t BME280_DEFAULT_ADDR = 0x76;
 constexpr uint32_t I2C_TIMEOUT_MS = 50;
@@ -282,7 +280,6 @@ BME280::Status initBusForActiveAddress() {
   if (!bme280IdfInitI2c(BME280_IDF_I2C_SDA,
                         BME280_IDF_I2C_SCL,
                         BME280_IDF_I2C_FREQ_HZ,
-                        I2C_TIMEOUT_MS,
                         gActiveAddress)) {
     return BME280::Status::Error(BME280::Err::I2C_BUS,
                                  "IDF I2C init failed",

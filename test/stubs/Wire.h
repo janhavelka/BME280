@@ -41,13 +41,6 @@ public:
     return -1;
   }
 
-  // Test helper: set data to return on next read
-  void _setReadData(const uint8_t* data, size_t len) {
-    for (size_t i = 0; i < len && i < sizeof(_rxBuf); i++) {
-      _rxBuf[i] = data[i];
-    }
-  }
-
   void _setEndTransmissionResult(uint8_t result) { _endTransmissionResult = result; }
   void _clearEndTransmissionResult() { _endTransmissionResult = 0; }
   void _setRequestFromResult(size_t len) {

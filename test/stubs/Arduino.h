@@ -15,7 +15,6 @@ using byte = uint8_t;
 inline uint32_t gMillisValue = 0;
 inline void setMillis(uint32_t value) { gMillisValue = value; }
 inline uint32_t millis() { return gMillisValue; }
-inline uint32_t micros() { return 0; }
 inline void delay(uint32_t ms) { (void)ms; }
 inline void delayMicroseconds(uint32_t us) { (void)us; }
 inline void yield() {}

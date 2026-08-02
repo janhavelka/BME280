@@ -7,7 +7,7 @@
 
 #pragma once
 
-/// @brief Log level: 0=off, 1=error, 2=info, 3=debug, 4=trace
+/// @brief Log level: 0=off, 1=error, 2=warning/info.
 #ifndef LOG_LEVEL
 #define LOG_LEVEL 2
 #endif

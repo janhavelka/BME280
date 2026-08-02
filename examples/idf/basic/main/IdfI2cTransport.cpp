@@ -60,9 +60,7 @@ IdfI2cContext& bme280IdfI2cContext() {
   return gContext;
 }
 
-bool bme280IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
-                      uint8_t address) {
-  (void)timeoutMs;
+bool bme280IdfInitI2c(int sda, int scl, uint32_t freqHz, uint8_t address) {
   bme280IdfDeinitI2c();
 
   i2c_master_bus_config_t busConfig = {};

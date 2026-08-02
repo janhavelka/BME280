@@ -323,6 +323,34 @@ static bool humidityCalibrationBlockValid(const uint8_t* data, size_t len) {
          !bytesAllEqual(data, len, 0xFF);
 }
 
+static void parseCalibrationTp(const uint8_t* data, Calibration& out) {
+  out.digT1 = static_cast<uint16_t>((data[1] << 8) | data[0]);
+  out.digT2 = static_cast<int16_t>((data[3] << 8) | data[2]);
+  out.digT3 = static_cast<int16_t>((data[5] << 8) | data[4]);
+  out.digP1 = static_cast<uint16_t>((data[7] << 8) | data[6]);
+  out.digP2 = static_cast<int16_t>((data[9] << 8) | data[8]);
+  out.digP3 = static_cast<int16_t>((data[11] << 8) | data[10]);
+  out.digP4 = static_cast<int16_t>((data[13] << 8) | data[12]);
+  out.digP5 = static_cast<int16_t>((data[15] << 8) | data[14]);
+  out.digP6 = static_cast<int16_t>((data[17] << 8) | data[16]);
+  out.digP7 = static_cast<int16_t>((data[19] << 8) | data[18]);
+  out.digP8 = static_cast<int16_t>((data[21] << 8) | data[20]);
+  out.digP9 = static_cast<int16_t>((data[23] << 8) | data[22]);
+  out.digH1 = data[25];
+}
+
+static void parseCalibrationH(const uint8_t* data, Calibration& out) {
+  out.digH2 = static_cast<int16_t>((data[1] << 8) | data[0]);
+  out.digH3 = data[2];
+  const int16_t h4 =
+      static_cast<int16_t>((data[3] << 4) | (data[4] & 0x0F));
+  const int16_t h5 =
+      static_cast<int16_t>((data[5] << 4) | (data[4] >> 4));
+  out.digH4 = signExtend12(h4);
+  out.digH5 = signExtend12(h5);
+  out.digH6 = static_cast<int8_t>(data[6]);
+}
+
 }  // namespace
 
 Status validateSettings(const SensorSettings& settings) {
@@ -2762,20 +2790,7 @@ Status BME280::_readCalibrationTp() {
     return st;
   }
 
-  _jobCalibration.digT1 = static_cast<uint16_t>((calibTP[1] << 8) | calibTP[0]);
-  _jobCalibration.digT2 = static_cast<int16_t>((calibTP[3] << 8) | calibTP[2]);
-  _jobCalibration.digT3 = static_cast<int16_t>((calibTP[5] << 8) | calibTP[4]);
-
-  _jobCalibration.digP1 = static_cast<uint16_t>((calibTP[7] << 8) | calibTP[6]);
-  _jobCalibration.digP2 = static_cast<int16_t>((calibTP[9] << 8) | calibTP[8]);
-  _jobCalibration.digP3 = static_cast<int16_t>((calibTP[11] << 8) | calibTP[10]);
-  _jobCalibration.digP4 = static_cast<int16_t>((calibTP[13] << 8) | calibTP[12]);
-  _jobCalibration.digP5 = static_cast<int16_t>((calibTP[15] << 8) | calibTP[14]);
-  _jobCalibration.digP6 = static_cast<int16_t>((calibTP[17] << 8) | calibTP[16]);
-  _jobCalibration.digP7 = static_cast<int16_t>((calibTP[19] << 8) | calibTP[18]);
-  _jobCalibration.digP8 = static_cast<int16_t>((calibTP[21] << 8) | calibTP[20]);
-  _jobCalibration.digP9 = static_cast<int16_t>((calibTP[23] << 8) | calibTP[22]);
-  _jobCalibration.digH1 = calibTP[25];
+  parseCalibrationTp(calibTP, _jobCalibration);
 
   return Status::Ok();
 }
@@ -2795,14 +2810,7 @@ Status BME280::_readCalibrationH() {
                          "Humidity calibration block erased");
   }
 
-  _jobCalibration.digH2 = static_cast<int16_t>((calibH[1] << 8) | calibH[0]);
-  _jobCalibration.digH3 = calibH[2];
-
-  int16_t h4 = static_cast<int16_t>((calibH[3] << 4) | (calibH[4] & 0x0F));
-  int16_t h5 = static_cast<int16_t>((calibH[5] << 4) | (calibH[4] >> 4));
-  _jobCalibration.digH4 = signExtend12(h4);
-  _jobCalibration.digH5 = signExtend12(h5);
-  _jobCalibration.digH6 = static_cast<int8_t>(calibH[6]);
+  parseCalibrationH(calibH, _jobCalibration);
 
   return Status::Ok();
 }
@@ -2818,19 +2826,7 @@ Status BME280::_readCalibrationCandidate(
   }
 
   Calibration candidate;
-  candidate.digT1 = static_cast<uint16_t>((calibTP[1] << 8) | calibTP[0]);
-  candidate.digT2 = static_cast<int16_t>((calibTP[3] << 8) | calibTP[2]);
-  candidate.digT3 = static_cast<int16_t>((calibTP[5] << 8) | calibTP[4]);
-  candidate.digP1 = static_cast<uint16_t>((calibTP[7] << 8) | calibTP[6]);
-  candidate.digP2 = static_cast<int16_t>((calibTP[9] << 8) | calibTP[8]);
-  candidate.digP3 = static_cast<int16_t>((calibTP[11] << 8) | calibTP[10]);
-  candidate.digP4 = static_cast<int16_t>((calibTP[13] << 8) | calibTP[12]);
-  candidate.digP5 = static_cast<int16_t>((calibTP[15] << 8) | calibTP[14]);
-  candidate.digP6 = static_cast<int16_t>((calibTP[17] << 8) | calibTP[16]);
-  candidate.digP7 = static_cast<int16_t>((calibTP[19] << 8) | calibTP[18]);
-  candidate.digP8 = static_cast<int16_t>((calibTP[21] << 8) | calibTP[20]);
-  candidate.digP9 = static_cast<int16_t>((calibTP[23] << 8) | calibTP[22]);
-  candidate.digH1 = calibTP[cmd::REG_CALIB_TP_LEN - 1];
+  parseCalibrationTp(calibTP, candidate);
   calibrationEvidenceChanged = !_calibrationTpMatchesCommitted(candidate);
 
   uint8_t calibH[cmd::REG_CALIB_H_LEN] = {};
@@ -2839,13 +2835,7 @@ Status BME280::_readCalibrationCandidate(
     return st;
   }
 
-  candidate.digH2 = static_cast<int16_t>((calibH[1] << 8) | calibH[0]);
-  candidate.digH3 = calibH[2];
-  int16_t h4 = static_cast<int16_t>((calibH[3] << 4) | (calibH[4] & 0x0F));
-  int16_t h5 = static_cast<int16_t>((calibH[5] << 4) | (calibH[4] >> 4));
-  candidate.digH4 = signExtend12(h4);
-  candidate.digH5 = signExtend12(h5);
-  candidate.digH6 = static_cast<int8_t>(calibH[6]);
+  parseCalibrationH(calibH, candidate);
 
   st = _validateCalibrationValues(candidate.digT1, candidate.digP1);
   if (!st.ok()) {

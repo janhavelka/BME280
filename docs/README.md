@@ -12,7 +12,7 @@ under `include/BME280/`; release history lives in `../CHANGELOG.md`.
 - `PRODUCTION_SHARED_BUS_GUIDE.md`: application-owned bus, locking, scheduling,
   deadlines, and recovery guidance.
 - `HARDWARE_VALIDATION.md`: the single HIL procedure, evidence schema, current
-  ledger, and historical-result boundary.
+  status, and qualification boundary.
 - `BME280_Register_Reference.md`: implementation-facing register, calibration,
   and timing notes.
 - `BME280_datasheet.pdf`: Bosch BME280 datasheet used as primary device
@@ -29,9 +29,16 @@ review records.
 These paths are intentionally ignored and are not release evidence by default:
 
 - `docs/doxygen/` — generated HTML API documentation;
-- `hil_logs/` — HIL plans and run artifacts;
-- `.pio/` — PlatformIO builds and dependencies;
+- `hil_logs/` — HIL plans and scratch run artifacts;
+- `.pio/` — PlatformIO builds, dependencies, and disposable dry-run plans;
 - `BME280-*.tar.gz` — generated package archives.
+
+Dry-run plans may be deleted. Preserve every real or review-worthy HIL run as
+one complete package—including its transcript, manifest, and supporting
+artifacts—by promoting it to durable tracked storage or an immutable release
+asset before cleaning `hil_logs/`. The tracked Bosch datasheet and maintained
+register reference are source evidence and must not be treated as generated
+documentation.
 
 Software checks and generated serial summaries do not prove physical wiring,
 bus margin, sensor accuracy, humidity handling, fault recovery, or field

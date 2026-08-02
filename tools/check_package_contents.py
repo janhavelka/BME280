@@ -11,6 +11,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 IDF_MAIN_DIR = ROOT / "examples" / "idf" / "basic" / "main"
 
 BASE_REQUIRED_PATHS = {
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
     "library.json",
     "include/BME280/BME280.h",
     "include/BME280/CommandTable.h",
@@ -21,6 +24,13 @@ BASE_REQUIRED_PATHS = {
     "idf_component.yml",
     "examples/idf/basic/CMakeLists.txt",
     "examples/idf/basic/main/CMakeLists.txt",
+    "examples/01_basic_bringup_cli/main.cpp",
+    "docs/README.md",
+    "docs/IDF_PORT.md",
+    "docs/PRODUCTION_SHARED_BUS_GUIDE.md",
+    "docs/HARDWARE_VALIDATION.md",
+    "docs/BME280_Register_Reference.md",
+    "docs/BME280_datasheet.pdf",
     "src/BME280.cpp",
 }
 
@@ -29,6 +39,7 @@ FORBIDDEN_PARTS = {
     ".pio",
     "__pycache__",
     "docs/doxygen",
+    "hil_logs",
 }
 
 ROOT_LEVEL_NAMES = {
@@ -179,7 +190,10 @@ def main() -> int:
     forbidden_hits = []
     for name in members:
         parts = set(name.split("/"))
-        if parts & FORBIDDEN_PARTS or any(part in name for part in FORBIDDEN_PARTS):
+        nested_archive = re.search(r"(?:^|/)BME280-[^/]+\.tar\.gz$", name)
+        if (parts & FORBIDDEN_PARTS or
+                any(part in name for part in FORBIDDEN_PARTS) or
+                nested_archive):
             forbidden_hits.append(name)
     if forbidden_hits:
         fail("forbidden build/internal paths in archive: " + ", ".join(sorted(forbidden_hits)[:8]))
