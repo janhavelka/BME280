@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import pathlib
 import py_compile
@@ -17,7 +18,15 @@ README = ROOT / "README.md"
 DOCS_INDEX = ROOT / "docs" / "README.md"
 IDF_PORT = ROOT / "docs" / "IDF_PORT.md"
 SHARED_BUS = ROOT / "docs" / "PRODUCTION_SHARED_BUS_GUIDE.md"
+GITATTRIBUTES = ROOT / ".gitattributes"
 GITIGNORE = ROOT / ".gitignore"
+RETAINED_TRANSCRIPT = (
+    ROOT / "hil_logs" / "i2c_20260803_144215" / "serial_transcript.txt"
+)
+RETAINED_TRANSCRIPT_SIZE = 5_048_514
+RETAINED_TRANSCRIPT_SHA256 = (
+    "7b858255bfc5053e18c224f3d14621e18b3db21ed1cfef16d92f727f4ba55415"
+)
 
 REMOVED_HIL_DOCS = (
     ROOT / "docs" / "I2C_HIL_RUNBOOK.md",
@@ -295,7 +304,7 @@ def validate_documentation(validation_text: str) -> None:
     assert_all(
         validation_text,
         (
-            "No physical HIL run tied to the current source, a clean commit",
+            "FUNCTIONAL SERIAL PASS / OPERATOR REVIEW REQUIRED",
             "scan` proves only",
             "`0x60`",
             "--include-job-api",
@@ -346,7 +355,16 @@ def validate_documentation(validation_text: str) -> None:
 
 
 def main() -> int:
-    for path in (RUNNER, VALIDATION, README, DOCS_INDEX, IDF_PORT, SHARED_BUS):
+    for path in (
+        RUNNER,
+        VALIDATION,
+        README,
+        DOCS_INDEX,
+        IDF_PORT,
+        SHARED_BUS,
+        GITATTRIBUTES,
+        RETAINED_TRANSCRIPT,
+    ):
         if not path.exists():
             fail(f"missing required file: {path.relative_to(ROOT)}")
     for path in REMOVED_HIL_DOCS:
@@ -388,7 +406,25 @@ def main() -> int:
         ),
         RUNNER,
     )
-    assert_contains(read(GITIGNORE), "hil_logs/", GITIGNORE)
+    assert_contains(read(GITIGNORE), "hil_logs/*", GITIGNORE)
+    assert_contains(read(GITIGNORE), "!hil_logs/*/serial_transcript.txt", GITIGNORE)
+    assert_contains(
+        read(GITATTRIBUTES), "hil_logs/*/serial_transcript.txt -text", GITATTRIBUTES
+    )
+    assert_all(
+        read(RETAINED_TRANSCRIPT),
+        (
+            "commit=dc5df8e6735bd21f52dea3e5ae7dcf54ec2b498d",
+            "--- DURATION SOAK END",
+            "--- FINAL CLEANUP END",
+        ),
+        RETAINED_TRANSCRIPT,
+    )
+    transcript_bytes = RETAINED_TRANSCRIPT.read_bytes()
+    if len(transcript_bytes) != RETAINED_TRANSCRIPT_SIZE:
+        fail("retained HIL transcript size changed")
+    if hashlib.sha256(transcript_bytes).hexdigest() != RETAINED_TRANSCRIPT_SHA256:
+        fail("retained HIL transcript SHA-256 changed")
     assert_contains(read(README), "--out .pio/hil_dry_runs", README)
 
     for path in (README, DOCS_INDEX, IDF_PORT, SHARED_BUS):

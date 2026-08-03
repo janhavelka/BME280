@@ -37,8 +37,12 @@ wifi_credentials.h
 *.bak
 *.log
 
-# HIL output artifacts
-hil_logs/
+# HIL output artifacts. Keep selected raw transcripts; derived reports remain
+# disposable unless explicitly promoted as a formal qualification package.
+hil_logs/*
+!hil_logs/*/
+hil_logs/*/*
+!hil_logs/*/serial_transcript.txt
 
 # Generated documentation
 docs/doxygen/

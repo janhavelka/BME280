@@ -4,9 +4,12 @@ Production-oriented BME280 I2C driver for ESP32 systems using
 Arduino/PlatformIO or ESP-IDF.
 
 Validation status: host/native tests, guard scripts, package checks, Arduino
-PlatformIO builds, and CI ESP-IDF builds are supported in this repository. No
-reviewable physical HIL package for the current source is committed; see
-`docs/HARDWARE_VALIDATION.md` for the procedure and exact evidence boundary.
+PlatformIO builds, and CI ESP-IDF builds are supported in this repository. A
+retained ESP32-S2/Arduino COM10 transcript records a 61-minute functional HIL
+campaign against clean source commit `dc5df8e`; deterministic serial checks
+passed, while accuracy, electrical, manual-fault, native ESP-IDF, and
+production shared-bus qualification remain unclaimed. See
+`docs/HARDWARE_VALIDATION.md` for the exact results and evidence boundary.
 
 Release status: `2.0.0` is the current major release. It contains the
 external-owner and transport-contract hardening described in the changelog and
@@ -662,15 +665,16 @@ validation scope. The `v2.0.0` tag identifies the exact released commit.
 
 ## Known Limitations
 
-- No reviewable physical HIL package for the current source is committed.
-  `docs/HARDWARE_VALIDATION.md` defines the qualification and retention policy.
+- The retained ESP32-S2/Arduino transcript is functional evidence, not a
+  complete hardware qualification package. It has no calibrated reference,
+  complete electrical metadata, protected manual faults, native ESP-IDF run,
+  or production shared-bus contention evidence.
 - Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v5.3.2 on ESP32-S2 and ESP32-S3.
 - The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should follow `docs/PRODUCTION_SHARED_BUS_GUIDE.md` and add application-owned locking, scheduling, timeout, and recovery policy around the injected transport.
-- Generated Doxygen HTML, dry-run HIL plans, PlatformIO build output, and
-  package tarballs are disposable local artifacts. Preserve a complete real
-  HIL package, including its transcript and manifest, in durable tracked
-  storage or an immutable release asset before cleaning the ignored scratch
-  directory.
+- Generated Doxygen HTML, dry-run HIL plans, derived HIL reports, PlatformIO
+  build output, and package tarballs are disposable local artifacts. Retain the
+  raw transcript and ledger entry for functional evidence; preserve the full
+  manifest-backed artifact set before making a formal qualification claim.
 
 ## License
 

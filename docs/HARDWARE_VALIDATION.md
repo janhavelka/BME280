@@ -1,6 +1,6 @@
 # BME280 Hardware Validation
 
-Last updated: 2026-08-01
+Last updated: 2026-08-03
 
 This is the single maintained hardware-in-the-loop (HIL) procedure, evidence
 schema, and result ledger for the library. It replaces the former HIL runbook,
@@ -13,22 +13,54 @@ corresponding physical evidence is absent.
 
 ## Current Validation Status
 
-No physical HIL run tied to the current source, a clean commit, and the complete
-evidence schema is committed. Previously summarized local and historical runs
-had no retained evidence packages in this checkout, so their unreviewable
-counts have been removed rather than presented as current validation evidence.
+A physical Arduino/PlatformIO HIL campaign was run on an ESP32-S2 at address
+`0x76` using the clean library source commit
+`dc5df8e6735bd21f52dea3e5ae7dcf54ec2b498d`. Its raw serial transcript is
+retained at
+`../hil_logs/i2c_20260803_144215/serial_transcript.txt`. Deterministic serial
+checks passed, but the run remains operator-review evidence rather than formal
+hardware qualification because electrical metadata, calibrated environmental
+reference data, manual fault injection, and operator sign-off are incomplete.
 
 | Target or condition | Current status | Evidence boundary |
 | --- | --- | --- |
-| ESP32-S2, Arduino/PlatformIO, address `0x76` | NOT RUN | No reviewable physical runtime artifact is committed. |
+| ESP32-S2, Arduino/PlatformIO, address `0x76` | FUNCTIONAL SERIAL PASS / OPERATOR REVIEW REQUIRED | Clean source commit `dc5df8e`; 61-minute COM10 campaign; raw transcript retained. No calibrated accuracy or complete electrical qualification claim. |
 | ESP32-S2, native ESP-IDF | NOT RUN | No physical runtime artifact is committed. |
 | ESP32-S3, Arduino/PlatformIO | NOT RUN | Build evidence is not hardware evidence. |
 | ESP32-S3, native ESP-IDF | NOT RUN | No physical runtime artifact is committed. |
-| Address `0x77` | NOT RUN | Requires SDO tied to VDDIO and a recorded identity check. |
+| Address `0x77` | NOT RUN | The safe unstrapped-address negative check is not coverage of a device with SDO tied to VDDIO. |
 | Calibrated environmental accuracy | NOT RUN | No controlled reference-instrument artifact is committed. |
 | Protected fault injection | NOT RUN | No protected address-NACK, timeout, bus/data fault, or recovery artifact is committed. |
 | Production shared-bus contention | NOT RUN | No application-owned locking/scheduling coexistence artifact is committed. |
 | Logic-analyzer burst coherency | NOT RUN | No capture proving one `0xF7..0xFE` transaction is committed. |
+
+### Retained ESP32-S2 Run: `i2c_20260803_144215`
+
+- Target: ESP32-S2, Arduino/PlatformIO, COM10 at 115200 baud, BME280 address
+  `0x76`, reported SDA GPIO8, SCL GPIO9, and 400 kHz.
+- Provenance: branch `main`, clean source commit
+  `dc5df8e6735bd21f52dea3e5ae7dcf54ec2b498d`, library version `2.0.0`, and
+  firmware build time `2026-08-03 14:39:57`.
+- Raw artifact: 5,048,514 bytes, 105,839 lines, SHA-256
+  `7b858255bfc5053e18c224f3d14621e18b3db21ed1cfef16d92f727f4ba55415`;
+  repository attributes disable text normalization for retained transcripts.
+- Runtime: 3,677.9 seconds for the full campaign, including a 3,545.5-second
+  duration soak; 6,979 classified result rows contained no `FAIL` or `TIMEOUT`.
+- Stress coverage: 58,860 measurement samples with zero reported errors and
+  81,340 mixed safe operations with zero reported failures.
+- Reset coverage: 117 reset/NVM-busy observations all recovered; the final
+  cleanup reported `READY`, online, zero consecutive failures, clean hardware
+  configuration, `measuring=0`, and `im_update=0`.
+- Follow-up negative check: selecting unstrapped address `0x77` returned
+  `I2C_SHORT_TRANSFER`; the Arduino transport could not prove a definite
+  address NACK. Restoring `0x76` succeeded and a subsequent measurement was
+  valid. This separately observed follow-up has no retained transcript, so it
+  is an adapter diagnostic only, not qualification evidence or address-`0x77`
+  device validation.
+- Accuracy boundary: observed values were plausible, but no calibrated
+  reference instrument was recorded. Accuracy, electrical margin, protected
+  fault injection, native ESP-IDF behavior, production shared-bus contention,
+  and logic-analyzer burst shape remain `NOT RUN`.
 
 ## HIL Procedure
 
@@ -45,11 +77,14 @@ counts have been removed rather than presented as current validation evidence.
    staged v2 API.
 6. Review `summary.md`, `results.csv`, `operator_checklist.md`, the transcript,
    and manual reference/fault evidence together.
-7. Preserve the complete selected artifact directory and its `manifest.json`.
-   Before ordinary cleanup, promote every real or review-worthy run from the
-   ignored `hil_logs/` scratch area to durable tracked storage or an immutable
-   release asset. Add a ledger row here only when that evidence remains
-   available.
+7. Retain the raw `serial_transcript.txt` and record the provenance, result,
+   and evidence boundary in this ledger. The repository ignore policy permits
+   selected raw transcripts while ignoring derived runner output.
+8. For a formal qualification claim, preserve the complete selected artifact
+   directory and its `manifest.json` in durable tracked storage or an immutable
+   release asset. Derived summaries may be cleaned after ledger verification
+   only when the run is explicitly retained as functional evidence rather than
+   a complete qualification package.
 
 Install `pyserial` only for a real serial run:
 
@@ -202,7 +237,7 @@ status, recovery, and final health/config state.
 
 ## Evidence Record
 
-Every qualifying run must include:
+A formal qualifying run must include:
 
 | Category | Required fields |
 | --- | --- |
@@ -212,6 +247,12 @@ Every qualifying run must include:
 | Environmental | Reference instrument models/calibration state; reference and BME280 readings; tolerances/uncertainty; timestamp; stability/altitude notes; per-channel decision. Use `NOT RUN` when no reference was used. |
 | Artifacts | `serial_transcript.txt`, `summary.md`, timestamped summary, `summary.json`, `results.csv`, `command_plan.json`, `environment.txt`, `operator_checklist.md`, `hardware_matrix_fragment.md`, `failure_analysis.md`, and `manifest.json`; optional photo or logic-analyzer paths. |
 | Manual review | Wiring/pull-up/strap verification; forced sleep return; normal-mode/soak scope; protected fault scope; environmental plausibility; remaining untested rows; blocking issues. |
+
+A functional run that is not claimed as formal qualification may retain the
+raw transcript plus this ledger's provenance, numeric results, and explicit
+limitations. Generated summaries are review aids, not substitutes for the raw
+serial record. Do not upgrade such a run to a qualification claim after its
+complete package has been discarded.
 
 The runner accepts the setup values through `--operator`, `--board`,
 `--mcu-target`, `--framework`, `--build-target`, `--module`, `--vdd`,

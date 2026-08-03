@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repository internals.
 - Centralized Bosch calibration-byte decoding shared by synchronous and staged
   initialization paths without changing their distinct I2C sequencing.
+- Recorded the retained ESP32-S2/Arduino COM10 functional HIL campaign against
+  clean source commit `dc5df8e`, including its zero-failure stress totals,
+  reset recovery result, final safe state, and explicit untested boundaries.
+- Refined HIL retention so selected raw transcripts and concise ledger results
+  remain durable while reproducible runner summaries stay disposable; formal
+  qualification still requires the complete manifest-backed evidence package.
+  Retained serial captures are byte-preserved and identified by SHA-256.
 
 ### Fixed
 
@@ -67,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release notes. Git history remains the archive.
 - Redundant generated datasheet text/summary extracts; the Bosch PDF and the
   maintained register reference remain the device sources in the repository.
+- Generated PlatformIO, Doxygen, Python-cache, IDE, and derived HIL output left
+  by completed local work. The Bosch datasheet and raw hardware transcript were
+  retained.
 
 ## [2.0.0] - 2026-07-22
 

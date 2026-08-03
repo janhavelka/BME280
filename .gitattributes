@@ -1,0 +1,2 @@
+# Raw serial captures are evidence; never normalize their bytes or line endings.
+hil_logs/*/serial_transcript.txt -text

@@ -26,19 +26,23 @@ review records.
 
 ## Generated and Local Artifacts
 
-These paths are intentionally ignored and are not release evidence by default:
+These paths are generated or local and are not release evidence by default:
 
-- `docs/doxygen/` — generated HTML API documentation;
-- `hil_logs/` — HIL plans and scratch run artifacts;
-- `.pio/` — PlatformIO builds, dependencies, and disposable dry-run plans;
-- `BME280-*.tar.gz` — generated package archives.
+- `docs/doxygen/` - generated HTML API documentation;
+- `hil_logs/<run>/serial_transcript.txt` - selected raw hardware evidence,
+  retained when the corresponding ledger row is maintained;
+- other files under `hil_logs/` - generated plans, summaries, matrices, CSVs,
+  manifests, and checklists;
+- `.pio/` - PlatformIO builds, dependencies, and disposable dry-run plans;
+- `BME280-*.tar.gz` - generated package archives.
 
-Dry-run plans may be deleted. Preserve every real or review-worthy HIL run as
-one complete package—including its transcript, manifest, and supporting
-artifacts—by promoting it to durable tracked storage or an immutable release
-asset before cleaning `hil_logs/`. The tracked Bosch datasheet and maintained
-register reference are source evidence and must not be treated as generated
-documentation.
+Dry-run plans and reproducible derived HIL reports may be deleted. Retain each
+selected raw transcript and its concise result/evidence boundary in
+`HARDWARE_VALIDATION.md`. A formal qualification claim additionally requires
+the complete package, including its manifest and supporting artifacts, in
+durable tracked storage or an immutable release asset. The tracked Bosch
+datasheet and maintained register reference are source evidence and must not
+be treated as generated documentation.
 
 Software checks and generated serial summaries do not prove physical wiring,
 bus margin, sensor accuracy, humidity handling, fault recovery, or field
