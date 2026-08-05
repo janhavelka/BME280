@@ -3,6 +3,7 @@
 /// @note This is an EXAMPLE, not part of the library
 
 #include <Arduino.h>
+#include <cerrno>
 #include <limits>
 #include "examples/common/CliStyle.h"
 #include "examples/common/Log.h"
@@ -75,10 +76,12 @@ static constexpr uint32_t STRESS_PROGRESS_UPDATES = 10U;
 static constexpr size_t CLI_INPUT_MAX_LEN = 127U;
 static constexpr uint8_t JOB_CLI_DEFAULT_BUDGET = 1U;
 static constexpr uint8_t JOB_CLI_MAX_BUDGET = 8U;
-static constexpr uint16_t JOB_CLI_MAX_POLLS = 512U;
+static constexpr uint16_t JOB_CLI_MAX_POLLS = 1024U;
 static constexpr uint32_t JOB_CLI_POLL_DELAY_MS = 1U;
+static constexpr uint32_t MAX_STRESS_COUNT = 100000U;
 
-void cancelPending();
+BME280::Status cancelPending();
+bool cancelPendingForCommand();
 
 // ============================================================================
 // Helper Functions
@@ -859,36 +862,61 @@ BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t tim
     }
     const BME280::Status pollStatus = device.lastMeasurementStatus();
     if (!pollStatus.ok() && !pollStatus.inProgress()) {
-      cancelPending();
-      return pollStatus;
+      const BME280::Status cancelStatus = cancelPending();
+      return cancelStatus.ok() ? pollStatus : cancelStatus;
     }
     yield();
   }
-  cancelPending();
+  const BME280::Status cancelStatus = cancelPending();
+  if (!cancelStatus.ok()) {
+    return cancelStatus;
+  }
   return BME280::Status::Error(BME280::Err::TIMEOUT, "measurement timeout", timeoutMs);
 }
 
-struct StressMixSettings {
-  bool valid = false;
-  BME280::Mode mode = BME280::Mode::FORCED;
-  BME280::Filter filter = BME280::Filter::OFF;
-  BME280::Standby standby = BME280::Standby::MS_125;
-};
-
-StressMixSettings captureStressMixSettings() {
-  StressMixSettings settings;
-  settings.valid = device.getMode(settings.mode).ok() &&
-                   device.getFilter(settings.filter).ok() &&
-                   device.getStandby(settings.standby).ok();
-  return settings;
+BME280::Status captureSensorSettings(BME280::SensorSettings& settings) {
+  BME280::SettingsSnapshot snapshot;
+  const BME280::Status st = device.getSettings(snapshot);
+  if (!st.ok()) {
+    return st;
+  }
+  if (!snapshot.initialized) {
+    return BME280::Status::Error(BME280::Err::NOT_INITIALIZED);
+  }
+  settings.mode = snapshot.mode;
+  settings.osrsT = snapshot.osrsT;
+  settings.osrsP = snapshot.osrsP;
+  settings.osrsH = snapshot.osrsH;
+  settings.filter = snapshot.filter;
+  settings.standby = snapshot.standby;
+  return BME280::validateSettings(settings);
 }
 
-BME280::Status restoreStressMixSettings(const StressMixSettings& settings) {
-  if (!settings.valid) {
-    return BME280::Status::Ok();
-  }
+bool sensorSettingsMatch(const BME280::SensorSettings& expected,
+                         const BME280::SettingsSnapshot& actual) {
+  return actual.initialized && !actual.hardwareConfigDirty &&
+         actual.mode == expected.mode &&
+         actual.osrsT == expected.osrsT &&
+         actual.osrsP == expected.osrsP &&
+         actual.osrsH == expected.osrsH &&
+         actual.filter == expected.filter &&
+         actual.standby == expected.standby;
+}
 
+BME280::Status restoreSensorSettings(const BME280::SensorSettings& settings) {
   BME280::Status st = device.setMode(BME280::Mode::SLEEP);
+  if (!st.ok()) {
+    return st;
+  }
+  st = device.setOversamplingT(settings.osrsT);
+  if (!st.ok()) {
+    return st;
+  }
+  st = device.setOversamplingP(settings.osrsP);
+  if (!st.ok()) {
+    return st;
+  }
+  st = device.setOversamplingH(settings.osrsH);
   if (!st.ok()) {
     return st;
   }
@@ -900,7 +928,20 @@ BME280::Status restoreStressMixSettings(const StressMixSettings& settings) {
   if (!st.ok()) {
     return st;
   }
-  return device.setMode(settings.mode);
+  st = device.setMode(settings.mode);
+  if (!st.ok()) {
+    return st;
+  }
+
+  BME280::SettingsSnapshot restored;
+  st = device.getSettings(restored);
+  if (!st.ok()) {
+    return st;
+  }
+  if (!sensorSettingsMatch(settings, restored)) {
+    return BME280::Status::Error(BME280::Err::RESYNC_REQUIRED);
+  }
+  return BME280::Status::Ok();
 }
 
 void runStressMix(int count) {
@@ -920,8 +961,16 @@ void runStressMix(int count) {
   };
   const int opCount = static_cast<int>(sizeof(stats) / sizeof(stats[0]));
 
-  cancelPending();
-  const StressMixSettings originalSettings = captureStressMixSettings();
+  if (!cancelPendingForCommand()) {
+    return;
+  }
+  BME280::SensorSettings originalSettings;
+  const BME280::Status captureStatus = captureSensorSettings(originalSettings);
+  if (!captureStatus.ok()) {
+    LOGE("Could not capture pre-stress settings");
+    printStatus(captureStatus);
+    return;
+  }
   HealthSnapshot<BME280::BME280> healthBefore;
   healthBefore.capture(device);
   const uint32_t succBefore = device.totalSuccess();
@@ -1004,6 +1053,15 @@ void runStressMix(int count) {
                         failTotal);
   }
 
+  const BME280::Status restoreStatus = restoreSensorSettings(originalSettings);
+  if (!restoreStatus.ok()) {
+    if (!hasFailure) {
+      firstFailure = restoreStatus;
+      hasFailure = true;
+    }
+    lastFailure = restoreStatus;
+  }
+
   const uint32_t elapsed = millis() - startMs;
   HealthSnapshot<BME280::BME280> healthAfter;
   healthAfter.capture(device);
@@ -1024,6 +1082,11 @@ void runStressMix(int count) {
   Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(elapsed));
   if (elapsed > 0) {
     Serial.printf("  Rate: %.2f ops/s\n", (1000.0f * static_cast<float>(count)) / elapsed);
+  }
+  Serial.printf("Restore status: %s\n", BME280::toString(restoreStatus.code));
+  if (!restoreStatus.ok()) {
+    LOGE("Could not restore pre-stress settings");
+    printStatus(restoreStatus);
   }
   for (int i = 0; i < opCount; ++i) {
     const uint32_t opTotal = stats[i].ok + stats[i].fail;
@@ -1063,10 +1126,6 @@ void runStressMix(int count) {
     }
   }
 
-  const BME280::Status restoreStatus = restoreStressMixSettings(originalSettings);
-  if (!restoreStatus.ok()) {
-    LOGW("Could not restore pre-stress settings: %s", errToStr(restoreStatus.code));
-  }
 }
 
 void runSelfTest() {
@@ -1104,21 +1163,18 @@ void runSelfTest() {
 
   Serial.println("=== BME280 selftest (safe command smoke check) ===");
   Serial.println("  Plausibility ranges are loose and environment-dependent; this is not factory calibration.");
-  cancelPending();
+  const BME280::Status cancelStatus = cancelPending();
+  if (!cancelStatus.ok()) {
+    printStatus(cancelStatus);
+    Serial.println("Selftest result: pass=0 fail=1 skip=0");
+    return;
+  }
 
-  BME280::Mode origMode = BME280::Mode::SLEEP;
-  BME280::Oversampling origT = BME280::Oversampling::X1;
-  BME280::Oversampling origP = BME280::Oversampling::X1;
-  BME280::Oversampling origH = BME280::Oversampling::X1;
-  BME280::Filter origFilter = BME280::Filter::OFF;
-  BME280::Standby origStandby = BME280::Standby::MS_0_5;
-  bool haveSnapshot = device.getMode(origMode).ok() &&
-                      device.getOversamplingT(origT).ok() &&
-                      device.getOversamplingP(origP).ok() &&
-                      device.getOversamplingH(origH).ok() &&
-                      device.getFilter(origFilter).ok() &&
-                      device.getStandby(origStandby).ok();
-  reportCheck("capture baseline settings", haveSnapshot, haveSnapshot ? "" : "could not read one or more fields");
+  BME280::SensorSettings originalSettings;
+  const BME280::Status captureStatus = captureSensorSettings(originalSettings);
+  const bool haveSnapshot = captureStatus.ok();
+  reportCheck("capture baseline settings", haveSnapshot,
+              haveSnapshot ? "" : errToStr(captureStatus.code));
 
   const uint32_t succBefore = device.totalSuccess();
   const uint32_t failBefore = device.totalFailures();
@@ -1216,13 +1272,14 @@ void runSelfTest() {
   reportCheck("recover", st.ok(), st.ok() ? "" : errToStr(st.code));
   reportCheck("isOnline", device.isOnline(), "");
 
-  if (haveSnapshot) {
-    device.setMode(origMode);
-    device.setOversamplingT(origT);
-    device.setOversamplingP(origP);
-    device.setOversamplingH(origH);
-    device.setFilter(origFilter);
-    device.setStandby(origStandby);
+  const BME280::Status restoreStatus = haveSnapshot
+                                           ? restoreSensorSettings(originalSettings)
+                                           : captureStatus;
+  reportCheck("restore baseline settings", restoreStatus.ok(),
+              restoreStatus.ok() ? "" : errToStr(restoreStatus.code));
+  Serial.printf("Restore status: %s\n", BME280::toString(restoreStatus.code));
+  if (!restoreStatus.ok()) {
+    printStatus(restoreStatus);
   }
 
   Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
@@ -1231,29 +1288,51 @@ void runSelfTest() {
                 skipCountColor(result.skip), static_cast<unsigned long>(result.skip), LOG_COLOR_RESET);
 }
 
-void cancelPending() {
+void clearPendingBookkeeping() {
   pendingRead = false;
   stressRemaining = 0;
   stressStats.active = false;
+}
 
+BME280::Status cancelPending() {
   BME280::SettingsSnapshot snapshot;
-  if (!device.getSettings(snapshot).ok() || !snapshot.initialized) {
-    return;
+  const BME280::Status snapshotStatus = device.getSettings(snapshot);
+  if (!snapshotStatus.ok()) {
+    clearPendingBookkeeping();
+    return snapshotStatus;
+  }
+  if (!snapshot.initialized) {
+    clearPendingBookkeeping();
+    return BME280::Status::Ok();
   }
 
   if (snapshot.measurementReady) {
     BME280::Measurement discarded;
-    (void)device.getMeasurement(discarded);
-    return;
+    const BME280::Status status = device.getMeasurement(discarded);
+    clearPendingBookkeeping();
+    return status;
   }
 
   if (snapshot.measurementRequested) {
     const BME280::Mode restoreMode = snapshot.mode;
     BME280::Status st = device.setMode(BME280::Mode::SLEEP);
     if (st.ok() && restoreMode != BME280::Mode::SLEEP) {
-      (void)device.setMode(restoreMode);
+      st = device.setMode(restoreMode);
     }
+    clearPendingBookkeeping();
+    return st;
   }
+  clearPendingBookkeeping();
+  return BME280::Status::Ok();
+}
+
+bool cancelPendingForCommand() {
+  const BME280::Status status = cancelPending();
+  if (status.ok()) {
+    return true;
+  }
+  printStatus(status);
+  return false;
 }
 
 BME280::Status scheduleMeasurement() {
@@ -1276,8 +1355,36 @@ BME280::Status scheduleMeasurement() {
   return st;
 }
 
-void handleMeasurementReady() {
-  if (!pendingRead || !device.measurementReady()) {
+void completePendingMeasurementFailure(const BME280::Status& st) {
+  pendingRead = false;
+  if (stressStats.active) {
+    noteStressError(st);
+    stressStats.attempts++;
+    if (stressRemaining > 0) {
+      stressRemaining--;
+    }
+    printStressProgress(static_cast<uint32_t>(stressStats.attempts),
+                        static_cast<uint32_t>(stressStats.target),
+                        static_cast<uint32_t>(stressStats.success),
+                        stressStats.errors);
+    if (stressRemaining == 0 && stressStats.active) {
+      finishStressStats();
+    }
+  } else {
+    printStatus(st);
+  }
+}
+
+void handlePendingMeasurement() {
+  if (!pendingRead) {
+    return;
+  }
+
+  if (!device.measurementReady()) {
+    const BME280::Status terminalStatus = device.lastMeasurementStatus();
+    if (!terminalStatus.ok() && !terminalStatus.inProgress()) {
+      completePendingMeasurementFailure(terminalStatus);
+    }
     return;
   }
 
@@ -1286,22 +1393,7 @@ void handleMeasurementReady() {
   pendingRead = false;
 
   if (!st.ok()) {
-    if (stressStats.active) {
-      noteStressError(st);
-      stressStats.attempts++;
-      if (stressRemaining > 0) {
-        stressRemaining--;
-      }
-      printStressProgress(static_cast<uint32_t>(stressStats.attempts),
-                          static_cast<uint32_t>(stressStats.target),
-                          static_cast<uint32_t>(stressStats.success),
-                          stressStats.errors);
-      if (stressRemaining == 0 && stressStats.active) {
-        finishStressStats();
-      }
-    } else {
-      printStatus(st);
-    }
+    completePendingMeasurementFailure(st);
     return;
   }
 
@@ -1324,41 +1416,135 @@ void handleMeasurementReady() {
   printMeasurement(m);
 }
 
-bool parseOversampling(const String& token, BME280::Oversampling& out) {
-  const int value = token.toInt();
-  if (value < 0 || value > 5) {
-    return false;
-  }
-  out = static_cast<BME280::Oversampling>(value);
-  return true;
-}
-
-bool parseFilter(const String& token, BME280::Filter& out) {
-  const int value = token.toInt();
-  if (value < 0 || value > 4) {
-    return false;
-  }
-  out = static_cast<BME280::Filter>(value);
-  return true;
-}
-
-bool parseStandby(const String& token, BME280::Standby& out) {
-  const int value = token.toInt();
-  if (value < 0 || value > 7) {
-    return false;
-  }
-  out = static_cast<BME280::Standby>(value);
-  return true;
-}
-
 bool parseU32(const String& token, uint32_t& out) {
+  if (token.length() == 0U || token[0] == '-' || token[0] == '+') {
+    return false;
+  }
+  errno = 0;
   char* end = nullptr;
   const unsigned long value = strtoul(token.c_str(), &end, 0);
-  if (end == token.c_str() || *end != '\0') {
+  if (errno == ERANGE || end == token.c_str() || *end != '\0' ||
+      value > static_cast<unsigned long>(std::numeric_limits<uint32_t>::max())) {
     return false;
   }
   out = static_cast<uint32_t>(value);
   return true;
+}
+
+bool parseMode(const String& token, BME280::Mode& out) {
+  if (token == "sleep" || token == "0") {
+    out = BME280::Mode::SLEEP;
+  } else if (token == "forced" || token == "1") {
+    out = BME280::Mode::FORCED;
+  } else if (token == "normal" || token == "3") {
+    out = BME280::Mode::NORMAL;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool parseOversampling(const String& token, BME280::Oversampling& out) {
+  if (token == "skip") out = BME280::Oversampling::SKIP;
+  else if (token == "x1") out = BME280::Oversampling::X1;
+  else if (token == "x2") out = BME280::Oversampling::X2;
+  else if (token == "x4") out = BME280::Oversampling::X4;
+  else if (token == "x8") out = BME280::Oversampling::X8;
+  else if (token == "x16") out = BME280::Oversampling::X16;
+  else {
+    uint32_t value = 0;
+    if (!parseU32(token, value) || value > 5U) return false;
+    out = static_cast<BME280::Oversampling>(value);
+  }
+  return true;
+}
+
+bool parseFilter(const String& token, BME280::Filter& out) {
+  if (token == "off") out = BME280::Filter::OFF;
+  else if (token == "x2") out = BME280::Filter::X2;
+  else if (token == "x4") out = BME280::Filter::X4;
+  else if (token == "x8") out = BME280::Filter::X8;
+  else if (token == "x16") out = BME280::Filter::X16;
+  else {
+    uint32_t value = 0;
+    if (!parseU32(token, value) || value > 4U) return false;
+    out = static_cast<BME280::Filter>(value);
+  }
+  return true;
+}
+
+bool parseStandby(const String& token, BME280::Standby& out) {
+  if (token == "ms_0_5" || token == "0.5ms") out = BME280::Standby::MS_0_5;
+  else if (token == "ms_62_5" || token == "62.5ms") out = BME280::Standby::MS_62_5;
+  else if (token == "ms_125" || token == "125ms") out = BME280::Standby::MS_125;
+  else if (token == "ms_250" || token == "250ms") out = BME280::Standby::MS_250;
+  else if (token == "ms_500" || token == "500ms") out = BME280::Standby::MS_500;
+  else if (token == "ms_1000" || token == "1000ms") out = BME280::Standby::MS_1000;
+  else if (token == "ms_10" || token == "10ms") out = BME280::Standby::MS_10;
+  else if (token == "ms_20" || token == "20ms") out = BME280::Standby::MS_20;
+  else {
+    uint32_t value = 0;
+    if (!parseU32(token, value) || value > 7U) return false;
+    out = static_cast<BME280::Standby>(value);
+  }
+  return true;
+}
+
+bool splitExactTokens(String input, String* tokens, size_t count) {
+  input.trim();
+  for (size_t i = 0; i < count; ++i) {
+    if (input.length() == 0) return false;
+    const int split = input.indexOf(' ');
+    if (i + 1U == count) {
+      if (split >= 0) return false;
+      tokens[i] = input;
+      return true;
+    }
+    if (split < 0) return false;
+    tokens[i] = input.substring(0, split);
+    input = input.substring(split + 1);
+    input.trim();
+  }
+  return false;
+}
+
+const char* noArgumentUsage(const String& command) {
+  if (command == "help" || command == "?") return "help|?";
+  if (command == "version" || command == "ver") return "version|ver";
+  if (command == "scan") return "scan";
+  if (command == "begin") return "begin";
+  if (command == "end") return "end";
+  if (command == "read") return "read";
+  if (command == "force") return "force";
+  if (command == "raw") return "raw";
+  if (command == "comp") return "comp";
+  if (command == "data") return "data";
+  if (command == "measuring") return "measuring";
+  if (command == "timing") return "timing";
+  if (command == "cfg") return "cfg";
+  if (command == "status") return "status";
+  if (command == "chipid" || command == "id") return "chipid|id";
+  if (command == "reset") return "reset";
+  if (command == "drv") return "drv";
+  if (command == "state") return "state";
+  if (command == "probe") return "probe";
+  if (command == "recover") return "recover";
+  if (command == "invalidate") return "invalidate";
+  if (command == "xfer_reset") return "xfer_reset";
+  if (command == "xfer_stats") return "xfer_stats";
+  if (command == "selftest") return "selftest";
+  return nullptr;
+}
+
+bool parseSensorSettings(const String& input, BME280::SensorSettings& out) {
+  String tokens[6];
+  if (!splitExactTokens(input, tokens, 6U)) return false;
+  return parseMode(tokens[0], out.mode) &&
+         parseOversampling(tokens[1], out.osrsT) &&
+         parseOversampling(tokens[2], out.osrsP) &&
+         parseOversampling(tokens[3], out.osrsH) &&
+         parseFilter(tokens[4], out.filter) &&
+         parseStandby(tokens[5], out.standby);
 }
 
 bool parseI2cAddress(const String& token, uint8_t& out) {
@@ -1389,6 +1575,26 @@ bool isTerminalJobState(BME280::JobState state) {
          state == BME280::JobState::FAILED ||
          state == BME280::JobState::CANCELLED ||
          state == BME280::JobState::TIMED_OUT;
+}
+
+bool cancelPendingForRecovery() {
+  const BME280::JobState state = device.jobState();
+  if (state == BME280::JobState::RUNNING ||
+      state == BME280::JobState::WAITING) {
+    const BME280::Status cancelStatus =
+        device.cancelJob(BME280::CancelReason::OWNER_REQUEST);
+    if (cancelStatus.code != BME280::Err::CANCELLED) {
+      printStatus(cancelStatus);
+      return false;
+    }
+    (void)device.pollJob(millis(), 0U);
+  } else if (state == BME280::JobState::CANCELLED ||
+             state == BME280::JobState::TIMED_OUT) {
+    // Consume a retained cancellation terminal before starting recovery. A
+    // second poll after it was already consumed is a harmless idle snapshot.
+    (void)device.pollJob(millis(), 0U);
+  }
+  return cancelPendingForCommand();
 }
 
 BME280::JobPollResult makeJobBoundaryResult(const BME280::Status& status) {
@@ -1457,6 +1663,9 @@ void pollJobOnce(uint8_t budget) {
 
 void startJobNonBlocking(const String& action) {
   const BME280::Status status = startJobByName(action);
+  if (status.inProgress()) {
+    clearPendingBookkeeping();
+  }
   printJobResult(makeJobBoundaryResult(status), "START");
 }
 
@@ -1474,9 +1683,7 @@ void cancelJobByName(const String& reason) {
   printJobResult(makeJobBoundaryResult(status), "CANCEL");
 }
 
-void runJobToTerminal(const String& action, uint8_t budget) {
-  cancelPending();
-  const BME280::Status st = startJobByName(action);
+void runStartedJobToTerminal(const BME280::Status& st, uint8_t budget) {
   if (!st.inProgress()) {
     printJobResult(makeJobBoundaryResult(st), "START");
     return;
@@ -1499,6 +1706,13 @@ void runJobToTerminal(const String& action, uint8_t budget) {
     return;
   }
   printJobResult(device.pollJob(millis(), 0U), "POLL");
+}
+
+void runJobToTerminal(const String& action, uint8_t budget) {
+  if (!cancelPendingForCommand()) {
+    return;
+  }
+  runStartedJobToTerminal(startJobByName(action), budget);
 }
 
 void handleJobCommand(const String& cmd) {
@@ -1564,6 +1778,139 @@ void handleJobCommand(const String& cmd) {
   printJobUsage();
 }
 
+void printSettingsUsage() {
+  LOGW("Usage: settings [values|validate|start|set] <mode> <t> <p> <h> <filter> <standby>");
+}
+
+void printSettingsValues() {
+  Serial.println("=== Sensor Settings Values ===");
+  Serial.println("  mode: sleep|forced|normal (0|1|3)");
+  Serial.println("  t/p/h: skip|x1|x2|x4|x8|x16 (0..5)");
+  Serial.println("  filter: off|x2|x4|x8|x16 (0..4)");
+  Serial.println("  standby canonical: ms_0_5|ms_62_5|ms_125|ms_250|ms_500|ms_1000|ms_10|ms_20 (0..7)");
+  Serial.println("  standby aliases: 0.5ms|62.5ms|125ms|250ms|500ms|1000ms|10ms|20ms");
+  Serial.println("  constraint: temperature must be enabled when pressure or humidity is enabled; all channels cannot be skipped");
+}
+
+void printRequestedSettings(const BME280::SensorSettings& settings) {
+  Serial.println("=== Requested Sensor Settings ===");
+  Serial.printf("  Mode: %s (%u)\n", BME280::toString(settings.mode),
+                static_cast<unsigned>(settings.mode));
+  Serial.printf("  Oversampling: T=%s (%u) P=%s (%u) H=%s (%u)\n",
+                BME280::toString(settings.osrsT), static_cast<unsigned>(settings.osrsT),
+                BME280::toString(settings.osrsP), static_cast<unsigned>(settings.osrsP),
+                BME280::toString(settings.osrsH), static_cast<unsigned>(settings.osrsH));
+  Serial.printf("  Filter: %s (%u)\n", BME280::toString(settings.filter),
+                static_cast<unsigned>(settings.filter));
+  Serial.printf("  Standby: %s (%u)\n", BME280::toString(settings.standby),
+                static_cast<unsigned>(settings.standby));
+}
+
+void handleSettingsCommand(const String& cmd) {
+  if (cmd == "settings") {
+    printAllSettings();
+    return;
+  }
+
+  String rest = cmd.substring(8);
+  rest.trim();
+  const int split = rest.indexOf(' ');
+  const String action = split < 0 ? rest : rest.substring(0, split);
+  String arguments = split < 0 ? "" : rest.substring(split + 1);
+  arguments.trim();
+
+  if (action == "values" && arguments.length() == 0) {
+    printSettingsValues();
+    return;
+  }
+  if (action != "validate" && action != "start" && action != "set") {
+    printSettingsUsage();
+    return;
+  }
+
+  BME280::SensorSettings settings;
+  if (!parseSensorSettings(arguments, settings)) {
+    printSettingsUsage();
+    return;
+  }
+  printRequestedSettings(settings);
+
+  const BME280::Status validation = BME280::validateSettings(settings);
+
+  if (action == "validate") {
+    printStatus(validation);
+    return;
+  }
+  if (!validation.ok()) {
+    printStatus(validation);
+    return;
+  }
+  if (action == "start") {
+    const BME280::Status status = device.startApplySettingsJob(settings);
+    if (status.inProgress()) {
+      clearPendingBookkeeping();
+    }
+    printJobResult(makeJobBoundaryResult(status), "START");
+    return;
+  }
+
+  if (!cancelPendingForCommand()) {
+    return;
+  }
+  runStartedJobToTerminal(device.startApplySettingsJob(settings),
+                          JOB_CLI_DEFAULT_BUDGET);
+}
+
+void printSampleFreshness(bool hasMaxAge, uint32_t maxAgeMs) {
+  BME280::SettingsSnapshot snapshot;
+  (void)device.getSettings(snapshot);
+  const uint32_t now = millis();
+  Serial.println("=== Sample Freshness ===");
+  Serial.printf("  Initialized: %s\n", snapshot.initialized ? "true" : "false");
+  Serial.printf("  Has sample: %s\n", snapshot.hasSample ? "true" : "false");
+  Serial.printf("  Freshness: %s\n", BME280::toString(snapshot.sampleFreshness));
+  Serial.printf("  Sequence: %lu\n", static_cast<unsigned long>(snapshot.sampleSequence));
+  Serial.printf("  Config generation: %lu\n", static_cast<unsigned long>(snapshot.configGeneration));
+  Serial.printf("  Sample config generation: %lu\n",
+                static_cast<unsigned long>(snapshot.sampleConfigGeneration));
+  Serial.printf("  Timestamp ms: %lu\n", static_cast<unsigned long>(snapshot.sampleTimestampMs));
+  if (snapshot.hasSample) {
+    Serial.printf("  Age ms: %lu\n",
+                  static_cast<unsigned long>(device.sampleAgeMs(now)));
+  } else {
+    Serial.println("  Age ms: unavailable");
+  }
+  Serial.printf("  Last measurement status: %s\n",
+                BME280::toString(snapshot.lastMeasurementStatus.code));
+  if (hasMaxAge) {
+    Serial.printf("  Max age ms: %lu\n", static_cast<unsigned long>(maxAgeMs));
+    Serial.printf("  Within max age: %s\n",
+                  device.sampleFresh(now, maxAgeMs) ? "true" : "false");
+  }
+}
+
+void printRegisterBlock(uint8_t start, const uint8_t* data, size_t length) {
+  Serial.println("=== Register Block ===");
+  Serial.printf("  Start: 0x%02X\n", start);
+  Serial.printf("  Length: %u\n", static_cast<unsigned>(length));
+  for (size_t offset = 0; offset < length; offset += 8U) {
+    Serial.printf("  0x%02X:", static_cast<unsigned>(start + offset));
+    const size_t lineEnd = (offset + 8U < length) ? offset + 8U : length;
+    for (size_t i = offset; i < lineEnd; ++i) {
+      Serial.printf(" %02X", static_cast<unsigned>(data[i]));
+    }
+    Serial.println();
+  }
+}
+
+void printTransferStats() {
+  const transport::TransferStats stats = transport::transferStats();
+  Serial.printf("XFER_STATS read=%lu write=%lu total=%lu\n",
+                static_cast<unsigned long>(stats.read),
+                static_cast<unsigned long>(stats.write),
+                static_cast<unsigned long>(stats.total));
+}
+
 void printActiveAddress() {
   Serial.printf("Active I2C address: 0x%02X (%s)\n",
                 activeAddress,
@@ -1579,6 +1926,7 @@ void printHelp() {
   cli::printHelpItem("scan", "Scan I2C bus");
   cli::printHelpItem("addr [0x76|0x77]", "Show or select diagnostic I2C address");
   cli::printHelpItem("begin", "Run begin() with the default example config");
+  cli::printHelpItem("end", "Zero-I2C unbind and clear cached driver state");
   cli::printHelpItem("read", "Request and display measurement");
   cli::printHelpItem("force", "Trigger one forced-mode measurement");
   cli::printHelpItem("normal on/off", "Enable normal mode or return to sleep");
@@ -1589,11 +1937,15 @@ void printHelp() {
   cli::printHelpItem("timing", "Show measurement and cycle timing estimates");
 
   cli::printHelpSection("Configuration");
-  cli::printHelpItem("mode [sleep|forced|normal]", "Set or show operating mode");
-  cli::printHelpItem("osrs [t|p|h <0..5>]", "Set or show oversampling");
-  cli::printHelpItem("filter [0..4]", "Set or show IIR filter (temperature/pressure only)");
-  cli::printHelpItem("standby [0..7]", "Set or show standby time");
+  cli::printHelpItem("mode [sleep|forced|normal|0|1|3]", "Set or show operating mode");
+  cli::printHelpItem("osrs [t|p|h <name|code>]", "Names: skip,x1,x2,x4,x8,x16; temperature cannot skip");
+  cli::printHelpItem("filter [off|x2|x4|x8|x16|0..4]", "Set or show IIR filter (temperature/pressure only)");
+  cli::printHelpItem("standby [time|0..7]", "Times: 0.5ms,10ms,20ms,62.5ms,125ms,250ms,500ms,1000ms");
   cli::printHelpItem("cfg / settings", "Show chip and internal settings");
+  cli::printHelpItem("settings values", "Show every accepted sensor-setting value");
+  cli::printHelpItem("settings validate <6 values>", "Validate mode,t,p,h,filter,standby without I2C");
+  cli::printHelpItem("settings start <6 values>", "Start zero-I2C staged whole-settings apply");
+  cli::printHelpItem("settings set <6 values>", "Apply complete settings through the staged job");
   cli::printHelpItem("calib [raw]", "Show cached or raw calibration");
   cli::printHelpItem("status", "Read status register");
   cli::printHelpItem("id / chipid", "Read chip ID");
@@ -1601,6 +1953,7 @@ void printHelp() {
 
   cli::printHelpSection("Registers");
   cli::printHelpItem("reg <addr>", "Read 8-bit register (hex address)");
+  cli::printHelpItem("dump / rregs <addr> <1..32>", "Read one bounded contiguous register block");
   cli::printHelpItem("wreg <addr> <val>", "Write 8-bit register (diagnostic; config/reset writes mark dirty)");
 
   cli::printHelpSection("Diagnostics");
@@ -1608,11 +1961,16 @@ void printHelp() {
   cli::printHelpItem("state", "Show compact one-line health summary");
   cli::printHelpItem("probe", "Probe device (no health tracking)");
   cli::printHelpItem("recover", "Manual recovery attempt");
+  cli::printHelpItem("invalidate", "Zero-I2C invalidation for hotplug/replacement handling");
+  cli::printHelpItem("freshness [max_age_ms]", "Show cached sample provenance and optional age decision");
   cli::printHelpItem("job status|start|cancel|poll|init|force|apply|resync|reset|recover", "Run staged job API diagnostics");
   cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   cli::printHelpItem("stress [N]", "Run N measurement cycles");
   cli::printHelpItem("stress_mix [N]", "Run N mixed-operation cycles");
   cli::printHelpItem("selftest", "Run safe command smoke-test report");
+  cli::printHelpItem("xfer_reset", "Reset example transport callback counters");
+  cli::printHelpItem("xfer_stats", "Show example transport callback counters");
+  cli::printHelpItem("xfer_assert <r> <w> <t>", "Assert read/write/total callback counters");
 }
 
 void printVersionInfo() {
@@ -1630,9 +1988,23 @@ void printVersionInfo() {
 
 void processCommand(const String& cmdLine) {
   String cmd = cmdLine;
+  cmd.replace('\t', ' ');
   cmd.trim();
+  while (cmd.indexOf("  ") >= 0) {
+    cmd.replace("  ", " ");
+  }
   if (cmd.length() == 0) {
     return;
+  }
+
+  const int commandSplit = cmd.indexOf(' ');
+  if (commandSplit >= 0) {
+    const String commandHead = cmd.substring(0, commandSplit);
+    const char* usage = noArgumentUsage(commandHead);
+    if (usage != nullptr) {
+      LOGW("Usage: %s", usage);
+      return;
+    }
   }
 
   if (cmd == "help" || cmd == "?") {
@@ -1670,7 +2042,7 @@ void processCommand(const String& cmdLine) {
     }
 
     LOGI("Selecting BME280 address 0x%02X", address);
-    cancelPending();
+    clearPendingBookkeeping();
     device.end();
     activeAddress = address;
     BME280::Status st = device.begin(makeDefaultConfig());
@@ -1683,7 +2055,7 @@ void processCommand(const String& cmdLine) {
 
   if (cmd == "begin") {
     LOGI("Initializing BME280...");
-    cancelPending();
+    clearPendingBookkeeping();
     device.end();
     BME280::Status st = device.begin(makeDefaultConfig());
     printStatus(st);
@@ -1693,8 +2065,22 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "end") {
+    clearPendingBookkeeping();
+    device.end();
+    Serial.println("=== Lifecycle ===");
+    Serial.println("Action: END");
+    printStatus(BME280::Status::Ok());
+    Serial.printf("Driver: state=%s initialized=%s\n",
+                  stateToStr(device.state()),
+                  device.isInitialized() ? "true" : "false");
+    return;
+  }
+
   if (cmd == "read") {
-    cancelPending();
+    if (!cancelPendingForCommand()) {
+      return;
+    }
     const BME280::Status st = scheduleMeasurement();
     if (st.code != BME280::Err::IN_PROGRESS) {
       printStatus(st);
@@ -1703,7 +2089,9 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "force") {
-    cancelPending();
+    if (!cancelPendingForCommand()) {
+      return;
+    }
     BME280::Status st = device.setMode(BME280::Mode::FORCED);
     if (st.ok()) {
       st = scheduleMeasurement();
@@ -1720,11 +2108,18 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "normal on" || cmd == "normal off") {
-    cancelPending();
+    if (!cancelPendingForCommand()) {
+      return;
+    }
     const BME280::Mode mode =
         (cmd == "normal on") ? BME280::Mode::NORMAL : BME280::Mode::SLEEP;
     BME280::Status st = device.setMode(mode);
     printStatus(st);
+    return;
+  }
+
+  if (cmd.startsWith("normal ")) {
+    LOGW("Usage: normal on|off");
     return;
   }
 
@@ -1759,7 +2154,28 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
-  if (cmd == "settings" || cmd == "cfg") {
+  if (cmd == "freshness" || cmd.startsWith("freshness ")) {
+    bool hasMaxAge = false;
+    uint32_t maxAgeMs = 0;
+    if (cmd.length() > 9U) {
+      String argument = cmd.substring(10);
+      argument.trim();
+      if (!parseU32(argument, maxAgeMs)) {
+        LOGW("Usage: freshness [max_age_ms]");
+        return;
+      }
+      hasMaxAge = true;
+    }
+    printSampleFreshness(hasMaxAge, maxAgeMs);
+    return;
+  }
+
+  if (cmd == "settings" || cmd.startsWith("settings ")) {
+    handleSettingsCommand(cmd);
+    return;
+  }
+
+  if (cmd == "cfg") {
     printAllSettings();
     return;
   }
@@ -1774,6 +2190,11 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd.startsWith("calib ")) {
+    LOGW("Usage: calib [raw]");
+    return;
+  }
+
   if (cmd == "mode") {
     printModeSettings();
     return;
@@ -1783,19 +2204,20 @@ void processCommand(const String& cmdLine) {
     String arg = cmd.substring(5);
     arg.trim();
 
+    if (arg.indexOf(' ') >= 0) {
+      LOGW("Usage: mode [sleep|forced|normal|0|1|3]");
+      return;
+    }
+
     BME280::Mode mode;
-    if (arg == "sleep") {
-      mode = BME280::Mode::SLEEP;
-    } else if (arg == "forced") {
-      mode = BME280::Mode::FORCED;
-    } else if (arg == "normal") {
-      mode = BME280::Mode::NORMAL;
-    } else {
+    if (!parseMode(arg, mode)) {
       LOGW("Invalid mode: %s", arg.c_str());
       return;
     }
 
-    cancelPending();
+    if (!cancelPendingForCommand()) {
+      return;
+    }
     BME280::Status st = device.setMode(mode);
     printStatus(st);
     return;
@@ -1810,15 +2232,14 @@ void processCommand(const String& cmdLine) {
     String args = cmd.substring(5);
     args.trim();
 
-    const int split = args.indexOf(' ');
-    if (split < 0) {
-      LOGW("Usage: osrs t|p|h <0..5>");
+    String tokens[2];
+    if (!splitExactTokens(args, tokens, 2U)) {
+      LOGW("Usage: osrs t <1..5> | osrs p|h <0..5>");
       return;
     }
 
-    const String which = args.substring(0, split);
-    String value = args.substring(split + 1);
-    value.trim();
+    const String& which = tokens[0];
+    const String& value = tokens[1];
 
     BME280::Oversampling osrs;
     if (!parseOversampling(value, osrs)) {
@@ -1826,16 +2247,25 @@ void processCommand(const String& cmdLine) {
       return;
     }
 
+    if (which == "t" && osrs == BME280::Oversampling::SKIP) {
+      LOGW("Temperature oversampling cannot be skipped in a valid configuration");
+      return;
+    }
+    if (which != "t" && which != "p" && which != "h") {
+      LOGW("Invalid osrs target: %s", which.c_str());
+      return;
+    }
+
     BME280::Status st;
+    if (!cancelPendingForCommand()) {
+      return;
+    }
     if (which == "t") {
       st = device.setOversamplingT(osrs);
     } else if (which == "p") {
       st = device.setOversamplingP(osrs);
-    } else if (which == "h") {
-      st = device.setOversamplingH(osrs);
     } else {
-      LOGW("Invalid osrs target: %s", which.c_str());
-      return;
+      st = device.setOversamplingH(osrs);
     }
 
     printStatus(st);
@@ -1851,12 +2281,20 @@ void processCommand(const String& cmdLine) {
     String value = cmd.substring(7);
     value.trim();
 
+    if (value.indexOf(' ') >= 0) {
+      LOGW("Usage: filter [off|x2|x4|x8|x16|0..4]");
+      return;
+    }
+
     BME280::Filter filter;
     if (!parseFilter(value, filter)) {
       LOGW("Invalid filter value");
       return;
     }
 
+    if (!cancelPendingForCommand()) {
+      return;
+    }
     BME280::Status st = device.setFilter(filter);
     printStatus(st);
     return;
@@ -1871,12 +2309,20 @@ void processCommand(const String& cmdLine) {
     String value = cmd.substring(8);
     value.trim();
 
+    if (value.indexOf(' ') >= 0) {
+      LOGW("Usage: standby [0.5ms|62.5ms|125ms|250ms|500ms|1000ms|10ms|20ms|0..7]");
+      return;
+    }
+
     BME280::Standby standby;
     if (!parseStandby(value, standby)) {
       LOGW("Invalid standby value");
       return;
     }
 
+    if (!cancelPendingForCommand()) {
+      return;
+    }
     BME280::Status st = device.setStandby(standby);
     printStatus(st);
     return;
@@ -1913,9 +2359,43 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "reset") {
-    cancelPending();
+    if (!cancelPendingForCommand()) {
+      return;
+    }
     BME280::Status st = device.softReset();
     printStatus(st);
+    return;
+  }
+
+  if (cmd == "dump" || cmd == "rregs" ||
+      cmd.startsWith("dump ") || cmd.startsWith("rregs ")) {
+    const bool rregs = cmd == "rregs" || cmd.startsWith("rregs ");
+    String arguments = cmd.substring(rregs ? 5 : 4);
+    arguments.trim();
+    String tokens[2];
+    uint32_t start = 0;
+    uint32_t length = 0;
+    if (!splitExactTokens(arguments, tokens, 2U) ||
+        !parseU32(tokens[0], start) || !parseU32(tokens[1], length) ||
+        start > 0xFFU || length == 0U || length > 32U ||
+        start + length > 0x100U) {
+      LOGW("Usage: dump|rregs <addr> <1..32>");
+      return;
+    }
+    uint8_t data[32] = {};
+    const BME280::Status st = device.readRegisters(
+        static_cast<uint8_t>(start), data, static_cast<size_t>(length));
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+    printRegisterBlock(static_cast<uint8_t>(start), data,
+                       static_cast<size_t>(length));
+    return;
+  }
+
+  if (cmd == "wreg") {
+    LOGW("Usage: wreg <addr> <val>");
     return;
   }
 
@@ -1939,6 +2419,11 @@ void processCommand(const String& cmdLine) {
 
     BME280::Status st = device.writeRegister(static_cast<uint8_t>(addr), static_cast<uint8_t>(value));
     printStatus(st);
+    return;
+  }
+
+  if (cmd == "reg") {
+    LOGW("Usage: reg <addr>");
     return;
   }
 
@@ -1991,6 +2476,9 @@ void processCommand(const String& cmdLine) {
   }
 
   if (cmd == "recover") {
+    if (!cancelPendingForRecovery()) {
+      return;
+    }
     LOGI("Attempting recovery...");
     HealthSnapshot<BME280::BME280> before;
     before.capture(device);
@@ -2005,14 +2493,74 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
+  if (cmd == "invalidate") {
+    const BME280::Status st = device.invalidateDeviceState();
+    printStatus(st);
+    if (st.ok()) {
+      clearPendingBookkeeping();
+    }
+    printSampleFreshness(false, 0U);
+    return;
+  }
+
+  if (cmd == "xfer_reset") {
+    transport::resetTransferStats();
+    Serial.println("XFER_RESET read=0 write=0 total=0");
+    return;
+  }
+
+  if (cmd == "xfer_stats") {
+    printTransferStats();
+    return;
+  }
+
+  if (cmd == "xfer_assert" || cmd.startsWith("xfer_assert ")) {
+    String arguments = cmd.substring(11);
+    arguments.trim();
+    String tokens[3];
+    uint32_t expectedRead = 0;
+    uint32_t expectedWrite = 0;
+    uint32_t expectedTotal = 0;
+    if (!splitExactTokens(arguments, tokens, 3U) ||
+        !parseU32(tokens[0], expectedRead) ||
+        !parseU32(tokens[1], expectedWrite) ||
+        !parseU32(tokens[2], expectedTotal)) {
+      LOGW("Usage: xfer_assert <read> <write> <total>");
+      return;
+    }
+    const transport::TransferStats stats = transport::transferStats();
+    const bool pass = stats.read == expectedRead &&
+                      stats.write == expectedWrite &&
+                      stats.total == expectedTotal;
+    if (pass) {
+      Serial.printf("XFER_ASSERT PASS read=%lu write=%lu total=%lu\n",
+                    static_cast<unsigned long>(stats.read),
+                    static_cast<unsigned long>(stats.write),
+                    static_cast<unsigned long>(stats.total));
+    } else {
+      Serial.printf("XFER_ASSERT FAIL expected_read=%lu expected_write=%lu expected_total=%lu actual_read=%lu actual_write=%lu actual_total=%lu\n",
+                    static_cast<unsigned long>(expectedRead),
+                    static_cast<unsigned long>(expectedWrite),
+                    static_cast<unsigned long>(expectedTotal),
+                    static_cast<unsigned long>(stats.read),
+                    static_cast<unsigned long>(stats.write),
+                    static_cast<unsigned long>(stats.total));
+    }
+    return;
+  }
+
   if (cmd == "verbose") {
     printVerboseState();
     return;
   }
 
   if (cmd.startsWith("verbose ")) {
-    const int val = cmd.substring(8).toInt();
-    verboseMode = (val != 0);
+    uint32_t value = 0;
+    if (!parseU32(cmd.substring(8), value) || value > 1U) {
+      LOGW("Usage: verbose [0|1]");
+      return;
+    }
+    verboseMode = (value == 1U);
     LOGI("Verbose mode: %s%s%s",
          onOffColor(verboseMode),
          verboseMode ? "ON" : "OFF",
@@ -2025,40 +2573,38 @@ void processCommand(const String& cmdLine) {
     return;
   }
 
-  if (cmd == "stress_mix") {
-    runStressMix(50);
-    return;
-  }
-
-  if (cmd.startsWith("stress_mix ")) {
-    int count = cmd.substring(11).toInt();
-    if (count <= 0 || count > 100000) {
+  if (cmd == "stress_mix" || cmd.startsWith("stress_mix ")) {
+    uint32_t count = 50U;
+    if (cmd != "stress_mix" &&
+        (!parseU32(cmd.substring(11), count) || count == 0U ||
+         count > MAX_STRESS_COUNT)) {
       LOGW("Invalid stress_mix count");
       return;
     }
-    runStressMix(count);
+    runStressMix(static_cast<int>(count));
     return;
   }
 
-  if (cmd.startsWith("stress")) {
-    int count = 10;
-    if (cmd.length() > 6) {
-      count = cmd.substring(6).toInt();
-    }
-    if (count <= 0) {
+  if (cmd == "stress" || cmd.startsWith("stress ")) {
+    uint32_t count = 10U;
+    if (cmd != "stress" &&
+        (!parseU32(cmd.substring(7), count) || count == 0U ||
+         count > MAX_STRESS_COUNT)) {
       LOGW("Invalid stress count");
       return;
     }
 
-    cancelPending();
+    if (!cancelPendingForCommand()) {
+      return;
+    }
     const BME280::Status st = ensureForcedMeasurementMode();
     if (!st.ok()) {
       printStatus(st);
       return;
     }
-    stressRemaining = count;
-    resetStressStats(count);
-    LOGI("Starting stress test: %d cycles", count);
+    stressRemaining = static_cast<int>(count);
+    resetStressStats(static_cast<int>(count));
+    LOGI("Starting stress test: %lu cycles", static_cast<unsigned long>(count));
     return;
   }
 
@@ -2116,7 +2662,7 @@ void loop() {
     }
   }
 
-  handleMeasurementReady();
+  handlePendingMeasurement();
 
   static String inputBuffer;
   static bool inputOverflow = false;

@@ -42,7 +42,7 @@ Thank you for considering contributing to this project!
 
 Baseline local gate for release-facing changes:
 
-```bash
+```text
 python tools/check_core_timing_guard.py
 python tools/test_run_i2c_hil_parser.py
 python tools/check_hil_contract.py
@@ -51,10 +51,15 @@ python tools/check_idf_example_contract.py
 python scripts/generate_version.py check
 python tools/check_release_metadata.py
 doxygen Doxyfile
-python -m platformio test -e native
-python -m platformio run -e esp32s2dev
-python -m platformio run -e esp32s3dev
 git diff --check
+```
+
+On Windows, run PlatformIO only through the repository wrapper:
+
+```powershell
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd run -e esp32s2dev
+.\scripts\pio.cmd run -e esp32s3dev
 ```
 
 ### What We Accept

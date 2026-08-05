@@ -1,6 +1,6 @@
 # BME280 ESP-IDF Port
 
-Last updated: 2026-07-22
+Last updated: 2026-08-04
 
 This document is the maintained ESP-IDF note for the BME280 library. It replaces
 the older separate implementation report.
@@ -39,7 +39,11 @@ It must not include Arduino source or compatibility facades such as
 
 The native CLI keeps the same operator-facing bring-up flow as the Arduino
 example, including `scan`, address selection, `chipid`, measurement, reset,
-recover, self-test, and stress commands.
+recover, self-test, and stress commands. Parity also covers the full typed
+settings grammar (`settings values|validate|start|set` and the individual
+mode/oversampling/filter/standby setters), bounded `dump`/`rregs` reads,
+zero-I2C `end`/`invalidate`, cache-only sample `freshness`, and example-only
+`xfer_reset`/`xfer_stats`/`xfer_assert` callback-count diagnostics.
 
 ## Ownership Boundary
 
@@ -108,6 +112,23 @@ The native IDF adapter uses the modern ESP-IDF I2C master driver:
 - The native and Arduino diagnostic CLIs must keep identical staged-job help and
   behavior for status/init/force/apply/resync/reset/cancel/poll, including
   job identity, phase, callback use, deadline, and conversion-state output.
+- Keep typed-setting command parsing strict and exact-arity in both frontends.
+  Invalid text or invalid complete tuples must be rejected before any
+  convenience cancellation can touch I2C. The callback counters count
+  validated adapter callback attempts, saturate at `UINT32_MAX`, and remain
+  example/HIL instrumentation rather than core-library state.
+- Drain and discard a complete input line after the fixed command buffer
+  overflows. Report `Command too long` and do not execute the buffered prefix.
+- CLI convenience cancellation must propagate a failed pending measurement or
+  mode-restoration status; it must not silently discard that hardware error.
+- A terminal `tick()` measurement error must complete the example's pending
+  read/stress iteration. Direct `recover` must first release pending
+  measurement or staged-job ownership. Mixed stress and self-test must restore
+  and verify all pre-command `SensorSettings`, with restoration failure included
+  in their deterministic result.
+- Convert millisecond CLI job pacing to FreeRTOS ticks with a minimum delay of
+  one tick so a configured 1 ms cooperative pause never degenerates into a
+  tight loop when `configTICK_RATE_HZ` is below 1000.
 - `pollJob(nowMs, ...)` and `tick(nowMs)` make their argument authoritative for
   health events within the call. Other synchronous operations use
   `Config::nowMs` when supplied. If neither source exists, timestamps are zero
@@ -182,13 +203,18 @@ Current example mapping:
 
 Run these from the repository root:
 
-```bash
+```text
 python tools/check_core_timing_guard.py
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
-python -m platformio test -e native
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s2dev
+```
+
+On Windows, invoke PlatformIO only through the repository wrapper:
+
+```powershell
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s2dev
 ```
 
 When `idf.py` is installed, also run:

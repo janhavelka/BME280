@@ -8,6 +8,13 @@
 namespace {
 
 IdfI2cContext gContext;
+IdfI2cTransferStats gTransferStats;
+
+void incrementSaturating(uint32_t& value) {
+  if (value != UINT32_MAX) {
+    ++value;
+  }
+}
 
 int timeoutToIdf(uint32_t timeoutMs) {
   constexpr uint32_t MAX_TIMEOUT_MS =
@@ -107,6 +114,14 @@ void bme280IdfDeinitI2c() {
   }
 }
 
+void bme280IdfResetTransferStats() {
+  gTransferStats = {};
+}
+
+IdfI2cTransferStats bme280IdfTransferStats() {
+  return gTransferStats;
+}
+
 BME280::TransportResult idfI2cWrite(uint8_t addr, const uint8_t* data,
                                     size_t len, uint32_t timeoutMs, void* user) {
   const BME280::TransportResult validation = validate(addr, user);
@@ -119,6 +134,8 @@ BME280::TransportResult idfI2cWrite(uint8_t addr, const uint8_t* data,
 
   IdfI2cContext* ctx = static_cast<IdfI2cContext*>(user);
   // Exactly one physical attempt. No adapter retry or bus recovery.
+  incrementSaturating(gTransferStats.write);
+  incrementSaturating(gTransferStats.total);
   ctx->lastError = i2c_master_transmit(ctx->device, data, static_cast<size_t>(len),
                                        timeoutToIdf(timeoutMs));
   return mapEspError(ctx->lastError, len);
@@ -142,6 +159,8 @@ BME280::TransportResult idfI2cWriteRead(uint8_t addr,
   const int timeout = timeoutToIdf(timeoutMs);
   // One combined write/repeated-START/read transaction. No intermediate STOP,
   // adapter retry, or bus recovery.
+  incrementSaturating(gTransferStats.read);
+  incrementSaturating(gTransferStats.total);
   ctx->lastError = i2c_master_transmit_receive(ctx->device, txData, txLen, rxData,
                                                rxLen, timeout);
   return mapEspError(ctx->lastError, txLen, rxLen);

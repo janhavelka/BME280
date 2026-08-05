@@ -162,6 +162,11 @@ def validate_optional_plans(runner) -> None:
 
     expected_jobs = [
         "job status",
+        "xfer_reset",
+        "settings start forced x1 x1 x1 off ms_125",
+        "xfer_assert 0 0 0",
+        "job cancel owner",
+        "job poll 0",
         "job start init",
         "job poll 1",
         "job cancel deadline",
@@ -226,6 +231,20 @@ def validate_optional_plans(runner) -> None:
     }
     if not required_enum_commands.issubset(config_commands):
         fail("configuration matrix lost legal enum-value coverage")
+    required_setter_profiles = {
+        "osrs t x2",
+        "osrs p x2",
+        "osrs h x2",
+        "filter x2",
+        "standby 250ms",
+        "settings set sleep x1 x1 x1 off ms_125",
+        "xfer_assert 0 1 1",
+        "xfer_assert 0 2 2",
+        "xfer_assert 2 3 5",
+        "xfer_assert 2 4 6",
+    }
+    if not required_setter_profiles.issubset(config_commands):
+        fail("configuration matrix lost typed-setter callback profiles")
     if not any(spec.expected_settings for spec in config_specs if spec.command == "cfg"):
         fail("configuration matrix lost exact register readback validators")
 
@@ -275,6 +294,9 @@ def validate_optional_plans(runner) -> None:
         fail("duration soak does not reserve normal-mode cleanup as one group")
     if ["reset", "recover"] not in grouped:
         fail("duration soak does not reserve reset recovery as one group")
+    reconnect_args = runner_args(reconnect_attempts=3)
+    if reconnect_args.reconnect_attempts != 3:
+        fail("duration-soak reconnect budget is not configurable")
     final_cleanup = runner.final_cleanup_commands()
     if [spec.command for spec in final_cleanup] != [
         "normal off", "recover", "cfg", "status", "drv"
@@ -308,7 +330,8 @@ def validate_documentation(validation_text: str) -> None:
             "scan` proves only",
             "`0x60`",
             "--include-job-api",
-            "--dry-run --include-job-api --out .pio/hil_dry_runs",
+            "--dry-run --include-job-api",
+            "--include-config-matrix --include-invalid-inputs --include-benchmarks",
             "--out hil_logs",
             "--include-normal-soak",
             "--include-destructive --confirm-raw-write BME280_RAW_WRITE",
@@ -335,7 +358,11 @@ def validate_documentation(validation_text: str) -> None:
             "manifest.json",
             "planning budget",
             "recorded exact elapsed time",
-            "prepends its deterministic",
+            "--reconnect-attempts N",
+            "identity probe",
+            "safe command group is replayed",
+            "completed soak rows preserved",
+            "always prepends its canonical",
         ),
         VALIDATION,
     )
@@ -402,6 +429,9 @@ def main() -> int:
             "run_final_cleanup(",
             "run_live_plan(",
             "duration_soak_command_groups(",
+            "reconnect_serial_in_place(",
+            "serial_reconnect_event_result(",
+            "REPLAYING SAFE GROUP FROM FIRST ROW",
             "expected_settings",
         ),
         RUNNER,

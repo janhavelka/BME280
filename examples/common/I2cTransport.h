@@ -18,6 +18,32 @@
 
 namespace transport {
 
+/// Example-only transport callback counters used by CLI/HIL diagnostics.
+struct TransferStats {
+  uint32_t read = 0;   ///< Combined write/read callback attempts
+  uint32_t write = 0;  ///< Write-only callback attempts
+  uint32_t total = 0;  ///< All validated transport callback attempts
+};
+
+inline TransferStats& transferStatsStorage() {
+  static TransferStats stats{};
+  return stats;
+}
+
+inline void resetTransferStats() {
+  transferStatsStorage() = {};
+}
+
+inline TransferStats transferStats() {
+  return transferStatsStorage();
+}
+
+inline void incrementSaturating(uint32_t& value) {
+  if (value != UINT32_MAX) {
+    ++value;
+  }
+}
+
 inline BME280::TransportResult mapWireResult(uint8_t result,
                                              size_t writeCount,
                                              size_t readCount = 0) {
@@ -79,6 +105,8 @@ inline BME280::TransportResult wireWrite(uint8_t addr, const uint8_t* data,
                                           static_cast<int32_t>(len));
   }
 
+  incrementSaturating(transferStatsStorage().write);
+  incrementSaturating(transferStatsStorage().total);
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
@@ -130,6 +158,8 @@ inline BME280::TransportResult wireWriteRead(uint8_t addr, const uint8_t* tx,
     return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -4);
   }
 
+  incrementSaturating(transferStatsStorage().read);
+  incrementSaturating(transferStatsStorage().total);
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {

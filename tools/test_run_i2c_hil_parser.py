@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import io
+import contextlib
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -191,7 +193,10 @@ class HilCalibClassificationTest(unittest.TestCase):
         spec = run_i2c_hil.CommandSpec(
             command="stress_mix 7",
             purpose="mixed stress parser test",
-            expected=("stress_mix summary", "Total:", "Health delta:"),
+            expected=(
+                "stress_mix summary", "Total:", "Health delta:",
+                "Restore status: OK",
+            ),
             validators=(run_i2c_hil.VALIDATOR_STRESS_MIX_ZERO_FAIL,),
         )
         output = (
@@ -200,17 +205,19 @@ class HilCalibClassificationTest(unittest.TestCase):
             "  Duration: 140 ms\n"
             "  Rate: 50.00 ops/s\n"
             "  Health delta: success +7, failures +0\n"
+            "  Restore status: OK\n"
         )
 
         result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
         evidence = run_i2c_hil.extract_parsed_evidence(output)
 
         self.assertEqual(run_i2c_hil.RESULT_PASS, result)
-        self.assertIn("stress_mix fail=0", reason)
+        self.assertIn("stress_mix fail=0 and restore status=OK", reason)
         self.assertEqual(7, evidence["stress_mix_ok"])
         self.assertEqual(0, evidence["stress_mix_fail"])
         self.assertEqual(50.0, evidence["rate"])
         self.assertEqual("ops/s", evidence["rate_units"])
+        self.assertEqual("OK", evidence["stress_mix_restore_status"])
 
     def test_stress_mix_nonzero_fail_validator_fails(self) -> None:
         spec = run_i2c_hil.CommandSpec(
@@ -223,12 +230,56 @@ class HilCalibClassificationTest(unittest.TestCase):
             "=== stress_mix summary ===\n"
             "  Total: ok=6 fail=1 (85.71%)\n"
             "  Health delta: success +6, failures +1\n"
+            "  Restore status: OK\n"
         )
 
         result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
 
         self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
         self.assertIn("fail=1", reason)
+
+    def test_stress_mix_missing_or_failed_restore_cannot_pass(self) -> None:
+        spec = run_i2c_hil.CommandSpec(
+            command="stress_mix 7",
+            purpose="mixed stress restore parser test",
+            expected=("stress_mix summary", "Total:", "Health delta:"),
+            validators=(run_i2c_hil.VALIDATOR_STRESS_MIX_ZERO_FAIL,),
+        )
+        prefix = (
+            "=== stress_mix summary ===\n"
+            "  Total: ok=7 fail=0 (100.00%)\n"
+            "  Health delta: success +7, failures +0\n"
+        )
+
+        missing, missing_reason = run_i2c_hil.classify_output(
+            spec, prefix, "MATCHED_EXPECTED"
+        )
+        failed, failed_reason = run_i2c_hil.classify_output(
+            spec, prefix + "  Restore status: I2C_TIMEOUT\n", "MATCHED_EXPECTED"
+        )
+
+        self.assertEqual(run_i2c_hil.RESULT_REVIEW, missing)
+        self.assertIn("restore status was not parsed", missing_reason)
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, failed)
+        self.assertIn("I2C_TIMEOUT", failed_reason)
+
+    def test_selftest_restore_failure_must_be_folded_into_fail_count(self) -> None:
+        spec = next(
+            item for item in run_i2c_hil.BASE_COMMANDS
+            if item.command == "selftest"
+        )
+        output = (
+            "=== BME280 selftest ===\n"
+            "[PASS] command smoke checks\n"
+            "Selftest result: pass=12 fail=1 skip=0\n"
+        )
+
+        result, reason = run_i2c_hil.classify_output(
+            spec, output, "MATCHED_EXPECTED"
+        )
+
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
+        self.assertIn("selftest reported fail=1", reason)
 
     def test_reset_busy_is_unknown_not_timeout_or_pass(self) -> None:
         spec = next(item for item in run_i2c_hil.BASE_COMMANDS if item.command == "reset")
@@ -348,6 +399,49 @@ class HilCalibClassificationTest(unittest.TestCase):
 
         self.assertEqual(2.5, args.timeout)
 
+    def test_positive_timeout_parser_rejects_zero_negative_and_nonfinite(self) -> None:
+        for value in ("0", "-1", "nan", "inf", "-inf"):
+            with self.subTest(value=value), self.assertRaises(
+                run_i2c_hil.argparse.ArgumentTypeError
+            ):
+                run_i2c_hil.parse_positive_float(value)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            run_i2c_hil.parse_args(["--dry-run", "--timeout", "inf"])
+
+    def test_baud_parser_is_strictly_positive_and_bounded(self) -> None:
+        self.assertEqual(115200, run_i2c_hil.parse_baud("115200"))
+        self.assertEqual(
+            run_i2c_hil.MAX_SERIAL_BAUD,
+            run_i2c_hil.parse_baud(str(run_i2c_hil.MAX_SERIAL_BAUD)),
+        )
+        for value in ("0", "-1", str(run_i2c_hil.MAX_SERIAL_BAUD + 1), "nan"):
+            with self.subTest(value=value), self.assertRaises(
+                run_i2c_hil.argparse.ArgumentTypeError
+            ):
+                run_i2c_hil.parse_baud(value)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            run_i2c_hil.parse_args(["--dry-run", "--baud", "0"])
+
+    def test_hil_counts_are_bounded_before_plan_allocation(self) -> None:
+        huge = "9" * 401
+        for parser, value in (
+            (run_i2c_hil.parse_positive_int, huge),
+            (run_i2c_hil.parse_positive_int, "100001"),
+            (run_i2c_hil.parse_normal_soak_count, "10001"),
+            (run_i2c_hil.parse_reconnect_attempts, "101"),
+        ):
+            with self.subTest(parser=parser.__name__, value=value), self.assertRaises(
+                run_i2c_hil.argparse.ArgumentTypeError
+            ):
+                parser(value)
+
+    def test_normal_soak_interval_has_a_separate_serial_timeout_window(self) -> None:
+        specs = run_i2c_hil.normal_soak_commands(2, 20.0)
+        delayed_read = specs[2]
+
+        self.assertEqual(20.0, delayed_read.pre_delay_s)
+        self.assertEqual(32.0, delayed_read.timeout_s)
+
     def test_duration_soak_cycle_has_bounded_safe_mix(self) -> None:
         args = run_i2c_hil.parse_args(["--dry-run", "--soak-duration-s", "10"])
 
@@ -359,6 +453,47 @@ class HilCalibClassificationTest(unittest.TestCase):
         self.assertIn("drv", commands)
         self.assertNotIn("wreg 0xF4 0x00", commands)
 
+    def test_default_plan_covers_every_settings_query_and_verbose_setter(self) -> None:
+        args = run_i2c_hil.parse_args(["--dry-run"])
+        executable, _ = run_i2c_hil.build_command_sequence(args)
+        specs = {
+            spec.command: spec
+            for spec in executable
+            if spec.group == "config-query"
+        }
+
+        self.assertIn("Active I2C address:", specs["addr"].expected)
+        self.assertEqual(
+            ("Chip mode:", "Internal mode:"), specs["normal"].expected
+        )
+        self.assertEqual(
+            ("Chip mode:", "Internal mode:"), specs["mode"].expected
+        )
+        self.assertEqual(
+            ("Chip osrs:", "Internal osrs:"), specs["osrs"].expected
+        )
+        self.assertEqual(
+            ("Chip filter:", "Internal filter:"), specs["filter"].expected
+        )
+        self.assertEqual(
+            ("Chip standby:", "Internal standby:"), specs["standby"].expected
+        )
+        self.assertIn("Chip Settings", specs["settings"].expected)
+        commands = [spec.command for spec in executable]
+        verbose_on = commands.index("verbose 1")
+        self.assertEqual("xfer_reset", commands[verbose_on - 1])
+        self.assertEqual("verbose 0", commands[verbose_on + 1])
+        self.assertEqual("xfer_assert 0 0 0", commands[verbose_on + 2])
+
+    def test_default_plan_exercises_maximum_legal_register_dump(self) -> None:
+        args = run_i2c_hil.parse_args(["--dry-run"])
+        executable, _ = run_i2c_hil.build_command_sequence(args)
+        commands = [spec.command for spec in executable]
+        index = commands.index("dump 0x80 32")
+
+        self.assertEqual("xfer_reset", commands[index - 1])
+        self.assertEqual("xfer_assert 1 0 1", commands[index + 1])
+
     def test_include_job_api_adds_job_command_group(self) -> None:
         args = run_i2c_hil.parse_args(["--dry-run", "--include-job-api"])
         executable, _ = run_i2c_hil.build_command_sequence(args)
@@ -367,6 +502,11 @@ class HilCalibClassificationTest(unittest.TestCase):
         self.assertEqual(
             [
                 "job status",
+                "xfer_reset",
+                "settings start forced x1 x1 x1 off ms_125",
+                "xfer_assert 0 0 0",
+                "job cancel owner",
+                "job poll 0",
                 "job start init",
                 "job poll 1",
                 "job cancel deadline",
@@ -644,6 +784,65 @@ class HilCalibClassificationTest(unittest.TestCase):
 
 
 class HilEvidenceHardeningTest(unittest.TestCase):
+    def test_trailing_argument_checks_require_usage_not_fallback_errors(self) -> None:
+        for command, usage in (
+            ("mode normal extra", "Usage: mode"),
+            ("normal on extra", "Usage: normal on|off"),
+            ("calib raw extra", "Usage: calib [raw]"),
+        ):
+            with self.subTest(command=command):
+                spec = next(
+                    item for item in run_i2c_hil.INVALID_INPUT_COMMANDS
+                    if item.command == command
+                )
+                self.assertEqual((usage,), spec.expected)
+                self.assertEqual((), spec.expected_any)
+
+    def test_transfer_counter_output_is_parsed(self) -> None:
+        evidence = run_i2c_hil.extract_parsed_evidence(
+            "XFER_STATS read=2 write=4 total=6\n"
+        )
+
+        self.assertEqual(2, evidence["xfer_read"])
+        self.assertEqual(4, evidence["xfer_write"])
+        self.assertEqual(6, evidence["xfer_total"])
+
+    def test_transfer_assert_fail_is_classified_as_failure(self) -> None:
+        spec = run_i2c_hil.CommandSpec(
+            command="xfer_assert 1 0 1",
+            purpose="counter assertion",
+            expected=("XFER_ASSERT PASS read=1 write=0 total=1",),
+        )
+
+        result, _ = run_i2c_hil.classify_output(
+            spec,
+            "XFER_ASSERT FAIL expected_read=1 expected_write=0 expected_total=1 "
+            "actual_read=2 actual_write=0 actual_total=2\n",
+            "MATCHED_EXPECTED",
+        )
+
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
+
+    def test_expected_invalid_input_rejection_does_not_hide_other_failures(self) -> None:
+        spec = next(
+            item for item in run_i2c_hil.INVALID_INPUT_COMMANDS
+            if item.expected_error
+        )
+
+        result, _ = run_i2c_hil.classify_output(
+            spec, "Status: INVALID_PARAM (code=2, detail=0)\n", "MATCHED_EXPECTED"
+        )
+        self.assertEqual(run_i2c_hil.RESULT_PASS, result)
+
+        for extra in ("[E] unexpected bus fault\n", "Status: I2C_TIMEOUT\n"):
+            with self.subTest(extra=extra):
+                result, _ = run_i2c_hil.classify_output(
+                    spec,
+                    "Status: INVALID_PARAM (code=2, detail=0)\n" + extra,
+                    "MATCHED_EXPECTED",
+                )
+                self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
+
     @staticmethod
     def version_row(output: str) -> dict:
         return {
@@ -664,9 +863,27 @@ class HilEvidenceHardeningTest(unittest.TestCase):
         self.assertEqual("abc1234", evidence["library_commit"])
         self.assertEqual("clean", evidence["library_worktree"])
 
+    def test_full_version_output_yields_stable_reconnect_identity(self) -> None:
+        evidence = run_i2c_hil.extract_parsed_evidence(
+            "BME280 library version: 2.0.0\n"
+            "BME280 library full: 2.0.0 (abc1234, 2026-08-04 12:00:00, dirty)\n"
+            "BME280 library build: 2026-08-04 12:00:00\n"
+            "BME280 library commit: abc1234 (dirty)\n"
+        )
+        expected = self.firmware_identity_values()
+
+        self.assertEqual(expected, run_i2c_hil.firmware_identity(evidence))
+        self.assertEqual(expected, run_i2c_hil.initial_firmware_identity([{
+            "command": "version",
+            "group": "provenance",
+            "parsed_evidence": evidence,
+        }]))
+
     def test_matching_clean_firmware_provenance_remains_pass(self) -> None:
         rows = [self.version_row(
             "BME280 library version: 2.0.0\n"
+            "BME280 library full: 2.0.0 (abc1234, 2026-08-04 12:00:00, clean)\n"
+            "BME280 library build: 2026-08-04 12:00:00\n"
             "BME280 library commit: abc1234 (clean)\n"
         )]
         provenance = {"branch": "main", "commit": "abc123456789", "worktree": "clean"}
@@ -713,6 +930,23 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             end_provenance=end,
         )
 
+        self.assertEqual(4, count)
+        self.assertEqual(run_i2c_hil.RESULT_REVIEW, rows[0]["serial_result"])
+
+    def test_missing_full_build_identity_requires_review(self) -> None:
+        rows = [self.version_row(
+            "BME280 library version: 2.0.0\n"
+            "BME280 library commit: abc1234 (clean)\n"
+        )]
+        provenance = {"branch": "main", "commit": "abc123456", "worktree": "clean"}
+
+        count = run_i2c_hil.reclassify_version_provenance(
+            rows,
+            expected_version="2.0.0",
+            start_provenance=provenance,
+            end_provenance=provenance,
+        )
+
         self.assertEqual(2, count)
         self.assertEqual(run_i2c_hil.RESULT_REVIEW, rows[0]["serial_result"])
 
@@ -732,6 +966,37 @@ class HilEvidenceHardeningTest(unittest.TestCase):
 
         self.assertEqual(["mode forced", "cfg"], commands[-2:])
 
+    def test_named_setter_profiles_have_exact_cfg_readback(self) -> None:
+        specs = list(run_i2c_hil.CONFIG_MATRIX_COMMANDS)
+        for command in (
+            "mode sleep", "osrs t x2", "osrs p x2", "osrs h x2",
+            "filter x2", "standby 250ms",
+        ):
+            matching = [index for index, spec in enumerate(specs) if spec.command == command]
+            self.assertTrue(matching, command)
+            profile_index = next(
+                index for index in matching
+                if index + 2 < len(specs) and specs[index + 1].command.startswith("xfer_assert")
+            )
+            readback = specs[profile_index + 2]
+            self.assertEqual("cfg", readback.command)
+            self.assertTrue(readback.expected_settings)
+
+    def test_cfg_parser_and_matrix_cover_all_three_internal_modes(self) -> None:
+        evidence = run_i2c_hil.extract_parsed_evidence(
+            "=== Internal Settings ===\n  Mode: NORMAL\n"
+        )
+        self.assertEqual(3, evidence["mode"])
+
+        expected_modes = {
+            value
+            for spec in run_i2c_hil.CONFIG_MATRIX_COMMANDS
+            if spec.command == "cfg"
+            for name, value in spec.expected_settings
+            if name == "mode"
+        }
+        self.assertEqual({0, 1, 3}, expected_modes)
+
     def test_config_matrix_covers_all_legal_enum_values_with_readback(self) -> None:
         specs = list(run_i2c_hil.CONFIG_MATRIX_COMMANDS)
         commands = [spec.command for spec in specs]
@@ -747,9 +1012,7 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             self.assertIn(f"standby {value}", commands)
 
         for index, spec in enumerate(specs[:-1]):
-            if (spec.command.startswith("osrs ") or
-                    spec.command.startswith("filter ") or
-                    spec.command.startswith("standby ")):
+            if re.fullmatch(r"(?:osrs [tph]|filter|standby) \d+", spec.command):
                 # Explicit restoration writes can be followed by another write;
                 # every exercise write has a cfg row carrying exact expectations.
                 if "Restore" not in spec.purpose and "Select maximum" not in spec.purpose:
@@ -800,6 +1063,447 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             for group in groups
         ))
 
+    def test_initial_serial_open_retries_are_preserved_in_evidence(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--port", "COM10", "--reconnect-attempts", "2",
+            "--reconnect-delay-s", "0",
+        ])
+        opened = mock.Mock()
+        serial_module = mock.Mock()
+        serial_module.Serial.side_effect = [
+            OSError("port busy"), OSError("USB settling"), opened,
+        ]
+        transcript = io.StringIO()
+
+        with mock.patch.object(
+            run_i2c_hil.time, "monotonic",
+            side_effect=[0.0, 1.0, 2.0, 3.0, 5.0, 6.0, 9.0],
+        ), mock.patch.object(run_i2c_hil.time, "sleep"):
+            outcome = run_i2c_hil.open_serial_with_retries(
+                serial_module, args, transcript
+            )
+
+        self.assertIs(opened, outcome.serial)
+        self.assertEqual(3, outcome.attempts)
+        self.assertEqual(2, outcome.failed_attempts)
+        self.assertEqual(9.0, outcome.downtime_s)
+        self.assertEqual(2, len(outcome.rows))
+        self.assertTrue(all(
+            row["serial_result"] == run_i2c_hil.RESULT_REVIEW
+            for row in outcome.rows
+        ))
+        summary = run_i2c_hil.summarize_serial_open(outcome)
+        self.assertEqual(3, summary["attempts"])
+        self.assertEqual(2, summary["failed_attempts"])
+        self.assertEqual(9.0, summary["downtime_s"])
+        self.assertIn("SERIAL OPEN ATTEMPT FAILED", transcript.getvalue())
+        self.assertIn("SERIAL OPEN SUCCEEDED attempt=3/3", transcript.getvalue())
+
+    def test_exhausted_initial_serial_open_is_a_hard_failure(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--port", "COM10", "--reconnect-attempts", "1",
+            "--reconnect-delay-s", "0",
+        ])
+        serial_module = mock.Mock()
+        serial_module.Serial.side_effect = [
+            OSError("still busy"), OSError("still unavailable"),
+        ]
+
+        with mock.patch.object(
+            run_i2c_hil.time, "monotonic",
+            side_effect=[0.0, 0.0, 1.0, 1.0, 2.0, 2.0],
+        ), mock.patch.object(run_i2c_hil.time, "sleep"):
+            outcome = run_i2c_hil.open_serial_with_retries(
+                serial_module, args, io.StringIO()
+            )
+
+        self.assertIsNone(outcome.serial)
+        self.assertEqual(2, outcome.failed_attempts)
+        self.assertEqual(
+            run_i2c_hil.RESULT_FAIL, outcome.rows[-1]["serial_result"]
+        )
+        self.assertEqual(
+            "INITIAL_SERIAL_OPEN_EXHAUSTED", outcome.rows[-1]["completion"]
+        )
+        self.assertEqual(
+            "FAIL", run_i2c_hil.final_verdict(outcome.rows, dry_run=False)
+        )
+
+    @staticmethod
+    def firmware_identity_values(suffix: str = "") -> dict[str, str]:
+        return {
+            "library_version": f"2.0.0{suffix}",
+            "library_full": f"2.0.0 (abc1234, 2026-08-04 12:00:00, dirty){suffix}",
+            "library_build": f"2026-08-04 12:00:00{suffix}",
+            "library_commit": f"abc1234{suffix}",
+            "library_worktree": "dirty",
+        }
+
+    @classmethod
+    def serial_failure_row(
+        cls, spec: run_i2c_hil.CommandSpec, message: str = "link lost"
+    ) -> dict:
+        row = cls.command_row(spec, run_i2c_hil.RESULT_FAIL)
+        row.update({
+            "operator_result": "",
+            "completion": "SERIAL_READ_EXCEPTION",
+            "elapsed_s": 0.25,
+            "classification_reason": message,
+            "serial_exception": message,
+            "output_excerpt": "partial output",
+        })
+        return row
+
+    def test_reconnect_reopens_same_serial_object_and_proves_identity(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--reconnect-attempts", "2", "--reconnect-delay-s", "0",
+            "--boot-settle-s", "0",
+        ])
+        serial = mock.Mock()
+        probe_row = {
+            "command": "version",
+            "group": "serial-reconnect",
+            "serial_result": run_i2c_hil.RESULT_PASS,
+            "completion": "MATCHED_EXPECTED",
+            "classification_reason": "matched",
+            "parsed_evidence": self.firmware_identity_values(),
+        }
+        with mock.patch.object(
+            run_i2c_hil, "read_available", return_value=""
+        ), mock.patch.object(
+            run_i2c_hil, "run_serial_command", return_value=probe_row
+        ) as run:
+            outcome = run_i2c_hil.reconnect_serial_in_place(
+                serial,
+                io.StringIO(),
+                args,
+                max_attempts=2,
+                expected_identity=self.firmware_identity_values(),
+                probe_timeout_s=5.0,
+            )
+
+        self.assertTrue(outcome.recovered)
+        self.assertEqual(1, outcome.attempts)
+        self.assertEqual([probe_row], outcome.rows)
+        self.assertEqual("", outcome.reason)
+        serial.close.assert_called_once()
+        serial.open.assert_called_once()
+        self.assertEqual(run_i2c_hil.SERIAL_READ_TIMEOUT_S, serial.timeout)
+        self.assertEqual(run_i2c_hil.SERIAL_WRITE_TIMEOUT_S, serial.write_timeout)
+        self.assertEqual("version", run.call_args.args[1].command)
+        self.assertEqual(0.0, run.call_args.kwargs["command_pacing_s"])
+
+    def test_reconnect_rejects_different_full_firmware_identity(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--reconnect-delay-s", "0", "--boot-settle-s", "0",
+        ])
+        probe_row = {
+            "command": "version",
+            "group": "serial-reconnect",
+            "serial_result": run_i2c_hil.RESULT_PASS,
+            "completion": "MATCHED_EXPECTED",
+            "classification_reason": "matched labels",
+            "parsed_evidence": self.firmware_identity_values("-different"),
+        }
+        with mock.patch.object(
+            run_i2c_hil, "read_available", return_value=""
+        ), mock.patch.object(
+            run_i2c_hil, "run_serial_command", return_value=probe_row
+        ):
+            outcome = run_i2c_hil.reconnect_serial_in_place(
+                mock.Mock(),
+                io.StringIO(),
+                args,
+                max_attempts=2,
+                expected_identity=self.firmware_identity_values(),
+                probe_timeout_s=5.0,
+            )
+
+        self.assertFalse(outcome.recovered)
+        self.assertEqual(1, outcome.attempts)
+        self.assertEqual(1, len(outcome.rows))
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, outcome.rows[0]["serial_result"])
+        self.assertEqual(
+            "FIRMWARE_IDENTITY_MISMATCH", outcome.rows[0]["completion"]
+        )
+        self.assertIn("library_full", outcome.reason)
+
+    def test_reconnect_preserves_failed_probe_before_later_success(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--reconnect-delay-s", "0", "--boot-settle-s", "0",
+        ])
+        timed_out = {
+            "command": "version",
+            "group": "serial-reconnect",
+            "serial_result": run_i2c_hil.RESULT_TIMEOUT,
+            "operator_result": "",
+            "completion": run_i2c_hil.RESULT_TIMEOUT,
+            "classification_reason": "no response",
+            "parsed_evidence": {},
+        }
+        passed = {
+            "command": "version",
+            "group": "serial-reconnect",
+            "serial_result": run_i2c_hil.RESULT_PASS,
+            "operator_result": "",
+            "completion": "MATCHED_EXPECTED",
+            "classification_reason": "matched",
+            "parsed_evidence": self.firmware_identity_values(),
+        }
+        serial = mock.Mock()
+        with mock.patch.object(
+            run_i2c_hil, "read_available", return_value=""
+        ), mock.patch.object(
+            run_i2c_hil, "run_serial_command", side_effect=[timed_out, passed]
+        ):
+            outcome = run_i2c_hil.reconnect_serial_in_place(
+                serial,
+                io.StringIO(),
+                args,
+                max_attempts=2,
+                expected_identity=self.firmware_identity_values(),
+                probe_timeout_s=5.0,
+            )
+
+        self.assertTrue(outcome.recovered)
+        self.assertEqual(2, outcome.attempts)
+        self.assertEqual(2, len(outcome.rows))
+        self.assertEqual(run_i2c_hil.RESULT_REVIEW, outcome.rows[0]["serial_result"])
+        self.assertEqual(run_i2c_hil.RESULT_PASS, outcome.rows[1]["serial_result"])
+        self.assertEqual(2, serial.open.call_count)
+
+    def test_duration_serial_exception_preserves_partial_failure_evidence(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--soak-duration-s", "10", "--reconnect-attempts", "0"
+        ])
+        spec = run_i2c_hil.CommandSpec(
+            command="stress 1", purpose="exception evidence", timeout_s=1.0
+        )
+        failure = self.serial_failure_row(spec)
+        with mock.patch.object(
+            run_i2c_hil, "duration_soak_command_groups", return_value=((spec,),)
+        ), mock.patch.object(
+            run_i2c_hil, "run_serial_command", return_value=failure
+        ):
+            rows, summary = run_i2c_hil.run_duration_soak(
+                mock.Mock(), io.StringIO(), args
+            )
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual("stress 1", rows[0]["command"])
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, rows[0]["serial_result"])
+        self.assertEqual("SERIAL_READ_EXCEPTION", rows[0]["completion"])
+        self.assertEqual("partial output", rows[0]["output_excerpt"])
+        self.assertTrue(summary["executed"])
+        self.assertEqual(0, summary["cycles"])
+        self.assertEqual(1, summary["cycles_started"])
+        self.assertIn("link lost", summary["stop_reason"])
+
+    def test_duration_too_short_for_any_safe_group_is_a_hard_failure(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--soak-duration-s", "0.001"
+        ])
+
+        rows, summary = run_i2c_hil.run_duration_soak(
+            mock.Mock(), io.StringIO(), args
+        )
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual("DURATION_SOAK", rows[0]["command"])
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, rows[0]["serial_result"])
+        self.assertEqual("NO_SAFE_GROUP_FIT", rows[0]["completion"])
+        self.assertEqual(0, summary["cycles"])
+        self.assertEqual("FAIL", run_i2c_hil.final_verdict(rows, dry_run=False))
+
+    def test_duration_partial_safe_groups_without_a_full_cycle_fail(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--soak-duration-s", "3"
+        ])
+        first = run_i2c_hil.CommandSpec(
+            command="stress 1", purpose="first safe group", timeout_s=1.0
+        )
+        second = run_i2c_hil.CommandSpec(
+            command="stress_mix 1", purpose="second safe group", timeout_s=1.0
+        )
+        with mock.patch.object(
+            run_i2c_hil, "duration_soak_command_groups",
+            return_value=((first,), (second,)),
+        ), mock.patch.object(
+            run_i2c_hil, "run_serial_command",
+            return_value=self.command_row(first),
+        ), mock.patch.object(
+            run_i2c_hil.time, "monotonic",
+            side_effect=[0.0, 0.0, 0.0, 0.0, 2.5, 2.5, 2.5],
+        ):
+            rows, summary = run_i2c_hil.run_duration_soak(
+                mock.Mock(), io.StringIO(), args
+            )
+
+        self.assertEqual(["stress 1", "DURATION_SOAK"], [
+            row["command"] for row in rows
+        ])
+        self.assertEqual("NO_COMPLETE_SOAK_CYCLE", rows[-1]["completion"])
+        self.assertIn("no full duration-soak cycle", rows[-1]["classification_reason"])
+        self.assertEqual(0, summary["cycles"])
+        self.assertEqual("FAIL", run_i2c_hil.final_verdict(rows, dry_run=False))
+
+    def test_recovered_duration_link_replays_safe_group_from_start(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--soak-duration-s", "10", "--reconnect-attempts", "1"
+        ])
+        spec = run_i2c_hil.CommandSpec(
+            command="stress 1", purpose="replay", timeout_s=1.0
+        )
+        failure = self.serial_failure_row(spec, "transient link")
+        hard_row = self.command_row(spec, run_i2c_hil.RESULT_FAIL)
+        probe_row = self.command_row(run_i2c_hil.CommandSpec(
+            command="version", purpose="identity", group="serial-reconnect"
+        ))
+        with mock.patch.object(
+            run_i2c_hil, "duration_soak_command_groups", return_value=((spec,),)
+        ), mock.patch.object(
+            run_i2c_hil, "run_serial_command",
+            side_effect=[failure, hard_row],
+        ) as run, mock.patch.object(
+            run_i2c_hil, "reconnect_serial_in_place",
+            return_value=run_i2c_hil.ReconnectOutcome(
+                True, 1, 2.0, [probe_row]
+            ),
+        ):
+            rows, summary = run_i2c_hil.run_duration_soak(
+                object(), io.StringIO(), args
+            )
+
+        self.assertEqual(2, run.call_count)
+        self.assertEqual(
+            ["stress 1", "version", "SERIAL_RECONNECT", "stress 1"],
+            [row["command"] for row in rows],
+        )
+        self.assertEqual(run_i2c_hil.RESULT_REVIEW, rows[0]["serial_result"])
+        self.assertEqual(
+            "RECONNECTED_AND_REPLAYING_GROUP", rows[2]["completion"]
+        )
+        self.assertTrue(rows[2]["parsed_evidence"]["safe_group_replayed"])
+        self.assertEqual(1, summary["reconnect_count"])
+        self.assertEqual(1, summary["reconnect_attempts_used"])
+        self.assertEqual(2.0, summary["reconnect_downtime_s"])
+        self.assertGreaterEqual(summary["deadline_extension_s"], 2.0)
+
+    def test_reconnect_never_downgrades_proven_partial_device_failure(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--soak-duration-s", "10", "--reconnect-attempts", "1"
+        ])
+        spec = run_i2c_hil.CommandSpec(
+            command="normal on", purpose="retain failure", timeout_s=1.0,
+            recovery_command="normal off",
+        )
+        recovery = run_i2c_hil.CommandSpec(
+            command="normal off", purpose="restore safe state", timeout_s=1.0,
+        )
+        failure = self.serial_failure_row(spec, "transient link")
+        failure.update({
+            "partial_output_result": run_i2c_hil.RESULT_FAIL,
+            "partial_output_reason": "stress errors=1, expected zero",
+            "parsed_evidence": {"stress_errors": 1},
+            "output_excerpt": "=== Stress Summary ===\nErrors: 1\n",
+        })
+        def fake_command(_ser, actual_spec, _transcript, **_kwargs):
+            if actual_spec.command == "normal on":
+                return failure
+            return self.command_row(actual_spec)
+
+        with mock.patch.object(
+            run_i2c_hil, "duration_soak_command_groups",
+            return_value=((spec, recovery),),
+        ), mock.patch.object(
+            run_i2c_hil, "run_serial_command",
+            side_effect=fake_command,
+        ) as run, mock.patch.object(
+            run_i2c_hil, "reconnect_serial_in_place",
+            return_value=run_i2c_hil.ReconnectOutcome(True, 1, 0.1, []),
+        ):
+            rows, summary = run_i2c_hil.run_duration_soak(
+                object(), io.StringIO(), args
+            )
+
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, rows[0]["serial_result"])
+        self.assertIn("hard failure is retained", rows[0]["classification_reason"])
+        self.assertIn("will not be replayed", rows[0]["classification_reason"])
+        self.assertEqual(["normal on", "normal off"], [
+            call.args[1].command for call in run.call_args_list
+        ])
+        self.assertEqual(
+            "RECONNECTED_FOR_EVIDENCE_NO_REPLAY", rows[1]["completion"]
+        )
+        self.assertFalse(rows[1]["parsed_evidence"]["safe_group_replayed"])
+        self.assertEqual("automatic-recovery", rows[-1]["group"])
+        self.assertIn("proven partial FAIL", summary["stop_reason"])
+        self.assertEqual(0.0, summary["replay_extension_s"])
+        self.assertEqual(0.0, summary["deadline_extension_s"])
+        self.assertEqual("FAIL", run_i2c_hil.final_verdict(rows, dry_run=False))
+
+    def test_replay_accounting_excludes_only_actual_discarded_elapsed(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--soak-duration-s", "10",
+            "--reconnect-attempts", "1",
+        ])
+        spec = run_i2c_hil.CommandSpec(
+            command="stress 1", purpose="replay accounting", timeout_s=1.0
+        )
+        interrupted = self.serial_failure_row(spec, "transient link")
+        replay_failure = self.command_row(spec, run_i2c_hil.RESULT_FAIL)
+        with mock.patch.object(
+            run_i2c_hil, "duration_soak_command_groups", return_value=((spec,),)
+        ), mock.patch.object(
+            run_i2c_hil, "run_serial_command",
+            side_effect=[interrupted, replay_failure],
+        ), mock.patch.object(
+            run_i2c_hil, "reconnect_serial_in_place",
+            return_value=run_i2c_hil.ReconnectOutcome(True, 1, 2.0, []),
+        ), mock.patch.object(
+            run_i2c_hil.time, "monotonic",
+            side_effect=[0.0, 0.0, 0.0, 0.0, 5.0, 16.5, 16.5, 17.0, 17.0],
+        ):
+            _, summary = run_i2c_hil.run_duration_soak(
+                object(), io.StringIO(), args
+            )
+
+        self.assertEqual(5.0, summary["replay_extension_s"])
+        self.assertEqual(7.5, summary["deadline_extension_s"])
+        self.assertEqual(10.0, summary["active_elapsed_s"])
+
+    def test_duration_automatic_recovery_exception_keeps_completed_rows(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--soak-duration-s", "10"
+        ])
+        start = run_i2c_hil.CommandSpec(
+            command="normal on", purpose="state change", timeout_s=1.0,
+            recovery_command="normal off",
+        )
+        recovery = run_i2c_hil.CommandSpec(
+            command="normal off", purpose="restore", timeout_s=1.0,
+        )
+        root_failure = self.command_row(start, run_i2c_hil.RESULT_FAIL)
+        with mock.patch.object(
+            run_i2c_hil,
+            "duration_soak_command_groups",
+            return_value=((start, recovery),),
+        ), mock.patch.object(
+            run_i2c_hil,
+            "run_serial_command",
+            side_effect=[root_failure, OSError("cleanup transcript failure")],
+        ):
+            rows, summary = run_i2c_hil.run_duration_soak(
+                object(), io.StringIO(), args
+            )
+
+        self.assertEqual(["normal on", "normal off"], [r["command"] for r in rows])
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, rows[0]["serial_result"])
+        self.assertEqual("automatic-recovery", rows[1]["group"])
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, rows[1]["serial_result"])
+        self.assertIn("cleanup transcript failure", rows[1]["classification_reason"])
+        self.assertEqual(0, summary["cycles"])
+
     def test_precommand_delay_cannot_send_after_deadline(self) -> None:
         for pre_delay_s, pacing_s in ((2.0, 0.0), (0.0, 2.0)):
             with self.subTest(pre_delay_s=pre_delay_s, pacing_s=pacing_s):
@@ -824,6 +1528,46 @@ class HilEvidenceHardeningTest(unittest.TestCase):
                 )
                 self.assertFalse(row["command_sent"])
                 serial.write.assert_not_called()
+
+    def test_serial_read_exception_preserves_partial_output_and_send_state(self) -> None:
+        class PartialSerial:
+            def __init__(self) -> None:
+                self.waiting_reads = 0
+
+            @property
+            def in_waiting(self) -> int:
+                self.waiting_reads += 1
+                if self.waiting_reads == 1:
+                    return len(b"partial output\n")
+                raise OSError("ClearCommError failed")
+
+            def write(self, payload: bytes) -> int:
+                return len(payload)
+
+            def read(self, _size: int) -> bytes:
+                return b"partial output\n"
+
+        row = run_i2c_hil.run_serial_command(
+            PartialSerial(),
+            run_i2c_hil.CommandSpec(
+                command="stress 1", purpose="partial serial evidence",
+                expected=("Stress Summary",), timeout_s=1.0,
+            ),
+            io.StringIO(),
+            timeout_s=1.0,
+        )
+
+        self.assertEqual(run_i2c_hil.RESULT_FAIL, row["serial_result"])
+        self.assertTrue(row["command_sent"])
+        self.assertIn("partial output", row["output_excerpt"])
+        self.assertIn("ClearCommError failed", row["serial_exception"])
+
+    def test_nonnegative_float_parser_rejects_nonfinite_values(self) -> None:
+        for value in ("nan", "inf", "+inf", "-inf"):
+            with self.subTest(value=value), self.assertRaises(
+                run_i2c_hil.argparse.ArgumentTypeError
+            ):
+                run_i2c_hil.parse_nonnegative_float(value)
 
     def test_declared_recovery_runs_without_pacing(self) -> None:
         args = run_i2c_hil.parse_args(["--dry-run", "--command-pacing-s", "9"])
@@ -903,6 +1647,33 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             call.kwargs["command_pacing_s"] == 0.0 for call in cleanup_calls
         ))
 
+    def test_successful_fixed_plan_always_emits_final_cleanup(self) -> None:
+        args = run_i2c_hil.parse_args(["--dry-run"])
+        fixed = run_i2c_hil.CommandSpec(command="version", purpose="fixed")
+
+        def fake_command(_ser, spec, _transcript, **_kwargs):
+            return self.command_row(spec)
+
+        with mock.patch.object(
+            run_i2c_hil, "run_serial_command", side_effect=fake_command
+        ), mock.patch.object(
+            run_i2c_hil, "run_duration_soak",
+            return_value=([], run_i2c_hil.empty_soak_summary(args)),
+        ):
+            rows, _ = run_i2c_hil.run_live_plan(
+                object(), io.StringIO(), args, [fixed]
+            )
+
+        cleanup = [row for row in rows if row.get("group") == "final-cleanup"]
+        self.assertEqual(
+            ["normal off", "recover", "cfg", "status", "drv"],
+            [row["command"] for row in cleanup],
+        )
+        self.assertTrue(all(
+            row["cleanup_trigger"] == "completed fixed command plan"
+            for row in cleanup
+        ))
+
     def test_final_cleanup_pass_requires_safe_state_evidence(self) -> None:
         specs = {
             spec.command: spec for spec in run_i2c_hil.final_cleanup_commands()
@@ -963,13 +1734,13 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             call.kwargs["command_pacing_s"] == 0.0 for call in cleanup_calls
         ))
 
-    def test_final_cleanup_failure_does_not_override_clean_run_verdict(self) -> None:
+    def test_final_cleanup_failure_prevents_clean_run_pass_verdict(self) -> None:
         rows = [
             {"group": "default", "serial_result": run_i2c_hil.RESULT_PASS},
             {"group": "final-cleanup", "serial_result": run_i2c_hil.RESULT_FAIL},
         ]
 
-        self.assertEqual("PASS", run_i2c_hil.final_verdict(rows, dry_run=False))
+        self.assertEqual("FAIL", run_i2c_hil.final_verdict(rows, dry_run=False))
 
     def test_recovery_rows_do_not_erase_root_failure(self) -> None:
         rows = [{"serial_result": run_i2c_hil.RESULT_FAIL}]
@@ -987,6 +1758,88 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             executable, _ = run_i2c_hil.build_command_sequence(args)
 
         self.assertEqual(["version", "drv"], [spec.command for spec in executable])
+
+    def test_custom_version_never_replaces_canonical_provenance_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "commands.txt"
+            path.write_text("version\ndrv\n", encoding="utf-8")
+            args = run_i2c_hil.parse_args(
+                ["--dry-run", "--commands", str(path)]
+            )
+            executable, _ = run_i2c_hil.build_command_sequence(args)
+
+        self.assertEqual("version", executable[0].command)
+        self.assertEqual("provenance", executable[0].group)
+        self.assertEqual("custom-command-file", executable[1].group)
+
+    def test_missing_custom_plan_is_a_clean_configuration_error(self) -> None:
+        missing = pathlib.Path(tempfile.gettempdir()) / "bme280-missing-command-plan.txt"
+        if missing.exists():
+            missing.unlink()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            result = run_i2c_hil.main(["--dry-run", "--commands", str(missing)])
+
+        self.assertEqual(2, result)
+        self.assertIn("Cannot load command plan:", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_unreadable_custom_plan_is_a_clean_configuration_error(self) -> None:
+        stderr = io.StringIO()
+        with mock.patch.object(
+            pathlib.Path, "read_text", side_effect=PermissionError("access denied")
+        ), contextlib.redirect_stderr(stderr):
+            result = run_i2c_hil.main(["--dry-run", "--commands", "blocked.txt"])
+
+        self.assertEqual(2, result)
+        self.assertIn("access denied", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_invalid_utf8_custom_plan_is_a_clean_configuration_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "commands.txt"
+            path.write_bytes(b"drv\n\xff\n")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                result = run_i2c_hil.main(["--dry-run", "--commands", str(path)])
+
+        self.assertEqual(2, result)
+        self.assertIn("Cannot load command plan:", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_tab_separated_custom_raw_write_is_fully_gated_and_marked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "commands.txt"
+            path.write_text("wreg\t0xF4\t0x00\n", encoding="utf-8")
+            blocked = run_i2c_hil.parse_args(
+                ["--dry-run", "--commands", str(path)]
+            )
+            with self.assertRaises(ValueError):
+                run_i2c_hil.build_command_sequence(blocked)
+
+            enabled = run_i2c_hil.parse_args([
+                "--port", "COM10", "--commands", str(path),
+                "--include-destructive",
+            ])
+            executable, _ = run_i2c_hil.build_command_sequence(enabled)
+
+        raw = executable[1]
+        self.assertTrue(raw.destructive)
+        self.assertEqual("recover", raw.recovery_command)
+        self.assertTrue(run_i2c_hil.execution_safety_errors(enabled, executable))
+
+    def test_generated_log_directory_is_excluded_from_end_worktree_state(self) -> None:
+        ignored = run_i2c_hil.ROOT / "hil_logs" / "i2c_test"
+        with mock.patch.object(
+            run_i2c_hil, "git_value", return_value=""
+        ) as git:
+            state = run_i2c_hil.worktree_state(ignored)
+
+        self.assertEqual("clean", state)
+        self.assertIn(
+            ":(exclude,glob)hil_logs/i2c_test/**", git.call_args.args[0]
+        )
 
     def test_unknown_rows_are_written_to_failure_analysis(self) -> None:
         summary = {

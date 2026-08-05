@@ -54,6 +54,7 @@ MANDATORY_COMMANDS = {
     "addr",
     "scan",
     "begin",
+    "end",
     "read",
     "raw",
     "comp",
@@ -79,6 +80,13 @@ MANDATORY_COMMANDS = {
     "state",
     "probe",
     "recover",
+    "invalidate",
+    "freshness",
+    "dump",
+    "rregs",
+    "xfer_reset",
+    "xfer_stats",
+    "xfer_assert",
     "job",
     "verbose",
     "stress",
@@ -100,6 +108,13 @@ def read(path: pathlib.Path) -> str:
 
 def help_items(text: str) -> list[str]:
     return re.findall(r'printHelpItem\("([^"]+)"', text)
+
+
+def help_entries(text: str) -> list[tuple[str, str]]:
+    return re.findall(
+        r'printHelpItem\("([^"]+)",\s*"([^"]+)"\)',
+        text,
+    )
 
 
 def aliases_from_help(items: list[str]) -> set[str]:
@@ -161,6 +176,8 @@ def main() -> int:
         missing = [item for item in arduino_help if item not in idf_help]
         extra = [item for item in idf_help if item not in arduino_help]
         fail(f"help items differ: missing={missing}, extra={extra}")
+    if help_entries(arduino) != help_entries(idf):
+        fail("Arduino and IDF help descriptions/order differ")
 
     idf_commands = dispatched_commands(idf) | aliases_from_help(idf_help)
     missing_commands = sorted(MANDATORY_COMMANDS - idf_commands)
@@ -175,6 +192,7 @@ def main() -> int:
         "Health delta:",
         "=== stress_mix summary ===",
         "Total:",
+        "Restore status:",
         "=== Job Status ===",
         "Job kind:",
         "Job ID:",
@@ -187,6 +205,11 @@ def main() -> int:
         "Callbacks used:",
         "Instructions:",
         "Driver:",
+        "=== Sample Freshness ===",
+        "=== Register Block ===",
+        "XFER_RESET read=0 write=0 total=0",
+        "XFER_ASSERT PASS",
+        "XFER_ASSERT FAIL",
     ):
         if token not in idf:
             fail(f"IDF CLI output contract missing token: {token}")
@@ -200,9 +223,232 @@ def main() -> int:
         "CancelReason::DEADLINE_EXPIRED",
         "pollJob(currentMs(), 0U)",
         "BME280::toString(result.status.code)",
+        "startApplySettingsJob",
+        "BME280::validateSettings(settings)",
+        "invalidateDeviceState",
+        "sampleFresh(now, maxAgeMs)",
+        "readRegisters",
+        "bme280IdfResetTransferStats",
+        "bme280IdfTransferStats",
+        "JOB_CLI_MAX_POLLS = 1024U",
+        "delayTicksAtLeastOne",
+        "BME280::Status cancelPending()",
+        "cancelPendingForCommand()",
+        "cancelPendingForRecovery()",
+        "Command too long",
     ):
         if token not in idf:
             fail(f"IDF staged-job contract missing token: {token}")
+
+    strict_legacy_checks = (
+        r'nextToken\(cursor\) != nullptr \|\| !parseI2cAddress\(arg, address\)',
+        r'nextToken\(cursor\) != nullptr \|\|\s*\(std::strcmp\(arg, "on"\)',
+        r'Usage: calib \[raw\]',
+        r'nextToken\(cursor\) != nullptr \|\| !parseU32\(addressToken, addr\)',
+        r'!parseU32\(addressToken, addr\) \|\| !parseU32\(valueToken, value\)',
+        r'!parseU32\(arg, value\) \|\| value > 1U',
+    )
+    for pattern in strict_legacy_checks:
+        if re.search(pattern, idf) is None:
+            fail(f"IDF strict legacy-command contract missing pattern: {pattern}")
+
+    for usage in (
+        "help|?", "version|ver", "scan", "begin", "read", "force", "raw",
+        "comp", "data", "measuring", "timing", "status", "chipid|id",
+        "reset", "drv", "state", "probe", "recover", "selftest",
+    ):
+        if f'requireNoArguments(cursor, "{usage}")' not in idf:
+            fail(f"IDF zero-argument command is not strict: {usage}")
+
+    if idf.count("nextToken(cursor) != nullptr ||") < 8:
+        fail("IDF strict optional/count command arity checks regressed")
+    if not re.search(
+        r'valueTok == nullptr \|\| nextToken\(cursor\) != nullptr.*?'
+        r'Usage: osrs t <1\.\.5> \| osrs p\|h <0\.\.5>',
+        idf,
+        re.DOTALL,
+    ):
+        fail("IDF osrs command must reject missing or trailing arguments as usage errors")
+
+    if "vTaskDelay(pdMS_TO_TICKS(" in idf:
+        fail("IDF CLI contains a delay that can round down to zero ticks")
+    if idf.count("vTaskDelay(delayTicksAtLeastOne(1U))") < 2:
+        fail("IDF blocking measurement and mixed-stress paths need bounded one-tick delays")
+
+    for helper, output in (
+        ("printModeSettings", "Chip mode:"),
+        ("printOsrsSettings", "Chip osrs:"),
+        ("printFilterSettings", "Chip filter:"),
+        ("printStandbySettings", "Chip standby:"),
+    ):
+        if f"void {helper}()" not in idf or output not in idf:
+            fail(f"IDF live chip/internal query helper is incomplete: {helper}")
+    if idf.count("printModeSettings();") < 2:
+        fail("IDF normal/mode queries do not share the live chip/internal view")
+    for call in ("printOsrsSettings();", "printFilterSettings();", "printStandbySettings();"):
+        if call not in idf:
+            fail(f"IDF setting query does not use its live chip/internal view: {call}")
+
+    measurement_handler = re.search(
+        r"void handleMeasurementReady\(\).*?\n}\n\nBME280::Status captureSensorSettings",
+        idf,
+        re.DOTALL,
+    )
+    if measurement_handler is None:
+        fail("IDF pending-measurement completion handler could not be isolated")
+    measurement_text = measurement_handler.group(0)
+    for token in (
+        "device.lastMeasurementStatus()",
+        "driverMeasurementPending()",
+        "gPendingRead = false",
+        "noteStressError(terminalStatus)",
+        "printStatus(terminalStatus)",
+    ):
+        if token not in measurement_text:
+            fail(f"IDF terminal async measurement handling is incomplete: {token}")
+
+    stress_mix = re.search(
+        r"void runStressMix\(.*?\n}\n\nvoid runSelfTest",
+        idf,
+        re.DOTALL,
+    )
+    if stress_mix is None:
+        fail("IDF mixed-stress implementation could not be isolated")
+    stress_text = stress_mix.group(0)
+    for token in (
+        '"measure"', '"readStatus"', '"readChipId"', '"readCalRaw"',
+        '"setMode"', '"setFilter"', '"setStandby"',
+        "cancelPendingForCommand()",
+        "BME280::SensorSettings originalSettings",
+        "captureSensorSettings(originalSettings)",
+        "restoreSensorSettings(originalSettings)",
+        '"  Restore status: %s\\n"',
+    ):
+        if token not in stress_text:
+            fail(f"IDF mixed-stress parity/state contract is incomplete: {token}")
+    restore_pos = stress_text.find("restoreSensorSettings(originalSettings)")
+    completion_pos = stress_text.find('"  Health delta:')
+    if restore_pos < 0 or completion_pos < 0 or restore_pos > completion_pos:
+        fail("IDF mixed-stress restore status must precede its completion marker")
+
+    selftest = re.search(
+        r"void runSelfTest\(\).*?\n}\n\nvoid printHelp",
+        idf,
+        re.DOTALL,
+    )
+    if selftest is None:
+        fail("IDF selftest implementation could not be isolated")
+    selftest_text = selftest.group(0)
+    for token in (
+        "const BME280::Status cancelStatus = cancelPending()",
+        "capture baseline settings",
+        "captureSensorSettings(baselineSettings)",
+        "restoreSensorSettings(baselineSettings)",
+        "restore baseline settings",
+        "restoreStatus.ok()",
+    ):
+        if token not in selftest_text:
+            fail(f"IDF selftest state-preservation contract is incomplete: {token}")
+
+    restore_helper = re.search(
+        r"BME280::Status captureSensorSettings\(.*?\n}\n\nvoid runStressMix",
+        idf,
+        re.DOTALL,
+    )
+    if restore_helper is None:
+        fail("IDF full-settings restore helper could not be isolated")
+    restore_text = restore_helper.group(0)
+    for token in (
+        "settings.mode = snapshot.mode",
+        "settings.osrsT = snapshot.osrsT",
+        "settings.osrsP = snapshot.osrsP",
+        "settings.osrsH = snapshot.osrsH",
+        "settings.filter = snapshot.filter",
+        "settings.standby = snapshot.standby",
+        "BME280::validateSettings(settings)",
+        "device.getSettings(restored)",
+        "sensorSettingsMatch(settings, restored)",
+        "actual.initialized",
+        "!actual.hardwareConfigDirty",
+        "actual.mode == expected.mode",
+        "actual.osrsT == expected.osrsT",
+        "actual.osrsP == expected.osrsP",
+        "actual.osrsH == expected.osrsH",
+        "actual.filter == expected.filter",
+        "actual.standby == expected.standby",
+        "BME280::Err::RESYNC_REQUIRED",
+    ):
+        if token not in restore_text:
+            fail(f"IDF restored-settings verification missing token: {token}")
+
+    recover_handler = re.search(
+        r'} else if \(std::strcmp\(head, "recover"\) == 0\).*?'
+        r'} else if \(std::strcmp\(head, "invalidate"\) == 0\)',
+        idf,
+        re.DOTALL,
+    )
+    if recover_handler is None:
+        fail("IDF direct recover handler could not be isolated")
+    recover_text = recover_handler.group(0)
+    cancel_pos = recover_text.find("cancelPendingForRecovery()")
+    recover_pos = recover_text.find("device.recover()")
+    if cancel_pos < 0 or recover_pos < 0 or cancel_pos > recover_pos:
+        fail("IDF direct recover must cancel staged and measurement work first")
+
+    recovery_cancel = re.search(
+        r"bool cancelPendingForRecovery\(\).*?\n}\n\nbool driverMeasurementPending",
+        idf,
+        re.DOTALL,
+    )
+    if recovery_cancel is None:
+        fail("IDF recovery cancellation helper could not be isolated")
+    recovery_cancel_text = recovery_cancel.group(0)
+    for token in (
+        "device.jobState()",
+        "device.cancelJob(BME280::CancelReason::OWNER_REQUEST)",
+        "device.pollJob(currentMs(), 0U)",
+        "return cancelPendingForCommand();",
+    ):
+        if token not in recovery_cancel_text:
+            fail(f"IDF direct recovery ownership contract missing token: {token}")
+
+    input_task = re.search(
+        r"void inputTask\(.*?\n}\n\nvoid tickApp",
+        idf,
+        re.DOTALL,
+    )
+    if input_task is None:
+        fail("IDF CLI input task could not be isolated")
+    input_text = input_task.group(0)
+    for token in (
+        "const bool terminated",
+        "len == sizeof(buffer) - 1U",
+        "std::fgetc(stdin)",
+        "next != '\\n'",
+        "next != '\\r'",
+        'std::printf("Command too long\\n")',
+        "continue;",
+    ):
+        if token not in input_text:
+            fail(f"IDF overlong-input discard contract missing token: {token}")
+
+    settings_handler = re.search(
+        r"void handleSettingsCommand\(.*?\n}\n\nvoid printSampleFreshness",
+        idf,
+        re.DOTALL,
+    )
+    if settings_handler is None:
+        fail("IDF whole-settings command handler could not be isolated")
+    handler_text = settings_handler.group(0)
+    validation_pos = handler_text.find("BME280::validateSettings(settings)")
+    cancellation_pos = handler_text.find("cancelPendingForCommand()")
+    if validation_pos < 0 or cancellation_pos < 0 or validation_pos > cancellation_pos:
+        fail("IDF settings validation must happen before pending-work cancellation/I2C")
+    if not re.search(
+        r"startApplySettingsJob\(settings\);\s*if \(status\.inProgress\(\)\) \{\s*clearPendingBookkeeping\(\);",
+        handler_text,
+    ):
+        fail("IDF accepted settings start must clear cancelled example measurement bookkeeping")
 
     if not re.search(
         r'std::strcmp\(action, "resync"\) == 0\)\s*\{\s*return device\.startResyncJob\(\);',

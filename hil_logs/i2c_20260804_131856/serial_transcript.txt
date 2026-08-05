@@ -1,0 +1,2330 @@
+# I2C HIL serial transcript
+timestamp=2026-08-04T13:18:56+02:00
+runner_command=python tools/run_i2c_hil.py --port COM10 --baud 115200 --address 0x76 --include-config-matrix --include-invalid-inputs --include-benchmarks --include-job-api --include-normal-soak --normal-soak-count 10 --out hil_logs --operator Codex --board ESP32-S2-Saola-1 --mcu-target esp32s2 --framework Arduino --build-target esp32s2dev --module unknown --vdd unknown --vddio unknown --pullups 'example bring-up configuration; value unknown' --pullup-location unknown --sda-pin 8 --scl-pin 9 --bus-speed 400000 --sdo-state low --csb-state high --operator-notes 'Exact current BME280 working-tree firmware; typed CLI safe plan; no raw wreg.'
+runner_args=["--port", "COM10", "--baud", "115200", "--address", "0x76", "--include-config-matrix", "--include-invalid-inputs", "--include-benchmarks", "--include-job-api", "--include-normal-soak", "--normal-soak-count", "10", "--out", "hil_logs", "--operator", "Codex", "--board", "ESP32-S2-Saola-1", "--mcu-target", "esp32s2", "--framework", "Arduino", "--build-target", "esp32s2dev", "--module", "unknown", "--vdd", "unknown", "--vddio", "unknown", "--pullups", "example bring-up configuration; value unknown", "--pullup-location", "unknown", "--sda-pin", "8", "--scl-pin", "9", "--bus-speed", "400000", "--sdo-state", "low", "--csb-state", "high", "--operator-notes", "Exact current BME280 working-tree firmware; typed CLI safe plan; no raw wreg."]
+port=COM10
+baud=115200
+address=0x76
+log_dir=C:\Users\Honza\Documents\Projects\BME280\hil_logs\i2c_20260804_131856
+branch=main
+commit=f87b80aeb97fb6a775d063ad3e97638caf315925
+worktree=dirty
+operator=Codex
+board=ESP32-S2-Saola-1
+mcu_target=esp32s2
+framework=Arduino
+build_target=esp32s2dev
+module=unknown
+vdd=unknown
+vddio=unknown
+pullups=example bring-up configuration; value unknown
+pullup_location=unknown
+sda_pin=8
+scl_pin=9
+bus_speed=400000
+sdo_state=low
+csb_state=high
+environment_ref=unknown
+operator_notes=Exact current BME280 working-tree firmware; typed CLI safe plan; no raw wreg.
+command_file=unknown
+timing={"boot_settle_s": 1.5, "command_pacing_s": 0.0, "idle_after_match_s": 0.25, "idle_timeout_s": 0.75, "reconnect_attempts": 0, "reconnect_delay_s": 1.0, "timeout_s": 8.0}
+opt_in_flags={"fail_on_review": false, "include_benchmarks": true, "include_config_matrix": true, "include_destructive": false, "include_fault_tests": false, "include_invalid_inputs": true, "include_job_api": true, "include_normal_soak": true, "include_soak": false, "normal_soak_count": 10, "normal_soak_interval_s": 1.0, "require_pass": false, "soak_count": 500, "soak_cycle_idle_s": 0.0, "soak_cycle_mix_count": 70, "soak_cycle_stress_count": 50, "soak_duration_s": 0.0, "soak_reset_interval": 20}
+
+
+--- COMMAND 'version' @ 2026-08-04T13:18:58+02:00 ---
+=== Version Info ===
+  Example firmware build: Aug  4 2026 13:14:52
+  BME280 library version: 2.0.0
+  BME280 library full: 2.0.0 (f87b80a, 2026-08-04 13:14:49, dirty)
+  BME280 library build: 2026-08-04 13:14:49
+  BME280 library commit: f87b80a (dirty)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.344 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'help' @ 2026-08-04T13:18:58+02:00 ---
+
+[36m=== BME280 CLI Help ===[0m
+
+[32m[Common][0m
+  [36mhelp / ?                        [0m - Show this help
+  [36mversion / ver                   [0m - Print firmware and library version info
+  [36mscan                            [0m - Scan I2C bus
+  [36maddr [0x76|0x77]                [0m - Show or select diagnostic I2C address
+  [36mbegin                           [0m - Run begin() with the default example config
+  [36mend                             [0m - Zero-I2C unbind and clear cached driver state
+  [36mread                            [0m - Request and display measurement
+  [36mforce                           [0m - Trigger one forced-mode measurement
+  [36mnormal on/off                   [0m - Enable normal mode or return to sleep
+  [36mraw                             [0m - Show cached raw ADC sample and validity flags
+  [36mcomp                            [0m - Show cached compensated sample and validity flags
+  [36mdata                            [0m - Burst-read and decode live data registers
+  [36mmeasuring                       [0m - Show measuring flag
+  [36mtiming                          [0m - Show measurement and cycle timing estimates
+
+[32m[Configuration][0m
+  [36mmode [sleep|forced|normal]      [0m - Set or show operating mode
+  [36mosrs [t|p|h <name|code>]        [0m - Names: skip,x1,x2,x4,x8,x16; temperature cannot skip
+  [36mfilter [off|x2|x4|x8|x16|0..4]  [0m - Set or show IIR filter (temperature/pressure only)
+  [36mstandby [time|0..7]             [0m - Times: 0.5,10,20,62.5,125,250,500,1000 ms
+  [36mcfg / settings                  [0m - Show chip and internal settings
+  [36msettings values                 [0m - Show every accepted sensor-setting value
+  [36msettings validate <6 values>    [0m - Validate mode,t,p,h,filter,standby without I2C
+  [36msettings start <6 values>       [0m - Start zero-I2C staged whole-settings apply
+  [36msettings set <6 values>         [0m - Apply complete settings through the staged job
+  [36mcalib [raw]                     [0m - Show cached or raw calibration
+  [36mstatus                          [0m - Read status register
+  [36mid / chipid                     [0m - Read chip ID
+  [36mreset                           [0m - Soft reset device
+
+[32m[Registers][0m
+  [36mreg <addr>                      [0m - Read 8-bit register (hex address)
+  [36mdump / rregs <addr> <1..32>     [0m - Read one bounded contiguous register block
+  [36mwreg <addr> <val>               [0m - Write 8-bit register (diagnostic; config/reset writes mark dirty)
+
+[32m[Diagnostics][0m
+  [36mdrv                             [0m - Show driver state and health
+  [36mstate                           [0m - Show compact one-line health summary
+  [36mprobe                           [0m - Probe device (no health tracking)
+  [36mrecover                         [0m - Manual recovery attempt
+  [36minvalidate                      [0m - Zero-I2C invalidation for hotplug/replacement handling
+  [36mfreshness [max_age_ms]          [0m - Show cached sample provenance and optional age decision
+  [36mjob status|start|cancel|poll|init|force|apply|resync|reset|recover[0m - Run staged job API diagnostics
+  [36mverbose [0|1]                   [0m - Enable/disable verbose output
+  [36mstress [N]                      [0m - Run N measurement cycles
+  [36mstress_mix [N]                  [0m - Run N mixed-operation cycles
+  [36mselftest                        [0m - Run safe command smoke-test report
+  [36mxfer_reset                      [0m - Reset example transport callback counters
+  [36mxfer_stats                      [0m - Show example transport callback counters
+  [36mxfer_assert <r> <w> <t>         [0m - Assert read/write/total callback counters
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'scan' @ 2026-08-04T13:18:59+02:00 ---
+[36m[I][0m Scanning I2C bus (timeout=50ms)...
+[36m[I][0m      0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+00:                         -- -- -- -- -- -- -- -- 
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+30: -- -- -- -- -- -- -- -- -- -- -- -- 3C -- -- -- 
+40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+60: -- -- -- -- -- -- -- -- -- -- 6A -- -- -- -- -- 
+70: -- -- -- -- -- -- 76 --                         
+[36m[I][0m Scan complete. Found 3 device(s).
+[36m[I][0m Common addresses: 0x3C/0x3D=OLED, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.453 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'addr 0x76' @ 2026-08-04T13:18:59+02:00 ---
+[36m[I][0m Selecting BME280 address 0x76
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Active I2C address: 0x76
+  Hardware config dirty: [32mfalse[0m
+  Consecutive failures: [32m0[0m
+  Total success: [33m0[0m
+  Total failures: [32m0[0m
+  Success rate: [31m0.0%[0m
+  Last OK: never
+  Last error: never
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'begin' @ 2026-08-04T13:19:00+02:00 ---
+[36m[I][0m Initializing BME280...
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Active I2C address: 0x76
+  Hardware config dirty: [32mfalse[0m
+  Consecutive failures: [32m0[0m
+  Total success: [33m0[0m
+  Total failures: [32m0[0m
+  Success rate: [31m0.0%[0m
+  Last OK: never
+  Last error: never
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'settings values' @ 2026-08-04T13:19:00+02:00 ---
+=== Sensor Settings Values ===
+  mode: sleep|forced|normal (0|1|3)
+  t/p/h: skip|x1|x2|x4|x8|x16 (0..5)
+  filter: off|x2|x4|x8|x16 (0..4)
+  standby canonical: ms_0_5|ms_62_5|ms_125|ms_250|ms_500|ms_1000|ms_10|ms_20 (0..7)
+  standby aliases: 0.5ms|62.5ms|125ms|250ms|500ms|1000ms|10ms|20ms
+  constraint: temperature must be enabled when pressure or humidity is enabled; all channels cannot be skipped
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:00+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'settings validate forced x1 x1 x1 off ms_125' @ 2026-08-04T13:19:01+02:00 ---
+=== Requested Sensor Settings ===
+  Mode: FORCED (1)
+  Oversampling: T=X1 (1) P=X1 (1) H=X1 (1)
+  Filter: OFF (0)
+  Standby: MS_125 (2)
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 0 0' @ 2026-08-04T13:19:01+02:00 ---
+XFER_ASSERT PASS read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'freshness' @ 2026-08-04T13:19:01+02:00 ---
+=== Sample Freshness ===
+  Initialized: true
+  Has sample: false
+  Freshness: NONE
+  Sequence: 0
+  Config generation: 1
+  Sample config generation: 0
+  Timestamp ms: 0
+  Age ms: unavailable
+  Last measurement status: OK
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 0 0' @ 2026-08-04T13:19:02+02:00 ---
+XFER_ASSERT PASS read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'probe' @ 2026-08-04T13:19:02+02:00 ---
+[36m[I][0m Probing device (no health tracking)...
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+  Health changes:
+  (no health changes)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'chipid' @ 2026-08-04T13:19:02+02:00 ---
+Chip ID: 0x60
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:03+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: FORCED
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'calib' @ 2026-08-04T13:19:03+02:00 ---
+=== Calibration (Cached) ===
+  T1=28241 T2=26265 T3=50
+  P1=35977 P2=-10611 P3=3024 P4=7599 P5=-94 P6=-7 P7=11700 P8=-11800 P9=5000
+  H1=75 H2=376 H3=0 H4=288 H5=50 H6=30
+  Plausibility: [32mPASS[0m (T1/P1 nonzero, humidity coeffs not all zero)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'calib raw' @ 2026-08-04T13:19:04+02:00 ---
+=== Calibration (Raw Registers) ===
+  TP: 51 6E 99 66 32 00 89 8C 8D D6 D0 0B AF 1D A2 FF F9 FF B4 2D E8 D1 88 13 00 4B
+  H1: 4B
+  H: 78 01 00 12 20 03 1E
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'status' @ 2026-08-04T13:19:04+02:00 ---
+Status: 0x00 (measuring=0, im_update=0)
+Driver: state=READY online=true dirty=false
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: status measuring=0. ---
+
+--- COMMAND 'timing' @ 2026-08-04T13:19:04+02:00 ---
+Measuring: NO
+Estimated measurement time: 11 ms
+Configured standby: 125 ms
+Estimated normal cycle: 136 ms
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'reg 0xD0' @ 2026-08-04T13:19:05+02:00 ---
+Reg 0xD0 = 0x60 (96)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:05+02:00 ---
+> Temp: 27.45 C, Pressure: 98726.00 Pa, Humidity: 33.75 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.343 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'raw' @ 2026-08-04T13:19:05+02:00 ---
+Raw ADC: T=539504 P=360544 H=24375
+  Valid channels: T=1 P=1 H=1
+  Cached sample age: 346 ms (timestamp=199858 ms)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'comp' @ 2026-08-04T13:19:06+02:00 ---
+Compensated: T=2745 x0.01C, P=98726 Pa, RH=33.75 %
+  Valid channels: T=1 P=1 H=1
+  Cached sample age: 706 ms (timestamp=199858 ms)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'freshness 60000' @ 2026-08-04T13:19:06+02:00 ---
+=== Sample Freshness ===
+  Initialized: true
+  Has sample: true
+  Freshness: FRESH
+  Sequence: 1
+  Config generation: 1
+  Sample config generation: 1
+  Timestamp ms: 199858
+  Age ms: 1078
+  Last measurement status: OK
+  Max age ms: 60000
+  Within max age: true
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'data' @ 2026-08-04T13:19:06+02:00 ---
+=== Live Data Registers ===
+  0xF7..0xFE: 58 06 00 83 B7 00 5F 37
+  Decoded raw ADC: P=360544 T=539504 H=24375
+  Sentinel check: P_skip=0 T_skip=0 H_skip=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:07+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'dump 0xF7 8' @ 2026-08-04T13:19:07+02:00 ---
+=== Register Block ===
+  Start: 0xF7
+  Length: 8
+  0xF7: 58 06 00 83 B7 00 5F 37
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 1 0 1' @ 2026-08-04T13:19:08+02:00 ---
+XFER_ASSERT PASS read=1 write=0 total=1
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:08+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'rregs 0x88 8' @ 2026-08-04T13:19:08+02:00 ---
+=== Register Block ===
+  Start: 0x88
+  Length: 8
+  0x88: 51 6E 99 66 32 00 89 8C
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 1 0 1' @ 2026-08-04T13:19:09+02:00 ---
+XFER_ASSERT PASS read=1 write=0 total=1
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_stats' @ 2026-08-04T13:19:09+02:00 ---
+XFER_STATS read=1 write=0 total=1
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'force' @ 2026-08-04T13:19:09+02:00 ---
+> Temp: 27.46 C, Pressure: 98719.00 Pa, Humidity: 33.76 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'reg 0xF4' @ 2026-08-04T13:19:10+02:00 ---
+Reg 0xF4 = 0x24 (36)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: ctrl_meas mode bits are 0b00. ---
+
+--- COMMAND 'status' @ 2026-08-04T13:19:10+02:00 ---
+Status: 0x00 (measuring=0, im_update=0)
+Driver: state=READY online=true dirty=false
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: status measuring=0. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:11+02:00 ---
+> Temp: 27.46 C, Pressure: 98722.00 Pa, Humidity: 33.77 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'normal on' @ 2026-08-04T13:19:11+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:11+02:00 ---
+> Temp: 27.46 C, Pressure: 98717.00 Pa, Humidity: 33.75 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.516 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:12+02:00 ---
+> Temp: 27.47 C, Pressure: 98721.00 Pa, Humidity: 33.77 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.516 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'normal off' @ 2026-08-04T13:19:12+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'reset' @ 2026-08-04T13:19:13+02:00 ---
+  Status: [31mBUSY[0m (code=11, detail=5)
+  Message: [33mBUSY[0m
+> 
+--- RESULT UNKNOWN completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched command unknown/incomplete token: Status: BUSY ---
+
+--- COMMAND 'status' @ 2026-08-04T13:19:13+02:00 ---
+Status: 0x00 (measuring=0, im_update=0)
+Driver: state=READY online=true dirty=true
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: status measuring=0; status im_update=0. ---
+
+--- COMMAND 'recover' @ 2026-08-04T13:19:13+02:00 ---
+[36m[I][0m Attempting recovery...
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+  Health changes:
+  Dirty: true -> false
+  TotalOK: 36 -> [32m46 (+10)[0m
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Active I2C address: 0x76
+  Hardware config dirty: [32mfalse[0m
+  Consecutive failures: [32m0[0m
+  Total success: [32m46[0m
+  Total failures: [31m1[0m
+  Success rate: [33m97.9%[0m
+  Last OK: 1 ms ago (at 208201 ms)
+  Last error: 735 ms ago (at 207467 ms)
+  Error code: [31mBUSY[0m
+  Error detail: 5
+  Error msg: BUSY
+  Note: successful recover invalidates cached samples; run read before using them.
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:14+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'status' @ 2026-08-04T13:19:14+02:00 ---
+Status: 0x00 (measuring=0, im_update=0)
+Driver: state=READY online=true dirty=false
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: status measuring=0. ---
+
+--- COMMAND 'force' @ 2026-08-04T13:19:14+02:00 ---
+> Temp: 27.46 C, Pressure: 98717.00 Pa, Humidity: 33.78 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:15+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'invalidate' @ 2026-08-04T13:19:15+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+=== Sample Freshness ===
+  Initialized: true
+  Has sample: true
+  Freshness: STALE_AFTER_CONFIG_DIRTY
+  Sequence: 6
+  Config generation: 6
+  Sample config generation: 6
+  Timestamp ms: 209323
+  Age ms: 732
+  Last measurement status: RESYNC_REQUIRED
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 0 0' @ 2026-08-04T13:19:16+02:00 ---
+XFER_ASSERT PASS read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.313 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'recover' @ 2026-08-04T13:19:16+02:00 ---
+[36m[I][0m Attempting recovery...
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+  Health changes:
+  Dirty: true -> false
+  TotalOK: 55 -> [32m65 (+10)[0m
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Active I2C address: 0x76
+  Hardware config dirty: [32mfalse[0m
+  Consecutive failures: [32m0[0m
+  Total success: [32m65[0m
+  Total failures: [31m1[0m
+  Success rate: [33m98.5%[0m
+  Last OK: 2 ms ago (at 210738 ms)
+  Last error: 3273 ms ago (at 207467 ms)
+  Error code: [31mBUSY[0m
+  Error detail: 5
+  Error msg: BUSY
+  Note: successful recover invalidates cached samples; run read before using them.
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'freshness' @ 2026-08-04T13:19:16+02:00 ---
+=== Sample Freshness ===
+  Initialized: true
+  Has sample: false
+  Freshness: NONE
+  Sequence: 0
+  Config generation: 7
+  Sample config generation: 0
+  Timestamp ms: 0
+  Age ms: unavailable
+  Last measurement status: OK
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:17+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'end' @ 2026-08-04T13:19:17+02:00 ---
+=== Lifecycle ===
+Action: END
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+Driver: state=UNINIT initialized=false
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 0 0' @ 2026-08-04T13:19:17+02:00 ---
+XFER_ASSERT PASS read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'begin' @ 2026-08-04T13:19:18+02:00 ---
+[36m[I][0m Initializing BME280...
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Active I2C address: 0x76
+  Hardware config dirty: [32mfalse[0m
+  Consecutive failures: [32m0[0m
+  Total success: [33m0[0m
+  Total failures: [32m0[0m
+  Success rate: [31m0.0%[0m
+  Last OK: never
+  Last error: never
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'selftest' @ 2026-08-04T13:19:18+02:00 ---
+=== BME280 selftest (safe command smoke check) ===
+  Plausibility ranges are loose and environment-dependent; this is not factory calibration.
+  [[32mPASS[0m] capture baseline settings
+  [[32mPASS[0m] probe responds
+  [[32mPASS[0m] probe no-health-side-effects
+  [[32mPASS[0m] readChipId
+  [[32mPASS[0m] chip id matches 0x60
+  [[32mPASS[0m] setMode(FORCED)
+  [[32mPASS[0m] getMode
+  [[32mPASS[0m] verify mode=FORCED
+  [[32mPASS[0m] setOversamplingT(X2)
+  [[32mPASS[0m] verify osrs_t=X2
+  [[32mPASS[0m] setOversamplingP(X4)
+  [[32mPASS[0m] verify osrs_p=X4
+  [[32mPASS[0m] setOversamplingH(X2)
+  [[32mPASS[0m] verify osrs_h=X2
+  [[32mPASS[0m] setFilter(X4)
+  [[32mPASS[0m] verify filter=X4
+  [[32mPASS[0m] setStandby(125ms)
+  [[32mPASS[0m] verify standby=125ms
+  [[32mPASS[0m] measurement cycle
+  [[32mPASS[0m] measurement in plausible range
+  [[32mPASS[0m] getRawSample
+  [[32mPASS[0m] getCompensatedSample
+  [[32mPASS[0m] isMeasuring
+  [[32mPASS[0m] estimateMeasurementTimeMs>0
+  [[32mPASS[0m] estimateNormalCycleMs>=meas
+  [[32mPASS[0m] getStandbyTimeMs valid
+  [[32mPASS[0m] readStatus
+  [[32mPASS[0m] recover
+  [[32mPASS[0m] isOnline
+Selftest result: pass=[32m29[0m fail=[32m0[0m skip=[0m0[0m
+> 
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Serial output matched expected tokens; operator plausibility review required. Parsed evidence: selftest fail=0. ---
+
+--- COMMAND 'stress 10' @ 2026-08-04T13:19:18+02:00 ---
+[36m[I][0m Starting stress test: 10 cycles
+>   Progress: 1/10 (10%, ok=[32m1[0m, fail=[32m0[0m)
+  Progress: 2/10 (20%, ok=[32m2[0m, fail=[32m0[0m)
+  Progress: 3/10 (30%, ok=[32m3[0m, fail=[32m0[0m)
+  Progress: 4/10 (40%, ok=[32m4[0m, fail=[32m0[0m)
+  Progress: 5/10 (50%, ok=[32m5[0m, fail=[32m0[0m)
+  Progress: 6/10 (60%, ok=[32m6[0m, fail=[32m0[0m)
+  Progress: 7/10 (70%, ok=[32m7[0m, fail=[32m0[0m)
+  Progress: 8/10 (80%, ok=[32m8[0m, fail=[32m0[0m)
+  Progress: 9/10 (90%, ok=[32m9[0m, fail=[32m0[0m)
+  Progress: 10/10 (100%, ok=[32m10[0m, fail=[32m0[0m)
+=== Stress Summary ===
+  Target: 10
+  Attempts: 10
+  Success: [32m10[0m
+  Errors: [32m0[0m
+  Success rate: [32m100.00%[0m
+  Duration: 130 ms
+  Rate: 76.92 samples/s
+  Health delta: [32msuccess +40[0m, [32mfailures +0[0m
+  Temp C: min=27.47 avg=27.49 max=27.51
+  Pressure Pa: min=98715.00 avg=98717.80 max=98721.00
+  Humidity %: min=33.78 avg=33.80 max=33.81
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.469 reason=Serial output matched expected tokens; operator plausibility review required. Parsed evidence: stress Errors=0. ---
+
+--- COMMAND 'drv' @ 2026-08-04T13:19:19+02:00 ---
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Active I2C address: 0x76
+  Hardware config dirty: [32mfalse[0m
+  Consecutive failures: [32m0[0m
+  Total success: [32m87[0m
+  Total failures: [32m0[0m
+  Success rate: [32m100.0%[0m
+  Last OK: 339 ms ago (at 213420 ms)
+  Last error: never
+  Mode: FORCED
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: driver consecutive failures=0. ---
+
+--- COMMAND 'state' @ 2026-08-04T13:19:19+02:00 ---
+Health: state=[32mREADY[0m online=[32mtrue[0m dirty=[32mfalse[0m consec=[32m0[0m ok=[32m87[0m fail=[32m0[0m rate=[32m100.0%[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'normal on' @ 2026-08-04T13:19:20+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:20+02:00 ---
+> Temp: 27.47 C, Pressure: 98718.00 Pa, Humidity: 33.79 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.516 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:21+02:00 ---
+PRE_DELAY 1.000s before command
+> Temp: 27.48 C, Pressure: 98722.00 Pa, Humidity: 33.79 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=1.500 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:22+02:00 ---
+PRE_DELAY 1.000s before command
+> Temp: 27.48 C, Pressure: 98716.00 Pa, Humidity: 33.80 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=1.515 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:24+02:00 ---
+PRE_DELAY 1.000s before command
+> Temp: 27.48 C, Pressure: 98717.00 Pa, Humidity: 33.78 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=1.516 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:25+02:00 ---
+PRE_DELAY 1.000s before command
+> Temp: 27.48 C, Pressure: 98719.00 Pa, Humidity: 33.81 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=1.516 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:27+02:00 ---
+PRE_DELAY 1.000s before command
+> Temp: 27.49 C, Pressure: 98718.00 Pa, Humidity: 33.79 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=1.515 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:28+02:00 ---
+PRE_DELAY 1.000s before command
+> Temp: 27.48 C, Pressure: 98716.00 Pa, Humidity: 33.79 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=1.516 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:30+02:00 ---
+PRE_DELAY 1.000s before command
+> Temp: 27.48 C, Pressure: 98719.00 Pa, Humidity: 33.79 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=1.516 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:31+02:00 ---
+PRE_DELAY 1.000s before command
+> Temp: 27.48 C, Pressure: 98716.00 Pa, Humidity: 33.39 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=1.468 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'read' @ 2026-08-04T13:19:33+02:00 ---
+PRE_DELAY 1.000s before command
+> Temp: 27.47 C, Pressure: 98715.00 Pa, Humidity: 33.82 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=1.516 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'normal off' @ 2026-08-04T13:19:34+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:35+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'status' @ 2026-08-04T13:19:35+02:00 ---
+Status: 0x00 (measuring=0, im_update=0)
+Driver: state=READY online=true dirty=false
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: status measuring=0. ---
+
+--- COMMAND 'mode sleep' @ 2026-08-04T13:19:35+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:36+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'mode sleep' @ 2026-08-04T13:19:36+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 1 1' @ 2026-08-04T13:19:36+02:00 ---
+XFER_ASSERT PASS read=0 write=1 total=1
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:37+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs t x2' @ 2026-08-04T13:19:37+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 1 1' @ 2026-08-04T13:19:37+02:00 ---
+XFER_ASSERT PASS read=0 write=1 total=1
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:38+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs p x2' @ 2026-08-04T13:19:38+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 1 1' @ 2026-08-04T13:19:39+02:00 ---
+XFER_ASSERT PASS read=0 write=1 total=1
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:39+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs h x2' @ 2026-08-04T13:19:39+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 2 2' @ 2026-08-04T13:19:40+02:00 ---
+XFER_ASSERT PASS read=0 write=2 total=2
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:40+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'filter x2' @ 2026-08-04T13:19:40+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.313 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 2 3 5' @ 2026-08-04T13:19:41+02:00 ---
+XFER_ASSERT PASS read=2 write=3 total=5
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.312 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:41+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'standby 250ms' @ 2026-08-04T13:19:41+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 2 3 5' @ 2026-08-04T13:19:42+02:00 ---
+XFER_ASSERT PASS read=2 write=3 total=5
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:19:42+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'settings set sleep x1 x1 x1 off ms_125' @ 2026-08-04T13:19:42+02:00 ---
+=== Requested Sensor Settings ===
+  Mode: SLEEP (0)
+  Oversampling: T=X1 (1) P=X1 (1) H=X1 (1)
+  Filter: OFF (0)
+  Standby: MS_125 (2)
+=== Job Status ===
+Boundary: POLL
+Job ID: 1
+Job kind: APPLY_CONFIG
+Job phase: COMPLETE
+Job state: DONE
+Terminal state: true
+Status: OK (code=0, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 1
+Instructions: 1
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job state=DONE; job callbacks 1<=1. ---
+
+--- COMMAND 'xfer_assert 2 4 6' @ 2026-08-04T13:19:43+02:00 ---
+XFER_ASSERT PASS read=2 write=4 total=6
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:43+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=1; filter=0; standby=2. ---
+
+--- COMMAND 'osrs t 1' @ 2026-08-04T13:19:44+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:44+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=1. ---
+
+--- COMMAND 'osrs t 2' @ 2026-08-04T13:19:44+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:45+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x44 (osrs_t=2 X2, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X2 (2)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: osrs_t=2; osrs_p=1; osrs_h=1. ---
+
+--- COMMAND 'osrs t 3' @ 2026-08-04T13:19:45+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:45+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x64 (osrs_t=3 X4, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X4 (3)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: osrs_t=3; osrs_p=1; osrs_h=1. ---
+
+--- COMMAND 'osrs t 4' @ 2026-08-04T13:19:46+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:46+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x84 (osrs_t=4 X8, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X8 (4)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: osrs_t=4; osrs_p=1; osrs_h=1. ---
+
+--- COMMAND 'osrs t 5' @ 2026-08-04T13:19:46+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:47+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0xA4 (osrs_t=5 X16, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X16 (5)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: osrs_t=5; osrs_p=1; osrs_h=1. ---
+
+--- COMMAND 'osrs t 1' @ 2026-08-04T13:19:47+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs p 0' @ 2026-08-04T13:19:48+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:48+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x20 (osrs_t=1 X1, osrs_p=0 SKIP, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: SKIP (0)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=0; osrs_h=1. ---
+
+--- COMMAND 'osrs p 1' @ 2026-08-04T13:19:48+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:49+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=1. ---
+
+--- COMMAND 'osrs p 2' @ 2026-08-04T13:19:49+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:49+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x28 (osrs_t=1 X1, osrs_p=2 X2, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X2 (2)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=2; osrs_h=1. ---
+
+--- COMMAND 'osrs p 3' @ 2026-08-04T13:19:50+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:50+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x2C (osrs_t=1 X1, osrs_p=3 X4, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X4 (3)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=3; osrs_h=1. ---
+
+--- COMMAND 'osrs p 4' @ 2026-08-04T13:19:51+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:51+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x30 (osrs_t=1 X1, osrs_p=4 X8, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X8 (4)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=4; osrs_h=1. ---
+
+--- COMMAND 'osrs p 5' @ 2026-08-04T13:19:51+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:52+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x34 (osrs_t=1 X1, osrs_p=5 X16, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X16 (5)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=5; osrs_h=1. ---
+
+--- COMMAND 'osrs p 1' @ 2026-08-04T13:19:52+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs h 0' @ 2026-08-04T13:19:52+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:53+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x00 (osrs_h=0 SKIP)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: SKIP (0)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=0. ---
+
+--- COMMAND 'osrs h 1' @ 2026-08-04T13:19:53+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:53+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=1. ---
+
+--- COMMAND 'osrs h 2' @ 2026-08-04T13:19:54+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:54+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x02 (osrs_h=2 X2)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X2 (2)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=2. ---
+
+--- COMMAND 'osrs h 3' @ 2026-08-04T13:19:55+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:55+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x03 (osrs_h=3 X4)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X4 (3)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=3. ---
+
+--- COMMAND 'osrs h 4' @ 2026-08-04T13:19:55+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:56+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x04 (osrs_h=4 X8)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X8 (4)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=4. ---
+
+--- COMMAND 'osrs h 5' @ 2026-08-04T13:19:56+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:56+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x05 (osrs_h=5 X16)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X16 (5)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=5. ---
+
+--- COMMAND 'osrs h 1' @ 2026-08-04T13:19:57+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'filter 0' @ 2026-08-04T13:19:57+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:57+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: filter=0; standby=2. ---
+
+--- COMMAND 'filter 1' @ 2026-08-04T13:19:58+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:58+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x44 (standby=2 125ms, filter=1 X2, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: X2 (1)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: filter=1; standby=2. ---
+
+--- COMMAND 'filter 2' @ 2026-08-04T13:19:59+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:19:59+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x48 (standby=2 125ms, filter=2 X4, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: X4 (2)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: filter=2; standby=2. ---
+
+--- COMMAND 'filter 3' @ 2026-08-04T13:19:59+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:00+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x4C (standby=2 125ms, filter=3 X8, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: X8 (3)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: filter=3; standby=2. ---
+
+--- COMMAND 'filter 4' @ 2026-08-04T13:20:00+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:00+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x50 (standby=2 125ms, filter=4 X16, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: X16 (4)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: filter=4; standby=2. ---
+
+--- COMMAND 'filter 0' @ 2026-08-04T13:20:01+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'standby 0' @ 2026-08-04T13:20:01+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:02+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x00 (standby=0 0.5ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 0.5ms (0)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: filter=0; standby=0. ---
+
+--- COMMAND 'standby 1' @ 2026-08-04T13:20:02+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:02+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x20 (standby=1 62.5ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 62.5ms (1)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: filter=0; standby=1. ---
+
+--- COMMAND 'standby 2' @ 2026-08-04T13:20:03+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:03+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: filter=0; standby=2. ---
+
+--- COMMAND 'standby 3' @ 2026-08-04T13:20:03+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:04+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x60 (standby=3 250ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 250ms (3)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: filter=0; standby=3. ---
+
+--- COMMAND 'standby 4' @ 2026-08-04T13:20:04+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:04+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x80 (standby=4 500ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 500ms (4)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: filter=0; standby=4. ---
+
+--- COMMAND 'standby 5' @ 2026-08-04T13:20:05+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:05+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0xA0 (standby=5 1000ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 1000ms (5)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: filter=0; standby=5. ---
+
+--- COMMAND 'standby 6' @ 2026-08-04T13:20:06+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:06+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0xC0 (standby=6 10ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 10ms (6)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: filter=0; standby=6. ---
+
+--- COMMAND 'standby 7' @ 2026-08-04T13:20:06+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:07+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0xE0 (standby=7 20ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 20ms (7)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: filter=0; standby=7. ---
+
+--- COMMAND 'osrs t 5' @ 2026-08-04T13:20:07+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs p 5' @ 2026-08-04T13:20:07+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs h 5' @ 2026-08-04T13:20:08+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'filter 4' @ 2026-08-04T13:20:08+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:08+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x05 (osrs_h=5 X16)
+  ctrl_meas: 0xB4 (osrs_t=5 X16, osrs_p=5 X16, mode=0 SLEEP)
+  config: 0xF0 (standby=7 20ms, filter=4 X16, spi3w_en=0)
+=== Internal Settings ===
+  Mode: SLEEP
+  osrs_t: X16 (5)
+  osrs_p: X16 (5)
+  osrs_h: X16 (5)
+  Filter: X16 (4)
+  Standby: 20ms (7)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: osrs_t=5; osrs_p=5; osrs_h=5; filter=4; standby=7. ---
+
+--- COMMAND 'timing' @ 2026-08-04T13:20:09+02:00 ---
+Measuring: NO
+Estimated measurement time: 114 ms
+Configured standby: 20 ms
+Estimated normal cycle: 134 ms
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'force' @ 2026-08-04T13:20:09+02:00 ---
+> Temp: 27.44 C, Pressure: 98715.00 Pa, Humidity: 33.92 %
+  Valid channels: T=1 P=1 H=1
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.484 reason=Serial output matched expected tokens; operator plausibility review required. ---
+
+--- COMMAND 'raw' @ 2026-08-04T13:20:10+02:00 ---
+Raw ADC: T=539501 P=360602 H=24402
+  Valid channels: T=1 P=1 H=1
+  Cached sample age: 371 ms (timestamp=264148 ms)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'comp' @ 2026-08-04T13:20:10+02:00 ---
+Compensated: T=2744 x0.01C, P=98715 Pa, RH=33.92 %
+  Valid channels: T=1 P=1 H=1
+  Cached sample age: 729 ms (timestamp=264148 ms)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'mode sleep' @ 2026-08-04T13:20:10+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs t 1' @ 2026-08-04T13:20:11+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs p 1' @ 2026-08-04T13:20:11+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs h 1' @ 2026-08-04T13:20:12+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'filter 0' @ 2026-08-04T13:20:12+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'standby 2' @ 2026-08-04T13:20:12+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'mode forced' @ 2026-08-04T13:20:13+02:00 ---
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:13+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: FORCED
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: osrs_t=1; osrs_p=1; osrs_h=1; filter=0; standby=2. ---
+
+--- COMMAND 'not_a_command' @ 2026-08-04T13:20:13+02:00 ---
+[33m[W][0m Unknown command: not_a_command
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'addr 0x75' @ 2026-08-04T13:20:14+02:00 ---
+[33m[W][0m Usage: addr 0x76|0x77
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'mode invalid' @ 2026-08-04T13:20:14+02:00 ---
+[33m[W][0m Invalid mode: invalid
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'mode normal extra' @ 2026-08-04T13:20:14+02:00 ---
+[33m[W][0m Invalid mode: normal extra
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs t 6' @ 2026-08-04T13:20:15+02:00 ---
+[33m[W][0m Invalid oversampling value
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs t skip' @ 2026-08-04T13:20:15+02:00 ---
+[33m[W][0m Temperature oversampling cannot be skipped in a valid configuration
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:20:16+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'osrs p nonsense' @ 2026-08-04T13:20:16+02:00 ---
+[33m[W][0m Invalid oversampling value
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 0 0' @ 2026-08-04T13:20:16+02:00 ---
+XFER_ASSERT PASS read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:20:17+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'filter nonsense' @ 2026-08-04T13:20:17+02:00 ---
+[33m[W][0m Invalid filter value
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 0 0' @ 2026-08-04T13:20:17+02:00 ---
+XFER_ASSERT PASS read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'filter 5' @ 2026-08-04T13:20:18+02:00 ---
+[33m[W][0m Invalid filter value
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'standby 8' @ 2026-08-04T13:20:18+02:00 ---
+[33m[W][0m Invalid standby value
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:20:18+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'standby nonsense' @ 2026-08-04T13:20:19+02:00 ---
+[33m[W][0m Invalid standby value
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'settings set forced x1 x1 x1 off' @ 2026-08-04T13:20:19+02:00 ---
+[33m[W][0m Usage: settings [values|validate|start|set] <mode> <t> <p> <h> <filter> <standby>
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'dump 0xF0 32' @ 2026-08-04T13:20:20+02:00 ---
+[33m[W][0m Usage: dump|rregs <addr> <1..32>
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 0' @ 2026-08-04T13:20:20+02:00 ---
+[33m[W][0m Usage: xfer_assert <read> <write> <total>
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'xfer_assert 0 0 0' @ 2026-08-04T13:20:20+02:00 ---
+XFER_ASSERT PASS read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'reg 0x100' @ 2026-08-04T13:20:21+02:00 ---
+[33m[W][0m Usage: reg <addr>
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'wreg 0xF4' @ 2026-08-04T13:20:21+02:00 ---
+[33m[W][0m Usage: wreg <addr> <val>
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'stress 50' @ 2026-08-04T13:20:21+02:00 ---
+[36m[I][0m Starting stress test: 50 cycles
+>   Progress: 5/50 (10%, ok=[32m5[0m, fail=[32m0[0m)
+  Progress: 10/50 (20%, ok=[32m10[0m, fail=[32m0[0m)
+  Progress: 15/50 (30%, ok=[32m15[0m, fail=[32m0[0m)
+  Progress: 20/50 (40%, ok=[32m20[0m, fail=[32m0[0m)
+  Progress: 25/50 (50%, ok=[32m25[0m, fail=[32m0[0m)
+  Progress: 30/50 (60%, ok=[32m30[0m, fail=[32m0[0m)
+  Progress: 35/50 (70%, ok=[32m35[0m, fail=[32m0[0m)
+  Progress: 40/50 (80%, ok=[32m40[0m, fail=[32m0[0m)
+  Progress: 45/50 (90%, ok=[32m45[0m, fail=[32m0[0m)
+  Progress: 50/50 (100%, ok=[32m50[0m, fail=[32m0[0m)
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: [32m50[0m
+  Errors: [32m0[0m
+  Success rate: [32m100.00%[0m
+  Duration: 611 ms
+  Rate: 81.83 samples/s
+  Health delta: [32msuccess +200[0m, [32mfailures +0[0m
+  Temp C: min=27.46 avg=27.54 max=27.59
+  Pressure Pa: min=98713.00 avg=98720.18 max=98727.00
+  Humidity %: min=33.89 avg=33.91 max=33.93
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.968 reason=Serial output matched expected tokens; operator plausibility review required. Parsed evidence: stress Errors=0. ---
+
+--- COMMAND 'stress 500' @ 2026-08-04T13:20:22+02:00 ---
+[36m[I][0m Starting stress test: 500 cycles
+>   Progress: 50/500 (10%, ok=[32m50[0m, fail=[32m0[0m)
+  Progress: 100/500 (20%, ok=[32m100[0m, fail=[32m0[0m)
+  Progress: 150/500 (30%, ok=[32m150[0m, fail=[32m0[0m)
+  Progress: 200/500 (40%, ok=[32m200[0m, fail=[32m0[0m)
+  Progress: 250/500 (50%, ok=[32m250[0m, fail=[32m0[0m)
+  Progress: 300/500 (60%, ok=[32m300[0m, fail=[32m0[0m)
+  Progress: 350/500 (70%, ok=[32m350[0m, fail=[32m0[0m)
+  Progress: 400/500 (80%, ok=[32m400[0m, fail=[32m0[0m)
+  Progress: 450/500 (90%, ok=[32m450[0m, fail=[32m0[0m)
+  Progress: 500/500 (100%, ok=[32m500[0m, fail=[32m0[0m)
+=== Stress Summary ===
+  Target: 500
+  Attempts: 500
+  Success: [32m500[0m
+  Errors: [32m0[0m
+  Success rate: [32m100.00%[0m
+  Duration: 6010 ms
+  Rate: 83.19 samples/s
+  Health delta: [32msuccess +2000[0m, [32mfailures +0[0m
+  Temp C: min=27.50 avg=27.65 max=27.70
+  Pressure Pa: min=98710.00 avg=98721.05 max=98732.00
+  Humidity %: min=33.76 avg=33.83 max=33.90
+
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=6.360 reason=Serial output matched expected tokens; operator plausibility review required. Parsed evidence: stress Errors=0. ---
+
+--- COMMAND 'stress_mix 140' @ 2026-08-04T13:20:29+02:00 ---
+  Progress: 14/140 (10%, ok=[32m14[0m, fail=[32m0[0m)
+  Progress: 28/140 (20%, ok=[32m28[0m, fail=[32m0[0m)
+  Progress: 42/140 (30%, ok=[32m42[0m, fail=[32m0[0m)
+  Progress: 56/140 (40%, ok=[32m56[0m, fail=[32m0[0m)
+  Progress: 70/140 (50%, ok=[32m70[0m, fail=[32m0[0m)
+  Progress: 84/140 (60%, ok=[32m84[0m, fail=[32m0[0m)
+  Progress: 98/140 (70%, ok=[32m98[0m, fail=[32m0[0m)
+  Progress: 112/140 (80%, ok=[32m112[0m, fail=[32m0[0m)
+  Progress: 126/140 (90%, ok=[32m126[0m, fail=[32m0[0m)
+  Progress: 140/140 (100%, ok=[32m140[0m, fail=[32m0[0m)
+=== stress_mix summary ===
+  Total: [32mok=140[0m [32mfail=0[0m ([32m100.00%[0m)
+  Duration: 329 ms
+  Rate: 425.53 ops/s
+  measure    [32mok=20[0m [32mfail=0[0m ([32m100.0%[0m)
+  readStatus [32mok=20[0m [32mfail=0[0m ([32m100.0%[0m)
+  readChipId [32mok=20[0m [32mfail=0[0m ([32m100.0%[0m)
+  readCalRaw [32mok=20[0m [32mfail=0[0m ([32m100.0%[0m)
+  setMode    [32mok=20[0m [32mfail=0[0m ([32m100.0%[0m)
+  setFilter  [32mok=20[0m [32mfail=0[0m ([32m100.0%[0m)
+  setStandby [32mok=20[0m [32mfail=0[0m ([32m100.0%[0m)
+  Health delta: [32msuccess +389[0m, [32mfailures +0[0m
+  Health changes:
+  TotalOK: 2569 -> [32m2958 (+389)[0m
+> 
+--- RESULT OPERATOR_CHECK_REQUIRED completion=MATCHED_EXPECTED elapsed_s=0.703 reason=Serial output matched expected tokens; operator plausibility review required. Parsed evidence: stress_mix fail=0. ---
+
+--- COMMAND 'drv' @ 2026-08-04T13:20:29+02:00 ---
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Active I2C address: 0x76
+  Hardware config dirty: [32mfalse[0m
+  Consecutive failures: [32m0[0m
+  Total success: [32m2970[0m
+  Total failures: [32m0[0m
+  Success rate: [32m100.0%[0m
+  Last OK: 362 ms ago (at 283853 ms)
+  Last error: never
+  Mode: FORCED
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: driver consecutive failures=0. ---
+
+--- COMMAND 'job status' @ 2026-08-04T13:20:30+02:00 ---
+=== Job Status ===
+Boundary: SNAPSHOT
+Job ID: 1
+Job kind: APPLY_CONFIG
+Job phase: COMPLETE
+Job state: DONE
+Terminal state: true
+Status: OK (code=0, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 0
+Instructions: 0
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent. ---
+
+--- COMMAND 'xfer_reset' @ 2026-08-04T13:20:30+02:00 ---
+XFER_RESET read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'settings start forced x1 x1 x1 off ms_125' @ 2026-08-04T13:20:30+02:00 ---
+=== Requested Sensor Settings ===
+  Mode: FORCED (1)
+  Oversampling: T=X1 (1) P=X1 (1) H=X1 (1)
+  Filter: OFF (0)
+  Standby: MS_125 (2)
+=== Job Status ===
+Boundary: START
+Job ID: 2
+Job kind: APPLY_CONFIG
+Job phase: APPLY_WAIT_IDLE
+Job state: RUNNING
+Terminal state: false
+Status: IN_PROGRESS (code=12, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 0
+Instructions: 0
+Driver: READY
+Hardware config dirty: true
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job start is running with zero callbacks. ---
+
+--- COMMAND 'xfer_assert 0 0 0' @ 2026-08-04T13:20:31+02:00 ---
+XFER_ASSERT PASS read=0 write=0 total=0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'job cancel owner' @ 2026-08-04T13:20:31+02:00 ---
+=== Job Status ===
+Boundary: CANCEL
+Job ID: 2
+Job kind: APPLY_CONFIG
+Job phase: APPLY_WAIT_IDLE
+Job state: CANCELLED
+Terminal state: true
+Status: CANCELLED (code=18, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 0
+Instructions: 0
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent. ---
+
+--- COMMAND 'job poll 0' @ 2026-08-04T13:20:32+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 2
+Job kind: APPLY_CONFIG
+Job phase: APPLY_WAIT_IDLE
+Job state: CANCELLED
+Terminal state: true
+Status: CANCELLED (code=18, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 0
+Instructions: 0
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job callbacks 0<=0. ---
+
+--- COMMAND 'job start init' @ 2026-08-04T13:20:32+02:00 ---
+=== Job Status ===
+Boundary: START
+Job ID: 3
+Job kind: INIT
+Job phase: INIT_READ_CHIP_ID
+Job state: RUNNING
+Terminal state: false
+Status: IN_PROGRESS (code=12, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 0
+Instructions: 0
+Driver: UNINIT
+Hardware config dirty: true
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job start is running with zero callbacks. ---
+
+--- COMMAND 'job poll 1' @ 2026-08-04T13:20:32+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 3
+Job kind: INIT
+Job phase: NVM_POLL
+Job state: RUNNING
+Terminal state: false
+Status: IN_PROGRESS (code=12, detail=0)
+Conversion state: IDLE
+Phase deadline active: true
+Phase deadline ms: 287108
+Callbacks used: 1
+Instructions: 1
+Driver: UNINIT
+Hardware config dirty: true
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job poll used exactly one callback; job callbacks 1<=1. ---
+
+--- COMMAND 'job cancel deadline' @ 2026-08-04T13:20:33+02:00 ---
+=== Job Status ===
+Boundary: CANCEL
+Job ID: 3
+Job kind: INIT
+Job phase: NVM_POLL
+Job state: TIMED_OUT
+Terminal state: true
+Status: DEADLINE_EXPIRED (code=19, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 0
+Instructions: 0
+Driver: UNINIT
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; deadline cancellation is terminal with zero callbacks. ---
+
+--- COMMAND 'job poll 0' @ 2026-08-04T13:20:33+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 3
+Job kind: INIT
+Job phase: NVM_POLL
+Job state: TIMED_OUT
+Terminal state: true
+Status: DEADLINE_EXPIRED (code=19, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 0
+Instructions: 0
+Driver: UNINIT
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; zero-budget poll retrieved timed-out terminal; job callbacks 0<=0. ---
+
+--- COMMAND 'job poll 0' @ 2026-08-04T13:20:33+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 0
+Job kind: NONE
+Job phase: NONE
+Job state: IDLE
+Terminal state: false
+Status: OK (code=0, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 0
+Instructions: 0
+Driver: UNINIT
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; cancellation terminal was delivered exactly once; job callbacks 0<=0. ---
+
+--- COMMAND 'job init 1' @ 2026-08-04T13:20:34+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 4
+Job kind: INIT
+Job phase: COMPLETE
+Job state: DONE
+Terminal state: true
+Status: OK (code=0, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 1
+Instructions: 1
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job state=DONE; job callbacks 1<=1. ---
+
+--- COMMAND 'job apply 1' @ 2026-08-04T13:20:34+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 5
+Job kind: APPLY_CONFIG
+Job phase: COMPLETE
+Job state: DONE
+Terminal state: true
+Status: OK (code=0, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 1
+Instructions: 1
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job state=DONE; job callbacks 1<=1. ---
+
+--- COMMAND 'job force 1' @ 2026-08-04T13:20:34+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 6
+Job kind: FORCED_MEASUREMENT
+Job phase: COMPLETE
+Job state: DONE
+Terminal state: true
+Status: OK (code=0, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 1
+Instructions: 1
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job state=DONE; job callbacks 1<=1. ---
+
+--- COMMAND 'raw' @ 2026-08-04T13:20:35+02:00 ---
+Raw ADC: T=539712 P=360608 H=24394
+  Valid channels: T=1 P=1 H=1
+  Cached sample age: 361 ms (timestamp=289311 ms)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'comp' @ 2026-08-04T13:20:35+02:00 ---
+Compensated: T=2751 x0.01C, P=98725 Pa, RH=33.86 %
+  Valid channels: T=1 P=1 H=1
+  Cached sample age: 721 ms (timestamp=289311 ms)
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'job resync 1' @ 2026-08-04T13:20:36+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 7
+Job kind: RESYNC
+Job phase: COMPLETE
+Job state: DONE
+Terminal state: true
+Status: OK (code=0, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 1
+Instructions: 1
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job state=DONE; job consecutive failures=0; job callbacks 1<=1. ---
+
+--- COMMAND 'cfg' @ 2026-08-04T13:20:36+02:00 ---
+=== Chip Settings ===
+  ctrl_hum: 0x01 (osrs_h=1 X1)
+  ctrl_meas: 0x24 (osrs_t=1 X1, osrs_p=1 X1, mode=0 SLEEP)
+  config: 0x40 (standby=2 125ms, filter=0 OFF, spi3w_en=0)
+=== Internal Settings ===
+  Mode: FORCED
+  osrs_t: X1 (1)
+  osrs_p: X1 (1)
+  osrs_h: X1 (1)
+  Filter: OFF (0)
+  Standby: 125ms (2)
+  Verbose: [0mOFF[0m
+  Hardware config dirty: [32mfalse[0m
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. ---
+
+--- COMMAND 'status' @ 2026-08-04T13:20:36+02:00 ---
+Status: 0x00 (measuring=0, im_update=0)
+Driver: state=READY online=true dirty=false
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.359 reason=Matched expected serial tokens. Parsed evidence: status measuring=0. ---
+
+--- COMMAND 'job reset 1' @ 2026-08-04T13:20:37+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 8
+Job kind: SOFT_RESET
+Job phase: COMPLETE
+Job state: DONE
+Terminal state: true
+Status: OK (code=0, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 1
+Instructions: 1
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job state=DONE; job consecutive failures=0; job callbacks 1<=1. ---
+
+--- COMMAND 'job force 3' @ 2026-08-04T13:20:37+02:00 ---
+=== Job Status ===
+Boundary: POLL
+Job ID: 9
+Job kind: FORCED_MEASUREMENT
+Job phase: COMPLETE
+Job state: DONE
+Terminal state: true
+Status: OK (code=0, detail=0)
+Conversion state: IDLE
+Phase deadline active: false
+Phase deadline ms: 0
+Callbacks used: 2
+Instructions: 2
+Driver: READY
+Hardware config dirty: false
+Consecutive failures: 0
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.360 reason=Matched expected serial tokens. Parsed evidence: job result fields complete and internally consistent; job state=DONE; job callbacks 2<=3. ---
+
+--- COMMAND 'drv' @ 2026-08-04T13:20:37+02:00 ---
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Active I2C address: 0x76
+  Hardware config dirty: [32mfalse[0m
+  Consecutive failures: [32m0[0m
+  Total success: [32m35[0m
+  Total failures: [32m0[0m
+  Success rate: [32m100.0%[0m
+  Last OK: 362 ms ago (at 291871 ms)
+  Last error: never
+  Mode: FORCED
+> 
+--- RESULT PASS completion=MATCHED_EXPECTED elapsed_s=0.375 reason=Matched expected serial tokens. Parsed evidence: driver consecutive failures=0. ---

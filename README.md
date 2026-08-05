@@ -5,10 +5,19 @@ Arduino/PlatformIO or ESP-IDF.
 
 Validation status: host/native tests, guard scripts, package checks, Arduino
 PlatformIO builds, and CI ESP-IDF builds are supported in this repository. A
-retained ESP32-S2/Arduino COM10 transcript records a 61-minute functional HIL
-campaign against clean source commit `dc5df8e`; deterministic serial checks
-passed, while accuracy, electrical, manual-fault, native ESP-IDF, and
-production shared-bus qualification remain unclaimed. See
+flashed expanded-CLI dirty-tree snapshot completed an ESP32-S2/Arduino COM10
+campaign with 3,642.719 seconds of active soak: 7,115 classified rows contained
+zero `FAIL`, zero `TIMEOUT`, and no serial interruption, and final cleanup
+proved sleep mode, clean configuration, and zero consecutive failures. That
+firmware identifies commit `f87b80a` with a dirty working tree, so the result is
+functional evidence requiring provenance/operator review rather than an
+immutable-release qualification. After help/contract-only audit corrections,
+the post-correction flashed Arduino snapshot also passed a 271-row comprehensive
+gate with zero `FAIL`/`TIMEOUT` and verified final cleanup. A separate retained
+61-minute transcript against clean commit `dc5df8e` also passed its deterministic
+serial checks.
+Accuracy, electrical, protected manual-fault, native ESP-IDF, and production
+shared-bus qualification remain unclaimed. See
 `docs/HARDWARE_VALIDATION.md` for the exact results and evidence boundary.
 
 Release status: `2.0.0` is the current major release. It contains the
@@ -540,8 +549,17 @@ estimateNormalCycleMs = estimateMeasurementTimeMs + getStandbyTimeMs()
 
 - `01_basic_bringup_cli/` - Arduino/PlatformIO bring-up and diagnostic CLI; not a production firmware template
 - `idf/basic/` - Native ESP-IDF bring-up and diagnostic CLI using `app_main`, `driver/i2c_master.h`, FreeRTOS timing, fixed command buffers, and the same user-facing CLI workflow as Arduino
-- CLI register diagnostics: `reg <addr>` and `wreg <addr> <val>` provide tracked raw register access for bring-up and service work. Raw config/reset writes bypass the typed config helpers, mark dirty state, and require `recover()` or `begin()` to restore cached settings after manual register edits. Destructive raw writes are not part of the default HIL automation.
-- CLI diagnostics include `addr [0x76|0x77]`, `id`/`chipid`, `status`, `calib`, `force`, `normal on/off`, `reset`, `probe`, `recover`, `selftest`, `stress N`, and `stress_mix N`. `selftest` is a safe command smoke check with loose environment-dependent plausibility ranges; it is not factory calibration or hardware qualification.
+- Complete typed settings commands are available in both CLIs. `settings values` lists the accepted named/numeric grammar and channel constraints; `settings validate <mode> <t> <p> <h> <filter> <standby>` performs pure validation; `settings start ...` starts the zero-I2C staged apply; and `settings set ...` runs that bounded job to completion. The individual `mode`, `osrs`, `filter`, and `standby` commands accept the same names and numeric enum codes. These six fields are the complete I2C-mode `SensorSettings` surface. The address is an SDO hardware/config choice, and SPI three-wire mode is intentionally not a typed setting.
+- Setting and diagnostic parsers require complete tokens and exact command arity; malformed numbers, trailing text, and unsupported enum codes are rejected before a setting command performs I2C. `stress` and `stress_mix` accept bounded decimal counts from 1 through 100000.
+- The native ESP-IDF fixed-buffer frontend drains and rejects an entire overlong
+  input line as `Command too long`; it never executes a valid-looking prefix.
+- CLI register diagnostics include tracked `reg <addr>`, bounded single-transaction `dump`/`rregs <addr> <1..32>`, and diagnostic `wreg <addr> <val>`. Raw config/reset writes bypass typed helpers, mark dirty state, and require `recover()` or `begin()` after manual edits. Destructive raw writes are not part of default HIL automation.
+- Lifecycle/provenance diagnostics include zero-I2C `end`, zero-I2C `invalidate`, and cache-only `freshness [max_age_ms]`. Example-only `xfer_reset`, `xfer_stats`, and `xfer_assert <read> <write> <total>` expose saturating counts of validated transport callback attempts for deterministic HIL checks; they are not library APIs and do not themselves access I2C.
+- Other CLI diagnostics include `addr [0x76|0x77]`, `id`/`chipid`, `status`, `calib`, `force`, `normal on/off`, `reset`, `probe`, `recover`, `selftest`, `stress N`, and `stress_mix N`. `selftest` is a safe command smoke check with loose environment-dependent plausibility ranges; it is not factory calibration or hardware qualification.
+- No-argument settings queries read the chip registers and show the cached
+  internal value so divergence is visible. Mixed stress and self-test restore
+  and verify the complete pre-command sensor settings; a restoration failure is
+  a reported command failure, not a warning-only result.
 
 ### Example Helpers (`examples/common/`)
 
@@ -552,7 +570,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 | `BoardConfig.h` | Pin definitions and Wire init for supported boards |
 | `BuildConfig.h` | Compile-time `LOG_LEVEL` configuration |
 | `Log.h` | Serial logging macros (`LOGE`/`LOGW`/`LOGI`) |
-| `I2cTransport.h` | Wire-based I2C transport adapter (`wireWrite`, `wireWriteRead`, `initWire`) |
+| `I2cTransport.h` | Wire-based I2C adapter plus example-only saturating callback counters |
 | `I2cScanner.h` | I2C bus scanner with table output |
 | `CliStyle.h` | Shared ANSI colors and CLI formatting helpers |
 | `HealthView.h` | Compact health status display |
@@ -600,7 +618,7 @@ The repository's Arduino example environments exact-pin pioarduino
 ESP-IDF `5.5.5`. This pin keeps repository builds reproducible; consuming
 applications continue to select and own their platform version.
 
-```bash
+```text
 python tools/check_core_timing_guard.py
 python tools/check_cli_contract.py
 python tools/check_hil_contract.py
@@ -613,11 +631,22 @@ python tools/run_i2c_hil.py --parser-self-test
 python tools/run_i2c_hil.py --dry-run --out .pio/hil_dry_runs
 python tools/run_i2c_hil.py --dry-run --include-job-api --out .pio/hil_dry_runs
 doxygen Doxyfile
-python -m platformio test -e native
-python -m platformio test -e native_sanitized
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s2dev
-python -m platformio pkg pack
+```
+
+On Windows, all PlatformIO commands in this repository must use the checked-in
+wrapper so the current user's VS Code-managed Core is selected:
+
+```powershell
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd test -e native_sanitized
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s2dev
+.\scripts\pio.cmd pkg pack
+```
+
+Then validate the generated archive and final diff:
+
+```text
 python tools/check_package_contents.py
 git diff --check
 ```

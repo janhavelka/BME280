@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Matching Arduino and native ESP-IDF CLI coverage for complete typed settings:
+  accepted-value discovery, pure tuple validation, zero-I2C staged start, and
+  bounded whole-settings apply, plus named values for every individual chip
+  setting.
+- CLI lifecycle/sample/register gaps: zero-I2C `end` and device-state
+  invalidation, cache-only freshness/provenance output, and bounded contiguous
+  register dumps.
+- Example-only saturating transport callback counters and reset/show/assert
+  commands, with HIL profiles for lifecycle, register blocks, individual
+  setters, and whole-settings apply.
+
 ### Changed
 
 - Updated the exact-pinned Arduino example platform from pioarduino
@@ -16,8 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ESP32-S3 board profile.
 - Consolidated the HIL runbook, target template, validation matrix, and legacy
   ESP32-S2 summary into one `docs/HARDWARE_VALIDATION.md` procedure and ledger.
-  Only results backed by an available complete evidence package belong in the
-  current ledger.
+  Only formal qualification results require an available complete evidence
+  package; explicitly bounded functional results may retain a raw transcript
+  and concise ledger entry.
 - Hardened HIL evidence generation with firmware/host version and commit
   comparison for PlatformIO and ESP-IDF, dirty/change review gates, exhaustive
   config-enum readback, safe-state duration grouping, bounded best-effort final
@@ -40,6 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recorded the retained ESP32-S2/Arduino COM10 functional HIL campaign against
   clean source commit `dc5df8e`, including its zero-failure stress totals,
   reset recovery result, final safe state, and explicit untested boundaries.
+- Recorded the flashed expanded-CLI dirty-tree snapshot campaign on
+  ESP32-S2/COM10: 3,642.719 seconds of uninterrupted active soak, 7,115
+  classified rows with zero
+  `FAIL`/`TIMEOUT`, exhaustive setter/readback and strict-input coverage,
+  60,700 zero-error forced samples, 84,910 zero-failure mixed operations, 61
+  recovered reset-BUSY rows, and verified final sleep/clean/healthy state. The
+  dirty firmware provenance keeps the result at operator review rather than an
+  immutable-release qualification claim.
+- Rebuilt and reflashed after the final help/contract-only audit corrections;
+  the post-correction flashed Arduino snapshot passed a 271-row comprehensive
+  follow-up with zero `FAIL`/`TIMEOUT`, exact strict-usage/help evidence,
+  matching manifest/runner hashes, and all final-cleanup rows passing.
 - Refined HIL retention so selected raw transcripts and concise ledger results
   remain durable while reproducible runner summaries stay disposable; formal
   qualification still requires the complete manifest-backed evidence package.
@@ -47,6 +73,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Replaced permissive Arduino `String::toInt()` setting parsing with strict,
+  full-token named/numeric parsing and made native ESP-IDF setters reject
+  trailing arguments, preventing arbitrary text from silently selecting enum
+  value zero.
+- Made all native ESP-IDF no-argument commands reject trailing input, bounded
+  both CLI stress counters to 100000, and guaranteed at least one FreeRTOS tick
+  between synchronous staged-job polls.
+- Made malformed Arduino commands return their exact usage contract and made
+  native ESP-IDF drain and discard an entire overlong line instead of executing
+  a valid-looking buffered prefix. Standby help now spells every accepted
+  `ms`-suffixed alias exactly, and contract/HIL checks independently pin setter
+  arity and trailing-token usage responses.
+- Propagated pending-measurement cancellation and mode-restoration failures in
+  both CLIs instead of silently clearing their example scheduler state.
+- Made asynchronous terminal measurement errors complete and report a pending
+  CLI read or stress iteration instead of leaving example bookkeeping stuck.
+- Made direct CLI recovery cancel pending measurement/job ownership first, and
+  made mixed stress and self-test restore and verify the caller's complete
+  sensor settings with deterministic failure output.
+- Brought native ESP-IDF query, mixed-stress, and self-test behavior to parity
+  with Arduino, including live chip-versus-cache settings evidence and the same
+  seven mixed operations.
+- Kept example measurement/stress bookkeeping synchronized across valid direct
+  setting changes and accepted nonblocking job/settings starts so driver-side
+  sample invalidation cannot strand the CLI scheduler.
+- Raised the bounded synchronous CLI job poll cap from 512 to 1024 because the
+  documented worst-case apply path can require 516 one-callback polls.
 - Reserved a full configured conversion window when reconciling ambiguous
   forced measurements and the worst normal-mode phase (two conversions plus
   standby) when promising a sample fresh relative to a request. The shared
@@ -59,7 +112,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   I2C until an explicit new request.
 - Fixed duration-soak and fixed-plan hard-stop orchestration so the HIL runner
   always attempts `normal off`, `recover`, `cfg`, `status`, and `drv` in order;
-  cleanup failures remain visible without replacing the root run verdict.
+  cleanup failures preserve the root cause and also prevent a PASS when the
+  final safe state cannot be proven.
+- Preserved partial duration-soak evidence across serial exceptions and added
+  bounded in-place reconnects with matching reported firmware/library identity,
+  safe-group replay, explicit review evidence, and active-duration compensation.
+- Hardened HIL argument/custom-plan handling, exact callback/readback matrices,
+  short-duration failure reporting, partial-output failure preservation, and
+  clean configuration errors for missing, unreadable, or invalid-UTF-8 plans.
+- Preserved initial serial-open retry evidence and timing, bounded baud input,
+  required verified mixed-stress restoration, stopped after partial output had
+  already proven a device failure, corrected replay time accounting, and made
+  final safe-state cleanup unconditional for every live plan.
+- Prevented a positive duration soak from passing when it executed only a
+  partial set of safe groups and completed zero full cycles.
 
 ### Removed
 
@@ -68,7 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   false PSRAM declaration for the selected no-PSRAM ESP32-S3 board.
 - Stale product-specific integration planning and unreviewable local/historical
   HIL summaries whose complete evidence packages are absent. Real transcripts
-  and manifests remain protected by the maintained evidence-retention policy.
+  selected for functional evidence remain protected by the maintained ignore
+  policy; formal packages and manifests must be promoted explicitly.
 - Completed industry-hardening and TunnelMonitor audit reports whose durable
   conclusions are already represented by the v2 code, API contracts, and
   release notes. Git history remains the archive.

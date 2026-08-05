@@ -3742,6 +3742,7 @@ void test_set_mode_forced_does_not_trigger_conversion() {
 }
 
 void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
+  transport::resetTransferStats();
   Wire._clearEndTransmissionResult();
   Wire._clearRequestFromOverride();
 
@@ -3779,9 +3780,14 @@ void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::OTHER),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_INT32(1, st.detail);
+  const transport::TransferStats stats = transport::transferStats();
+  TEST_ASSERT_EQUAL_UINT32(0u, stats.read);
+  TEST_ASSERT_EQUAL_UINT32(5u, stats.write);
+  TEST_ASSERT_EQUAL_UINT32(5u, stats.total);
 }
 
 void test_example_transport_validates_params_and_handles_write_read() {
+  transport::resetTransferStats();
   const uint8_t tx = 0x00;
   uint8_t rx = 0;
 
@@ -3818,6 +3824,32 @@ void test_example_transport_validates_params_and_handles_write_read() {
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT32(1u, static_cast<uint32_t>(st.writeCount));
   TEST_ASSERT_EQUAL_UINT32(0u, static_cast<uint32_t>(st.readCount));
+
+  transport::TransferStats stats = transport::transferStats();
+  TEST_ASSERT_EQUAL_UINT32(2u, stats.read);
+  TEST_ASSERT_EQUAL_UINT32(0u, stats.write);
+  TEST_ASSERT_EQUAL_UINT32(2u, stats.total);
+  transport::resetTransferStats();
+  stats = transport::transferStats();
+  TEST_ASSERT_EQUAL_UINT32(0u, stats.read);
+  TEST_ASSERT_EQUAL_UINT32(0u, stats.write);
+  TEST_ASSERT_EQUAL_UINT32(0u, stats.total);
+}
+
+void test_example_transport_counters_saturate_without_wrapping() {
+  transport::TransferStats& stats = transport::transferStatsStorage();
+  stats.read = UINT32_MAX;
+  stats.write = UINT32_MAX;
+  stats.total = UINT32_MAX;
+
+  transport::incrementSaturating(stats.read);
+  transport::incrementSaturating(stats.write);
+  transport::incrementSaturating(stats.total);
+
+  TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, stats.read);
+  TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, stats.write);
+  TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, stats.total);
+  transport::resetTransferStats();
 }
 
 void test_recover_reaches_offline_when_threshold_is_one() {
@@ -6480,6 +6512,7 @@ int main() {
   RUN_TEST(test_set_mode_forced_does_not_trigger_conversion);
   RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
+  RUN_TEST(test_example_transport_counters_saturate_without_wrapping);
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
   RUN_TEST(test_offline_history_does_not_block_public_register_read);
   RUN_TEST(test_offline_history_does_not_block_typed_config_setters);
