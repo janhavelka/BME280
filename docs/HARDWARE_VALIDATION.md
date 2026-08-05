@@ -1,6 +1,6 @@
 # BME280 Hardware Validation
 
-Last updated: 2026-08-04
+Last updated: 2026-08-05
 
 This is the single maintained hardware-in-the-loop (HIL) procedure, evidence
 schema, and result ledger for the library. It replaces the former HIL runbook,
@@ -33,30 +33,37 @@ The firmware reported library version `2.0.0`, source commit
 `f87b80aeb97fb6a775d063ad3e97638caf315925`, and a dirty working tree. Therefore
 the correct runner verdict is `OPERATOR_REVIEW_REQUIRED`: this is strong
 flashed dirty-tree snapshot functional evidence, but not an immutable-source
-release claim or formal hardware qualification. Electrical values, calibrated environmental
-reference data, protected fault injection, native ESP-IDF runtime, production
-shared-bus contention, and operator sign-off remain incomplete.
+release claim or formal hardware qualification. Electrical values, calibrated
+environmental reference data, physical fault injection, additional hardware
+targets, and operator qualification sign-off are outside the release acceptance
+scope and are not claimed.
+
+The `2.1.0` driver implementation and public contracts, excluding generated
+version metadata, are byte-identical to the clean-source HIL commit `dc5df8e`.
+Later release changes affect examples, tests, validation tooling,
+documentation, and metadata rather than driver behavior. Native tests inject
+every terminal transport error, short transfers, partial configuration
+failures, health degradation, and recovery outcomes at the callback boundary.
+This software fault-path coverage is distinct from physical electrical fault
+injection.
 
 A separate clean-source ESP32-S2/Arduino run against commit
 `dc5df8e6735bd21f52dea3e5ae7dcf54ec2b498d` is retained at
 `../hil_logs/i2c_20260803_144215/serial_transcript.txt`. Earlier development
 snapshots are not current evidence: one later soak was interrupted after about
-46m44s when the operator unintentionally disconnected COM10 board power. Those
-raw transcripts remain locally retained, but the successful current run now
-supersedes them for expanded-CLI functional coverage.
+46m44s when the operator unintentionally disconnected COM10 board power. Four
+superseded/interrupted development transcripts were removed; the retained set
+contains only the clean-source campaign, the expanded long campaign, and its
+post-correction flashed gate.
 
 | Target or condition | Current status | Evidence boundary |
 | --- | --- | --- |
 | ESP32-S2, Arduino/PlatformIO, address `0x76` | FUNCTIONAL SERIAL PASS / OPERATOR REVIEW REQUIRED | Clean source commit `dc5df8e`; 61-minute COM10 campaign; raw transcript retained. No calibrated accuracy or complete electrical qualification claim. |
-| ESP32-S2, Arduino/PlatformIO, expanded `Unreleased` CLI | FUNCTIONAL SERIAL PASS / OPERATOR REVIEW REQUIRED | Dirty-tree run `i2c_20260804_155442`: 60m42.719s active soak, 7,115 rows, zero FAIL/TIMEOUT, no reconnect. Exact final flashed CLI follow-up `i2c_20260804_171428`: 271 rows, zero FAIL/TIMEOUT, final safe state proved. Dirty provenance and incomplete physical metadata prevent an immutable-release qualification claim. |
-| ESP32-S2, native ESP-IDF | NOT RUN | No physical runtime artifact is committed. |
-| ESP32-S3, Arduino/PlatformIO | NOT RUN | Build evidence is not hardware evidence. |
-| ESP32-S3, native ESP-IDF | NOT RUN | No physical runtime artifact is committed. |
-| Address `0x77` | NOT RUN | The safe unstrapped-address negative check is not coverage of a device with SDO tied to VDDIO. |
-| Calibrated environmental accuracy | NOT RUN | No controlled reference-instrument artifact is committed. |
-| Protected fault injection | NOT RUN | No protected address-NACK, timeout, bus/data fault, or recovery artifact is committed. |
-| Production shared-bus contention | NOT RUN | No application-owned locking/scheduling coexistence artifact is committed. |
-| Logic-analyzer burst coherency | NOT RUN | No capture proving one `0xF7..0xFE` transaction is committed. |
+| ESP32-S2, Arduino/PlatformIO, expanded `2.1.0` development CLI | FUNCTIONAL SERIAL PASS / OPERATOR REVIEW REQUIRED | Dirty-tree run `i2c_20260804_155442`: 60m42.719s active soak, 7,115 rows, zero FAIL/TIMEOUT, no reconnect. Exact final flashed CLI follow-up `i2c_20260804_171428`: 271 rows, zero FAIL/TIMEOUT, final safe state proved. Dirty provenance and incomplete physical metadata prevent an immutable-release qualification claim. |
+
+Other MCU/framework combinations, address straps, electrical fault campaigns,
+shared-bus systems, logic-analyzer captures, and calibrated environmental
+comparisons are not release requirements and are not claimed by this ledger.
 
 ### Current Expanded-CLI Run: `i2c_20260804_155442`
 
@@ -93,10 +100,9 @@ supersedes them for expanded-CLI functional coverage.
 - Final cleanup: `normal off`, `recover`, `cfg`, `status`, and `drv` all passed.
   The final device was in sleep mode with `measuring=0`, `im_update=0`, clean
   hardware configuration, and zero consecutive failures.
-- Accuracy boundary: samples were valid and plausible but were not compared
-  against a calibrated reference. Protected electrical fault injection, native
-  ESP-IDF runtime, production shared-bus contention, and logic-analyzer burst
-  shape remain `NOT RUN`.
+- Evidence boundary: samples were valid and plausible but were not compared
+  against a calibrated reference. Electrical qualification and additional
+  target/application campaigns are outside this release scope.
 
 ### Post-Correction Flashed Follow-up: `i2c_20260804_171428`
 
@@ -139,10 +145,9 @@ supersedes them for expanded-CLI functional coverage.
   valid. This separately observed follow-up has no retained transcript, so it
   is an adapter diagnostic only, not qualification evidence or address-`0x77`
   device validation.
-- Accuracy boundary: observed values were plausible, but no calibrated
-  reference instrument was recorded. Accuracy, electrical margin, protected
-  fault injection, native ESP-IDF behavior, production shared-bus contention,
-  and logic-analyzer burst shape remain `NOT RUN`.
+- Evidence boundary: observed values were plausible, but no calibrated
+  reference instrument was recorded. Electrical qualification and additional
+  target/application campaigns are outside this release scope.
 
 ## HIL Procedure
 

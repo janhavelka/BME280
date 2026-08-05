@@ -3,26 +3,21 @@
 Production-oriented BME280 I2C driver for ESP32 systems using
 Arduino/PlatformIO or ESP-IDF.
 
-Validation status: host/native tests, guard scripts, package checks, Arduino
-PlatformIO builds, and CI ESP-IDF builds are supported in this repository. A
-flashed expanded-CLI dirty-tree snapshot completed an ESP32-S2/Arduino COM10
-campaign with 3,642.719 seconds of active soak: 7,115 classified rows contained
-zero `FAIL`, zero `TIMEOUT`, and no serial interruption, and final cleanup
-proved sleep mode, clean configuration, and zero consecutive failures. That
-firmware identifies commit `f87b80a` with a dirty working tree, so the result is
-functional evidence requiring provenance/operator review rather than an
-immutable-release qualification. After help/contract-only audit corrections,
-the post-correction flashed Arduino snapshot also passed a 271-row comprehensive
-gate with zero `FAIL`/`TIMEOUT` and verified final cleanup. A separate retained
-61-minute transcript against clean commit `dc5df8e` also passed its deterministic
-serial checks.
-Accuracy, electrical, protected manual-fault, native ESP-IDF, and production
-shared-bus qualification remain unclaimed. See
-`docs/HARDWARE_VALIDATION.md` for the exact results and evidence boundary.
+Validation status: native tests, sanitizers, contract guards, package checks,
+Arduino/PlatformIO builds, and native ESP-IDF builds run in CI. Retained
+ESP32-S2/Arduino HIL includes a clean-source 61-minute campaign and an expanded
+60-minute campaign plus post-correction gate; all completed with zero
+classified `FAIL` or `TIMEOUT` rows and a verified final safe state. The driver
+implementation and public contracts, excluding generated version metadata, are
+byte-identical to the clean HIL commit. These results are functional evidence
+for the release scope, not electrical or calibrated hardware qualification.
+See `docs/HARDWARE_VALIDATION.md` for provenance, totals, and evidence
+boundaries.
 
-Release status: `2.0.0` is the current major release. It contains the
-external-owner and transport-contract hardening described in the changelog and
-is published from the exact CI-qualified `v2.0.0` tag.
+Release status: `2.1.0` is the current backward-compatible feature release. It
+adds complete typed-settings diagnostics, staged-job CLI coverage, stricter
+transport and sample-state handling, expanded tests, and reproducible HIL
+evidence while retaining the `2.x` public transport contract.
 
 ## Features
 
@@ -41,7 +36,7 @@ Add to `platformio.ini`:
 
 ```ini
 lib_deps = 
-  https://github.com/janhavelka/BME280.git#v2.0.0
+  https://github.com/janhavelka/BME280.git#v2.1.0
 ```
 
 Production consumers should pin an exact tag or commit. Do not use an unpinned
@@ -638,11 +633,14 @@ wrapper so the current user's VS Code-managed Core is selected:
 
 ```powershell
 .\scripts\pio.cmd test -e native
-.\scripts\pio.cmd test -e native_sanitized
 .\scripts\pio.cmd run -e esp32s3dev
 .\scripts\pio.cmd run -e esp32s2dev
 .\scripts\pio.cmd pkg pack
 ```
+
+The `native_sanitized` environment is a Linux/CI gate. It may also work with a
+local compiler that provides ASan and UBSan runtimes, but common Windows MinGW
+packages do not ship the required `libasan`/`libubsan` libraries.
 
 Then validate the generated archive and final diff:
 
@@ -688,17 +686,16 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
   current status, and qualification boundary
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
-The `2.0.0` changelog entry records the breaking transport migration, bounded
-owner-job contracts, state/cache integrity work, typed settings/helpers, and
-validation scope. The `v2.0.0` tag identifies the exact released commit.
+The `2.1.0` changelog entry records the typed-settings and staged-job expansion,
+state/cache integrity fixes, example parity, HIL hardening, and release evidence.
+The `v2.1.0` tag identifies the exact released commit; `2.0.0` remains the
+baseline for the current major transport contract.
 
 ## Known Limitations
 
-- The retained ESP32-S2/Arduino transcript is functional evidence, not a
-  complete hardware qualification package. It has no calibrated reference,
-  complete electrical metadata, protected manual faults, native ESP-IDF run,
-  or production shared-bus contention evidence.
-- Local pure ESP-IDF `idf.py` builds are not claimed unless the exact command results are recorded; CI is configured for ESP-IDF v5.3.2 on ESP32-S2 and ESP32-S3.
+- The retained ESP32-S2/Arduino HIL is functional release evidence, not a claim
+  of electrical, environmental, or every-target hardware qualification. Those
+  activities are outside this release's acceptance scope.
 - The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should follow `docs/PRODUCTION_SHARED_BUS_GUIDE.md` and add application-owned locking, scheduling, timeout, and recovery policy around the injected transport.
 - Generated Doxygen HTML, dry-run HIL plans, derived HIL reports, PlatformIO
   build output, and package tarballs are disposable local artifacts. Retain the

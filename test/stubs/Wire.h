@@ -12,13 +12,17 @@ public:
   void setTimeOut(uint32_t timeoutMs) { _timeoutMs = timeoutMs; }
   uint32_t getTimeOut() const { return _timeoutMs; }
   
-  void beginTransmission(uint8_t addr) { _addr = addr; _txLen = 0; }
-  size_t write(uint8_t data) { _txBuf[_txLen++] = data; return 1; }
-  size_t write(const uint8_t* data, size_t len) { 
-    for (size_t i = 0; i < len && _txLen < sizeof(_txBuf); i++) {
-      _txBuf[_txLen++] = data[i];
-    }
-    return len;
+  void beginTransmission(uint8_t addr) {
+    (void)addr;
+    _txLen = 0;
+  }
+  size_t write(const uint8_t* data, size_t len) {
+    (void)data;
+    constexpr size_t CAPACITY = 64;
+    const size_t available = CAPACITY - _txLen;
+    const size_t accepted = (len < available) ? len : available;
+    _txLen += accepted;
+    return accepted;
   }
   uint8_t endTransmission(bool stop = true) { (void)stop; return _endTransmissionResult; }
   
@@ -36,7 +40,8 @@ public:
   int available() { return _rxLen - _rxIdx; }
   int read() { 
     if (_rxIdx < _rxLen) {
-      return _rxBuf[_rxIdx++];
+      ++_rxIdx;
+      return 0;
     }
     return -1;
   }
@@ -50,10 +55,7 @@ public:
   void _clearRequestFromOverride() { _requestFromOverrideEnabled = false; }
 
 private:
-  uint8_t _addr = 0;
-  uint8_t _txBuf[64] = {};
   size_t _txLen = 0;
-  uint8_t _rxBuf[64] = {};
   size_t _rxLen = 0;
   size_t _rxIdx = 0;
   uint32_t _timeoutMs = 0;

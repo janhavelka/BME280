@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-05
+
 ### Added
 
 - Matching Arduino and native ESP-IDF CLI coverage for complete typed settings:
@@ -22,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated the GitHub Actions checkout, cache, and Python setup actions to their
+  current Node 24 generations, removing the Node 20 deprecation warnings from
+  release CI.
+- Reduced the native Arduino/Wire adapter stubs to the API surface exercised by
+  the transport contract tests; production library code is unchanged.
+- Clarified that the ASan/UBSan environment is a Linux/CI gate because common
+  Windows MinGW installations do not include the required sanitizer runtimes.
 - Updated the exact-pinned Arduino example platform from pioarduino
   `platform-espressif32` `54.03.20` to `55.03.311` (Arduino-ESP32 `3.3.11`,
   ESP-IDF `5.5.5`), migrated the ESP32-S2 upload reset value to esptool 5
@@ -45,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Folded durable owner/deadline/validity/hotplug integration conclusions into
   the generic shared-bus guide.
 - Updated the documentation map, contribution gate, and security support and
-  callback-boundary guidance for the current `2.0.x` release.
+  callback-boundary guidance for the current `2.1.x` release.
 - Defined a curated PlatformIO package surface containing the runtime library,
   examples, and maintained documentation while excluding development-only
   repository internals.
@@ -129,6 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Four superseded/interrupted development HIL transcripts. The retained set is
+  limited to the clean-source campaign, the expanded long campaign, and its
+  final post-correction flashed gate.
 - Unused example helpers, logging branches, test stubs, copied
   TunnelMonitor-only version-generator logic, redundant build filters, and the
   false PSRAM declaration for the selected no-PSRAM ESP32-S3 board.
@@ -560,7 +572,8 @@ for all changes accumulated since `v1.5.0`.
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/janhavelka/BME280/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/janhavelka/BME280/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/janhavelka/BME280/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.6.0

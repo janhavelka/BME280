@@ -7,7 +7,6 @@
 #include "Arduino.h"
 #include "Wire.h"
 
-SerialClass Serial;
 TwoWire Wire;
 
 #include "BME280/BME280.h"
