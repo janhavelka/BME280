@@ -442,12 +442,6 @@ class HilCalibClassificationTest(unittest.TestCase):
         self.assertEqual(11, evidence["status_code"])
         self.assertEqual(5, evidence["status_detail"])
 
-    def test_parser_self_test_passes(self) -> None:
-        ok, failures = run_i2c_hil.parser_self_test()
-
-        self.assertTrue(ok)
-        self.assertEqual([], failures)
-
     def test_timeout_s_alias_sets_default_timeout(self) -> None:
         args = run_i2c_hil.parse_args(["--dry-run", "--timeout-s", "2.5"])
 
@@ -1031,16 +1025,22 @@ class HilEvidenceHardeningTest(unittest.TestCase):
 
     def test_named_setter_profiles_have_exact_cfg_readback(self) -> None:
         specs = list(run_i2c_hil.CONFIG_MATRIX_COMMANDS)
-        for command in (
-            "mode sleep", "osrs t x2", "osrs p x2", "osrs h x2",
-            "filter x2", "standby 250ms",
-        ):
+        expected_profiles = {
+            "mode sleep": "xfer_assert 2 1 3",
+            "osrs t x2": "xfer_assert 2 1 3",
+            "osrs p x2": "xfer_assert 2 1 3",
+            "osrs h x2": "xfer_assert 2 3 5",
+            "filter x2": "xfer_assert 2 2 4",
+            "standby 250ms": "xfer_assert 2 2 4",
+        }
+        for command, expected_profile in expected_profiles.items():
             matching = [index for index, spec in enumerate(specs) if spec.command == command]
             self.assertTrue(matching, command)
             profile_index = next(
                 index for index in matching
                 if index + 2 < len(specs) and specs[index + 1].command.startswith("xfer_assert")
             )
+            self.assertEqual(expected_profile, specs[profile_index + 1].command)
             readback = specs[profile_index + 2]
             self.assertEqual("cfg", readback.command)
             self.assertTrue(readback.expected_settings)
@@ -1650,6 +1650,49 @@ class HilEvidenceHardeningTest(unittest.TestCase):
         self.assertEqual("MATCHED_COMPLETION", row["completion"])
         self.assertIn("Status: OK", row["output_excerpt"])
 
+    def test_stress_mix_waits_for_health_delta_after_restore_status(self) -> None:
+        class ChunkedSerial:
+            def __init__(self) -> None:
+                self.chunks = [
+                    b"=== stress_mix summary ===\n  Total: ok=140 fail=0 (100.00%)\n",
+                    b"  Restore status: OK\n",
+                    b"  Health delta: success +140, failures +0\n",
+                ]
+
+            @property
+            def in_waiting(self) -> int:
+                return len(self.chunks[0]) if self.chunks else 0
+
+            def write(self, payload: bytes) -> int:
+                return len(payload)
+
+            def read(self, _size: int) -> bytes:
+                return self.chunks.pop(0) if self.chunks else b""
+
+        spec = next(
+            item for item in run_i2c_hil.BENCHMARK_COMMANDS
+            if item.command == "stress_mix 140"
+        )
+        partial = (
+            "=== stress_mix summary ===\n"
+            "  Total: ok=140 fail=0 (100.00%)\n"
+            "  Restore status: OK\n"
+        )
+        self.assertFalse(run_i2c_hil.output_is_complete(spec, partial))
+
+        row = run_i2c_hil.run_serial_command(
+            ChunkedSerial(),
+            spec,
+            io.StringIO(),
+            timeout_s=1.0,
+            idle_after_output_s=0.0,
+            idle_after_match_s=0.0,
+        )
+
+        self.assertEqual(run_i2c_hil.RESULT_OPERATOR, row["serial_result"])
+        self.assertEqual("MATCHED_COMPLETION", row["completion"])
+        self.assertIn("Health delta: success +140", row["output_excerpt"])
+
     def test_serial_read_exception_preserves_partial_output_and_send_state(self) -> None:
         class PartialSerial:
             def __init__(self) -> None:
@@ -1949,6 +1992,49 @@ class HilEvidenceHardeningTest(unittest.TestCase):
         self.assertTrue(raw.destructive)
         self.assertEqual("recover", raw.recovery_command)
         self.assertTrue(run_i2c_hil.execution_safety_errors(enabled, executable))
+
+    def test_log_directory_allocation_retries_a_concurrent_claim(self) -> None:
+        class FixedDateTime(run_i2c_hil.dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 8, 30, 18, 8, 57, tzinfo=tz)
+
+        original_mkdir = pathlib.Path.mkdir
+        raced = False
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            first = base / "i2c_20260830_180857"
+
+            def racing_mkdir(path, mode=0o777, parents=False, exist_ok=False):
+                nonlocal raced
+                if path == first and not raced:
+                    raced = True
+                    original_mkdir(
+                        path, mode=mode, parents=parents, exist_ok=exist_ok
+                    )
+                    raise FileExistsError(str(path))
+                return original_mkdir(
+                    path, mode=mode, parents=parents, exist_ok=exist_ok
+                )
+
+            with mock.patch.object(
+                run_i2c_hil.dt, "datetime", FixedDateTime
+            ), mock.patch.object(pathlib.Path, "mkdir", new=racing_mkdir):
+                allocated = run_i2c_hil.make_log_dir(base)
+
+            self.assertTrue(raced)
+            self.assertEqual(base / "i2c_20260830_180857_001", allocated)
+            self.assertTrue(first.is_dir())
+            self.assertTrue(allocated.is_dir())
+
+    def test_log_directory_rejects_a_regular_file_base_directly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory) / "not-a-directory"
+            base.write_text("occupied", encoding="utf-8")
+
+            with self.assertRaises(FileExistsError):
+                run_i2c_hil.make_log_dir(base)
 
     def test_generated_log_directory_is_excluded_from_end_worktree_state(self) -> None:
         ignored = run_i2c_hil.ROOT / "hil_logs" / "i2c_test"

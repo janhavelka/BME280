@@ -422,9 +422,11 @@ cached samples unchanged; publish them only if your application explicitly
 accepts stale data and records `sampleFreshness()`.
 
 `startSoftResetJob()` is the separate explicit reset operation. Its first
-callback writes `0xB6` to `0xE0`, then performs bounded NVM-copy readiness,
-calibration reload, and configuration apply. Do not turn a transport or shared-
-bus recovery automatically into a BME280 reset.
+callback writes `0xB6` to `0xE0`; after identity verification it confirms the
+device is idle, then performs bounded NVM-copy readiness, calibration reload,
+and configuration apply. Init and non-reset resync use the same sleep-first
+ordering so normal-mode `im_update` activity cannot race calibration reads. Do
+not turn a transport or shared-bus recovery automatically into a BME280 reset.
 
 For a whole runtime settings change, build a `SensorSettings` value, call the
 pure `validateSettings()`, then call zero-I2C `startApplySettingsJob()`. It uses

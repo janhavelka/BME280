@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the pinned Arduino-ESP32 I2C buffer boundary.
 - Hardened HIL completion, recovery, and callback-budget evidence around parsed
   structured state instead of truncated display output.
+- Replaced the duplicate embedded HIL parser self-test with the maintained
+  parser unit suite as the single verification path.
 - Aligned the Arduino and ESP-IDF diagnostic CLIs on self-test accounting,
   stress progress, command length, and operator-facing health state color.
 - Clarified configuration, IIR-memory, calibration-range, state-health, and
@@ -35,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of relying on unsupported register auto-increment.
 - Allowed configuration to request sleep before waiting for an in-progress
   conversion, and ensured humidity changes are latched by `ctrl_meas`.
+- Quiesced initialization and non-reset resynchronization before NVM readiness
+  and calibration reads, preventing normal-mode image-copy races while keeping
+  staged callback caps unchanged.
+- Corrected HIL typed-setter callback profiles and made mixed-stress capture
+  wait for the final health evidence rather than stopping at restore status.
+- Made timestamped HIL artifact directory allocation retry atomically when
+  concurrent runners claim the same name.
 - Included Bosch's +25% normal-mode standby tolerance in the private sample
   freshness budget.
 - Removed the ESP-IDF example's dependency on the repository checkout
@@ -44,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed an accidentally tracked generated top-level CMake `build/` tree and
   now ignore that reproducible output.
+- Removed the redundant in-runner parser self-test and its command-line flag;
+  parser/classifier coverage remains in `tools/test_run_i2c_hil_parser.py`.
 
 ## [2.1.0] - 2026-08-05
 

@@ -469,13 +469,13 @@ public:
   /// Once admitted, calling this on an initialized instance clears its local
   /// runtime state before configuration validation or I2C. Any later failure
   /// leaves the instance uninitialized; previous cached state is not restored.
-  /// Verifies chip ID 0x60, checks NVM readiness once, reads calibration,
-  /// validates coefficients, and applies cached config. Call after device POR
-  /// and I2C bus readiness; address NACK maps to DEVICE_NOT_FOUND while other
-  /// transport errors are preserved. Starts a new health session and resets
-  /// tracked I2C counters. If NVM is still busy, returns BUSY or TIMEOUT
-  /// instead of hiding a polling loop; use startInitJob()/pollJob() when the
-  /// owner needs staged NVM polling.
+  /// Verifies chip ID 0x60, requests sleep and confirms idle, checks NVM
+  /// readiness once, reads calibration, validates coefficients, and applies
+  /// cached config. Call after device POR and I2C bus readiness; address NACK
+  /// maps to DEVICE_NOT_FOUND while other transport errors are preserved.
+  /// Starts a new health session and resets tracked I2C counters. If the sleep
+  /// transition or NVM copy is still busy, returns BUSY or TIMEOUT instead of
+  /// hiding a polling loop; use startInitJob()/pollJob() for staged waits.
   /// @param config Configuration including transport callbacks
   /// @return Status::Ok() on success, error otherwise
   Status begin(const Config& config);
@@ -547,8 +547,9 @@ public:
   /// @return IN_PROGRESS when accepted, validation/precondition error otherwise
   Status startApplySettingsJob(const SensorSettings& settings);
 
-  /// Start a staged non-reset resynchronization job. The job verifies identity
-  /// and NVM readiness, reloads calibration, and reapplies cached settings.
+  /// Start a staged non-reset resynchronization job. The job verifies identity,
+  /// requests sleep and confirms idle before checking NVM readiness, reloads
+  /// calibration, and reapplies cached settings.
   /// @return IN_PROGRESS when accepted, error otherwise
   Status startResyncJob();
 
@@ -611,8 +612,8 @@ public:
   Status probe();
   
   /// Attempt to recover from DEGRADED/OFFLINE state by verifying chip ID,
-  /// checking NVM readiness once, reloading calibration, validating it, and
-  /// reapplying cached config.
+  /// requesting sleep and confirming idle before checking NVM readiness once,
+  /// reloading calibration, validating it, and reapplying cached config.
   /// A successful recovery invalidates cached raw/compensated samples and any
   /// pending measurement state; a failed recovery leaves pre-existing cached
   /// samples unchanged.
@@ -1118,6 +1119,9 @@ private:
   void _commitCalibration(const Calibration& calibration,
                           bool humidityCalibrationValid);
   Status _applyConfig();
+  Status _quiesceSettingsSynchronously(const SensorSettings& settings);
+  Status _writeSettingsAfterQuiesceSynchronously(
+      const SensorSettings& settings, SettingsWritePlan plan);
   Status _writeSettingsSynchronously(const SensorSettings& settings,
                                      SettingsWritePlan plan);
   Status _verifySettingsReadback(const SensorSettings& settings);

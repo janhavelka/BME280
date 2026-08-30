@@ -621,9 +621,16 @@ Status BME280::begin(const Config& config) {
     return Status::Error(Err::CHIP_ID_MISMATCH, chipId);
   }
 
-  st = _waitForNvmReady(false);
+  st = _quiesceSettingsSynchronously(sensorSettings());
   if (!st.ok()) {
     return mapPresenceError(st);
+  }
+
+  st = _waitForNvmReady(false);
+  if (!st.ok()) {
+    st = mapPresenceError(st);
+    _markHardwareConfigDirty(st);
+    return st;
   }
 
   Calibration calibrationCandidate;
@@ -633,9 +640,12 @@ Status BME280::begin(const Config& config) {
                                  humidityCalibrationValid,
                                  calibrationEvidenceChanged);
   if (!st.ok()) {
-    return mapPresenceError(st);
+    st = mapPresenceError(st);
+    _markHardwareConfigDirty(st);
+    return st;
   }
-  st = _applyConfig();
+  st = _writeSettingsAfterQuiesceSynchronously(
+      sensorSettings(), SettingsWritePlan::FULL);
   if (!st.ok()) {
     return mapPresenceError(st);
   }
@@ -780,9 +790,16 @@ Status BME280::recover() {
       return mismatch;
     }
 
+    st = _quiesceSettingsSynchronously(sensorSettings());
+    if (!st.ok()) {
+      return st.code == Err::BUSY ? _recordFailure(st) : st;
+    }
+
     st = _waitForNvmReady(true);
     if (!st.ok()) {
-      return isTransportFailure(st) ? st : _recordFailure(st);
+      const Status failure = isTransportFailure(st) ? st : _recordFailure(st);
+      _markHardwareConfigDirty(failure);
+      return failure;
     }
 
     Calibration calibrationCandidate;
@@ -795,26 +812,26 @@ Status BME280::recover() {
       if (calibrationEvidenceChanged || st.code == Err::CALIBRATION_INVALID) {
         _calibrationState = CalibrationState::INVALID;
         _humidityCalibrationValid = false;
-        _markHardwareConfigDirty(st);
         _cancelMeasurementTrackingForStateChange();
       }
-      return st.code == Err::CALIBRATION_INVALID ? _recordFailure(st) : st;
+      const Status failure = st.code == Err::CALIBRATION_INVALID
+          ? _recordFailure(st)
+          : st;
+      _markHardwareConfigDirty(failure);
+      return failure;
     }
     const bool calibrationChanged = calibrationEvidenceChanged;
 
     // Re-apply configuration: after a power glitch or external reset the
     // device registers revert to defaults and calibration registers may have
     // just been copied from NVM.
-    st = _applyConfig();
+    st = _writeSettingsAfterQuiesceSynchronously(
+        sensorSettings(), SettingsWritePlan::FULL);
     if (!st.ok()) {
       if (calibrationChanged) {
         _calibrationState = CalibrationState::INVALID;
         _humidityCalibrationValid = false;
-        _markHardwareConfigDirty(st);
         _cancelMeasurementTrackingForStateChange();
-      }
-      if (st.code == Err::BUSY) {
-        return _recordFailure(st);
       }
       return st;
     }
@@ -1065,6 +1082,12 @@ JobPollResult BME280::_failJob(const Status& st, uint8_t instructionsUsed) {
   }
   if ((_jobHardwareConfigTouched || changedDeviceStateObserved) &&
       !finalStatus.ok() && !finalStatus.inProgress()) {
+    // A provisional wait diagnostic from this job must not hide its terminal
+    // root cause. Preserve an error that predated the job, but otherwise let
+    // the terminal failure become the dirty-state evidence.
+    if (_jobPriorHardwareConfigDirtyError.ok()) {
+      _hardwareConfigDirtyError = Status::Ok();
+    }
     _markHardwareConfigDirty(finalStatus);
   } else {
     if (_jobSettingsStaged) {
@@ -1289,8 +1312,12 @@ Status BME280::cancelJob(CancelReason reason) {
   if (_jobResetMayHaveReached || changedDeviceStateObserved) {
     _calibrationState = CalibrationState::INVALID;
     _humidityCalibrationValid = false;
-    _markHardwareConfigDirty(cancellation);
-  } else if (_jobHardwareConfigTouched) {
+  }
+  if (_jobResetMayHaveReached || changedDeviceStateObserved ||
+      _jobHardwareConfigTouched) {
+    if (_jobPriorHardwareConfigDirtyError.ok()) {
+      _hardwareConfigDirtyError = Status::Ok();
+    }
     _markHardwareConfigDirty(cancellation);
   } else {
     if (_jobSettingsStaged) {
@@ -1366,7 +1393,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
               Status::Error(Err::CHIP_ID_MISMATCH, chipId),
               instructionsUsed);
         }
-        _jobPhase = JobPhase::INIT_NVM_START;
+        _jobPhase = JobPhase::APPLY_CTRL_MEAS_SLEEP;
         break;
       }
 
@@ -1465,49 +1492,15 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         _jobCalibrationChanged = _jobCalibrationChanged ||
             !_calibrationMatchesCommitted(
                 _jobCalibration, _jobHumidityCalibrationValid);
-        _jobPhase = JobPhase::APPLY_CTRL_MEAS_SLEEP;
+        _jobPhase = JobPhase::APPLY_CONFIG;
         break;
       }
 
-      case JobPhase::APPLY_WAIT_IDLE: {
-        if (instructionsUsed >= maxInstructions) {
-          return _jobResult(instructionsUsed);
-        }
-        uint8_t status = 0;
-        const Status st = readRegs(cmd::REG_STATUS, &status, 1);
-        ++instructionsUsed;
-        if (!st.ok()) {
-          return _failJob(st, instructionsUsed);
-        }
-        if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
-          if (_jobWaitPolls == 0) {
-            uint32_t waitEstimateMs = estimateMeasurementTimeMs();
-            if (_jobSettingsStaged) {
-              const uint32_t priorEstimateMs =
-                  ::BME280::estimateMeasurementTimeMs(_jobPriorSettings);
-              if (priorEstimateMs > waitEstimateMs) {
-                waitEstimateMs = priorEstimateMs;
-              }
-            }
-            _jobDeadlineMs = nowMs + waitEstimateMs +
-                             _config.conversionReadyTimeoutMs;
-            _jobDeadlineActive = true;
-          }
-          if (deadlineReached(nowMs, _jobDeadlineMs) ||
-              _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
-            return _failJob(Status::Error(Err::TIMEOUT),
-                            instructionsUsed);
-          }
-          ++_jobWaitPolls;
-          _jobState = JobState::WAITING;
-          _jobStatus = Status::Error(Err::IN_PROGRESS);
-          return _jobResult(instructionsUsed);
-        }
-        _jobWaitPolls = 0;
-        _jobDeadlineActive = false;
+      case JobPhase::APPLY_WAIT_IDLE:
+        // Retained as a public numeric value only. Legacy jobs that somehow
+        // resume here safely join the current sleep-first apply sequence.
         _jobPhase = JobPhase::APPLY_CTRL_MEAS_SLEEP;
         break;
-      }
 
       case JobPhase::APPLY_CTRL_MEAS_SLEEP: {
         if (instructionsUsed >= maxInstructions) {
@@ -1565,7 +1558,14 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         }
         _jobWaitPolls = 0;
         _jobDeadlineActive = false;
-        _jobPhase = JobPhase::APPLY_CONFIG;
+        if (_jobKind == JobKind::INIT) {
+          _jobPhase = JobPhase::INIT_NVM_START;
+        } else if (_jobKind == JobKind::RESYNC ||
+                   _jobKind == JobKind::SOFT_RESET) {
+          _jobPhase = JobPhase::RESYNC_NVM_START;
+        } else {
+          _jobPhase = JobPhase::APPLY_CONFIG;
+        }
         break;
       }
 
@@ -1813,7 +1813,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
               Status::Error(Err::CHIP_ID_MISMATCH, chipId),
               instructionsUsed);
         }
-        _jobPhase = JobPhase::RESYNC_NVM_START;
+        _jobPhase = JobPhase::APPLY_CTRL_MEAS_SLEEP;
         break;
       }
 
@@ -2660,11 +2660,18 @@ Status BME280::_writeSettingsSynchronously(const SensorSettings& settings,
     return validation;
   }
 
+  Status st = _quiesceSettingsSynchronously(settings);
+  if (!st.ok()) {
+    return st;
+  }
+
+  return _writeSettingsAfterQuiesceSynchronously(settings, plan);
+}
+
+Status BME280::_quiesceSettingsSynchronously(
+    const SensorSettings& settings) {
   const uint8_t ctrlMeasSleep =
       buildCtrlMeas(settings.osrsT, settings.osrsP, Mode::SLEEP);
-  const uint8_t ctrlMeasFinal =
-      buildCtrlMeas(settings.osrsT, settings.osrsP,
-                    registerModeForConfig(settings.mode));
 
   Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
   if (!st.ok()) {
@@ -2682,6 +2689,19 @@ Status BME280::_writeSettingsSynchronously(const SensorSettings& settings,
     _markHardwareConfigDirty(st);
     return st;
   }
+
+  return Status::Ok();
+}
+
+Status BME280::_writeSettingsAfterQuiesceSynchronously(
+    const SensorSettings& settings, SettingsWritePlan plan) {
+
+  const uint8_t ctrlMeasSleep =
+      buildCtrlMeas(settings.osrsT, settings.osrsP, Mode::SLEEP);
+  const uint8_t ctrlMeasFinal =
+      buildCtrlMeas(settings.osrsT, settings.osrsP,
+                    registerModeForConfig(settings.mode));
+  Status st = Status::Ok();
 
   const bool writeConfig = plan == SettingsWritePlan::CONFIG ||
                            plan == SettingsWritePlan::FULL;

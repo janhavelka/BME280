@@ -196,7 +196,7 @@ tracked transfer success. The counters do not wrap.
 
 ### Lifecycle
 
-- `Status begin(const Config& config)` - Reset local runtime state, initialize the driver, verify chip ID `0x60`, check NVM readiness once, read calibration, apply config, and start a new health session
+- `Status begin(const Config& config)` - Reset local runtime state, initialize the driver, verify chip ID `0x60`, request sleep and confirm idle, check NVM readiness once, read calibration, apply config, and start a new health session
 - `void tick(uint32_t nowMs)` - Process pending compatibility measurement operations; the supplied time is authoritative for this call and must share the application's monotonic timebase
 - `void end()` - Zero-I2C, idempotent unbind that clears callbacks and cached runtime state; it does not put the sensor to sleep
 - `bool isInitialized()` - True only while the current initialization session remains valid; an admitted failed `begin()` or init job clears it
@@ -206,7 +206,7 @@ tracked transfer success. The counters do not wrap.
 ### Diagnostics
 
 - `Status probe()` - Check device presence and chip ID through raw I2C without health tracking
-- `Status recover()` - Synchronous non-reset resync; verifies identity, checks NVM readiness once, reloads calibration, reapplies cached config, and invalidates cached samples on success
+- `Status recover()` - Synchronous non-reset resync; verifies identity, requests sleep and confirms idle before checking NVM readiness, reloads calibration, reapplies cached config, and invalidates cached samples on success
 - `Status invalidateDeviceState()` - Zero-I2C owner boundary for removal, hotplug, or possible device replacement; measurements remain blocked until full initialization/resync reloads identity, calibration, and configuration
 - `Status getSettings(SettingsSnapshot& out)` - Populate a snapshot of cached config and runtime state (no I2C)
 - `Status lastMeasurementStatus()` - Last measurement request, polling, raw-read, or compensation status retained because `tick()` is void
@@ -217,7 +217,7 @@ tracked transfer success. The counters do not wrap.
 - `Status startForcedMeasurementJob()` - Start a chunked forced-mode sample without I2C
 - `Status startApplyConfigJob()` - Start a cached-config apply without I2C
 - `Status startApplySettingsJob(const SensorSettings& settings)` - Validate and stage a whole typed settings update without I2C, then reuse the bounded apply job
-- `Status startResyncJob()` - Start identity verification, bounded NVM readiness, calibration reload, and config re-apply without resetting the sensor
+- `Status startResyncJob()` - Start identity verification, bounded sleep/idle and NVM readiness, calibration reload, and config re-apply without resetting the sensor
 - `Status startRecoveryJob()` - Compatibility alias for `startResyncJob()`; reports `JobKind::RESYNC` and does not reset
 - `Status startSoftResetJob()` - Start an explicit `0xE0 = 0xB6` reset followed by full resynchronization
 - `Status cancelJob(CancelReason reason)` - Cancel the active job without I2C; use `OWNER_REQUEST` or `DEADLINE_EXPIRED`
@@ -369,12 +369,15 @@ counters or clear an `OFFLINE` latch. It maps only definite address NACK to
 `DEVICE_NOT_FOUND`; other transport errors and chip-ID mismatch are returned
 unchanged.
 
-`begin()`, `recover()`, and `softReset()` check status bit `im_update` once
-when NVM readiness matters. If NVM is still busy, they return `BUSY` or
-`TIMEOUT` instead of hiding a polling loop. Transport errors from that status
-read are preserved. Owners that need repeated NVM polling without exceeding a
-per-poll callback budget should use `startInitJob()`, `startResyncJob()`, or
-`startSoftResetJob()` and advance it with `pollJob()`.
+`begin()` and `recover()` request sleep and confirm the device is idle before
+checking status bit `im_update`, so a normal-mode conversion cannot start a new
+calibration-image copy between readiness and the calibration bursts.
+`softReset()` checks the same bit after reset, when the device is already
+quiescent. If a transition or NVM copy is still busy, the synchronous paths
+return `BUSY` or `TIMEOUT` instead of hiding a polling loop. Transport errors
+from status reads are preserved. Owners that need repeated readiness polling
+without exceeding a per-poll callback budget should use `startInitJob()`,
+`startResyncJob()`, or `startSoftResetJob()` and advance it with `pollJob()`.
 
 The BME280 exposes factory calibration through read-only image registers after
 the chip copies its internal NVM following POR or reset. This library exposes
@@ -401,13 +404,13 @@ sample remains explicitly stale under its prior generation.
 
 | API | Typical I2C transactions | Notes |
 |-----|--------------------------|-------|
-| `begin()` | chip ID read, one NVM status read, calibration reads, sleep write, idle-status read, full settings writes, settings readback | Returns visible `BUSY`/`TIMEOUT` if NVM is not ready; staged init owns repeated polling |
+| `begin()` | chip ID read, sleep write, idle-status read, one NVM status read, calibration reads, full settings writes, settings readback | Quiesces first so calibration cannot race a normal-mode image copy; staged init owns repeated polling |
 | `requestMeasurement()` in forced mode | status read, `ctrl_meas` write | Returns `IN_PROGRESS` when accepted |
 | `tick()` after deadline | status read, one `0xF7..0xFE` burst read | Captures coherent pressure, temperature, and humidity ADC bytes |
 | `setMode()` / `setOversamplingT/P()` | sleep/desired `ctrl_meas` write, idle-status read, optional normal-mode restore, settings readback | Invalid settings are rejected before I2C; these setters never write `config` and therefore do not reset IIR history |
 | `setOversamplingH()` | sleep/desired `ctrl_meas` write, idle-status read, `ctrl_hum` write, `ctrl_meas` latch, settings readback | `ctrl_meas` latches humidity oversampling |
 | `setFilter()` / `setStandby()` | sleep write, idle-status read, `config` write, optional normal-mode restore, settings readback | Skips `config` and marks dirty if measuring persists after the sleep request |
-| `recover()` | chip-ID read, one NVM status read, calibration reads, sleep/idle sequence, full settings writes and readback | Non-reset compatibility helper; OFFLINE does not block it |
+| `recover()` | chip-ID read, sleep/idle sequence, one NVM status read, calibration reads, full settings writes and readback | Non-reset compatibility helper; OFFLINE does not block it |
 | `softReset()` | reset write, one NVM status read, calibration reads, sleep/idle sequence, full settings writes and readback | Marks dirty if reset succeeds but any later step fails |
 | Staged job starts / `cancelJob()` / `end()` | none | Zero-I2C state transitions |
 | `pollJob(nowMs, budget)` | at most `budget` callbacks | Zero budget still permits bounded local-only phase transitions |
@@ -426,12 +429,12 @@ All transport callbacks are synchronous and individually bounded by
 
 | API | Blocking bound |
 |-----|----------------|
-| `begin()` | A fixed sequence including one NVM status read and verified full settings apply; each transport callback receives `Config::i2cTimeoutMs` |
+| `begin()` | A fixed sleep-first sequence including one idle check, one NVM status read, and verified full settings apply; each transport callback receives `Config::i2cTimeoutMs` |
 | `probe()` | One chip-ID register read through raw I2C, bounded by `Config::i2cTimeoutMs` |
 | `requestMeasurement()` | Forced mode performs one status read and one mode write; normal mode schedules work and returns |
 | `tick()` | Before deadline: no I2C. After deadline: one status read and one `0xF7..0xFE` burst read |
 | Typed setters | Sleep/desired write, one idle-status read, only the needed settings writes, and one `0xF2..0xF5` readback |
-| `recover()` | Chip-ID read, one NVM status read, calibration reload, and verified full settings resync |
+| `recover()` | Chip-ID read, sleep/idle transition, one NVM status read, calibration reload, and verified full settings resync |
 | `softReset()` | Reset write, one NVM status read, calibration reload, and verified settings resync |
 
 Staged readiness is bounded twice: by wrap-safe chip-phase deadlines and by
@@ -622,7 +625,6 @@ python scripts/generate_version.py check
 python tools/check_release_metadata.py
 python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py tools/check_release_metadata.py
 python tools/test_run_i2c_hil_parser.py
-python tools/run_i2c_hil.py --parser-self-test
 python tools/run_i2c_hil.py --dry-run --out .pio/hil_dry_runs
 python tools/run_i2c_hil.py --dry-run --include-job-api --out .pio/hil_dry_runs
 doxygen Doxyfile

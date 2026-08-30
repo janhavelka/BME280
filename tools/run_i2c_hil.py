@@ -890,12 +890,12 @@ def build_config_matrix_commands() -> tuple[CommandSpec, ...]:
         ),
     ]
     profiles = (
-        ("mode sleep", "Profile the idle mode setter.", "mode", 0, 1, {"mode": 0}),
-        ("osrs t x2", "Exercise named temperature oversampling setter.", "temperature", 0, 1, {"osrs_t": 2}),
-        ("osrs p x2", "Exercise named pressure oversampling setter.", "pressure", 0, 1, {"osrs_t": 2, "osrs_p": 2}),
-        ("osrs h x2", "Exercise named humidity oversampling setter.", "humidity", 0, 2, {"osrs_t": 2, "osrs_p": 2, "osrs_h": 2}),
-        ("filter x2", "Exercise named filter setter while idle.", "filter", 2, 3, {"filter": 1}),
-        ("standby 250ms", "Exercise named standby setter while idle.", "standby", 2, 3, {"standby": 3}),
+        ("mode sleep", "Profile the idle mode setter.", "mode", 2, 1, {"mode": 0}),
+        ("osrs t x2", "Exercise named temperature oversampling setter.", "temperature", 2, 1, {"osrs_t": 2}),
+        ("osrs p x2", "Exercise named pressure oversampling setter.", "pressure", 2, 1, {"osrs_t": 2, "osrs_p": 2}),
+        ("osrs h x2", "Exercise named humidity oversampling setter.", "humidity", 2, 3, {"osrs_t": 2, "osrs_p": 2, "osrs_h": 2}),
+        ("filter x2", "Exercise named filter setter while idle.", "filter", 2, 2, {"filter": 1}),
+        ("standby 250ms", "Exercise named standby setter while idle.", "standby", 2, 2, {"standby": 3}),
     )
     for command, purpose, label, read_count, write_count, expected in profiles:
         specs.extend(config_matrix_xfer_profile(
@@ -1431,7 +1431,7 @@ BENCHMARK_COMMANDS: tuple[CommandSpec, ...] = (
         purpose="Mixed-operation benchmark covering reads, raw calibration, modes, filter, and standby.",
         group="benchmark",
         expected=("stress_mix summary", "Total:", "Health delta:", "Restore status: OK"),
-        completion=("Restore status:",),
+        completion=("Health delta:",),
         validators=(VALIDATOR_STRESS_MIX_ZERO_FAIL,),
         timeout_s=180.0,
         operator_check=True,
@@ -2014,15 +2014,16 @@ def build_command_sequence(args: argparse.Namespace) -> tuple[list[CommandSpec],
 
 def make_log_dir(base: pathlib.Path) -> pathlib.Path:
     stamp = dt.datetime.now().strftime("i2c_%Y%m%d_%H%M%S")
-    candidate = base / stamp
-    if not candidate.exists():
-        candidate.mkdir(parents=True)
-        return candidate
-    for idx in range(1, 1000):
-        candidate = base / f"{stamp}_{idx:03d}"
-        if not candidate.exists():
-            candidate.mkdir(parents=True)
+    base.mkdir(parents=True, exist_ok=True)
+    for idx in range(1000):
+        suffix = "" if idx == 0 else f"_{idx:03d}"
+        candidate = base / f"{stamp}{suffix}"
+        try:
+            candidate.mkdir()
             return candidate
+        except FileExistsError:
+            # Another runner may claim this name between selection and mkdir.
+            continue
     raise RuntimeError(f"could not create unique log directory under {base}")
 
 
@@ -3000,180 +3001,6 @@ def session_error_result(message: str) -> dict:
     }
 
 
-def parser_self_test() -> tuple[bool, list[str]]:
-    checks: list[tuple[str, bool]] = []
-    checks.append(("chip id parser", extract_parsed_evidence("Chip ID: 0x60").get("chip_id") == "0x60"))
-    canonical_busy = extract_parsed_evidence(
-        "  Status: BUSY (code=11, detail=5)\n  Message: BUSY\n"
-    )
-    checks.append((
-        "canonical reset BUSY parser",
-        canonical_busy.get("status_name") == "BUSY"
-        and canonical_busy.get("status_code") == ERR_BUSY_CODE
-        and canonical_busy.get("status_detail") == BUSY_REASON_NVM_UPDATE,
-    ))
-    checks.append(
-        (
-            "ctrl_meas sleep validator",
-            classify_output(
-                CommandSpec(
-                    command="reg 0xF4",
-                    purpose="self-test",
-                    expected=("Reg 0xF4 = 0x",),
-                    validators=(VALIDATOR_CTRL_MEAS_SLEEP,),
-                ),
-                "Reg 0xF4 = 0x24 (36)\n",
-                "MATCHED_COMPLETION",
-            )[0]
-            == RESULT_PASS,
-        )
-    )
-    checks.append(
-        (
-            "stress parser",
-            extract_parsed_evidence("Errors: 0\nDuration: 1234 ms\nRate: 12.34 samples/s\n").get(
-                "stress_errors"
-            )
-            == 0,
-        )
-    )
-    checks.append((
-        "configuration readback validator",
-        classify_output(
-            CommandSpec(
-                command="cfg",
-                purpose="self-test",
-                expected=("ctrl_hum", "ctrl_meas", "config", "Hardware config dirty:"),
-                expected_settings=(("osrs_t", 1), ("osrs_p", 1),
-                                   ("osrs_h", 1), ("filter", 0),
-                                   ("standby", 2)),
-            ),
-            (
-                "ctrl_hum: 0x01\nctrl_meas: 0x24\nconfig: 0x40\n"
-                "Hardware config dirty: false\n"
-            ),
-            "MATCHED_COMPLETION",
-        )[0] == RESULT_PASS,
-    ))
-    checks.append(
-        (
-            "stress_mix validator",
-            classify_output(
-                CommandSpec(
-                    command="stress_mix 7",
-                    purpose="self-test",
-                    expected=(
-                        "stress_mix summary",
-                        "Total:",
-                        "Health delta:",
-                        "Restore status: OK",
-                    ),
-                    validators=(VALIDATOR_STRESS_MIX_ZERO_FAIL,),
-                ),
-                "=== stress_mix summary ===\n"
-                "  Total: ok=7 fail=0 (100.00%)\n"
-                "  Health delta: success +7, failures +0\n"
-                "  Restore status: OK\n",
-                "MATCHED_COMPLETION",
-            )[0]
-            == RESULT_PASS,
-        )
-    )
-    checks.append(
-        (
-            "job done validator",
-            classify_output(
-                CommandSpec(
-                    command="job force 1",
-                    purpose="self-test",
-                    expected=("Job Status", "Job state: DONE", "Status: OK"),
-                    validators=(VALIDATOR_JOB_DONE_OR_FAILED,),
-                ),
-                (
-                    "=== Job Status ===\n"
-                    "Job kind: FORCED_MEASUREMENT\n"
-                    "Job state: DONE\n"
-                    "Status: OK (code=0, detail=0)\n"
-                    "Callbacks used: 1\n"
-                    "Instructions: 1\n"
-                    "Driver: READY\n"
-                    "Consecutive failures: 0\n"
-                ),
-                "MATCHED_COMPLETION",
-            )[0]
-            == RESULT_PASS,
-        )
-    )
-    checks.append(
-        (
-            "job consecutive validator",
-            classify_output(
-                CommandSpec(
-                    command="job resync 1",
-                    purpose="self-test",
-                    expected=("Job Status",),
-                    validators=(VALIDATOR_JOB_ZERO_CONSECUTIVE_FAILURES,),
-                ),
-                (
-                    "=== Job Status ===\n"
-                    "Job state: DONE\n"
-                    "Status: OK (code=0, detail=0)\n"
-                    "Callbacks used: 1\n"
-                    "Instructions: 1\n"
-                    "Driver: READY\n"
-                    "Consecutive failures: 2\n"
-                ),
-                "MATCHED_COMPLETION",
-            )[0]
-            == RESULT_FAIL,
-        )
-    )
-    checks.append(
-        (
-            "job instruction budget validator",
-            classify_output(
-                CommandSpec(
-                    command="job force 1",
-                    purpose="self-test",
-                    expected=("Job Status",),
-                    validators=(VALIDATOR_JOB_INSTRUCTION_BUDGET_RESPECTED,),
-                ),
-                (
-                    "=== Job Status ===\n"
-                    "Job state: DONE\n"
-                    "Status: OK (code=0, detail=0)\n"
-                    "Callbacks used: 2\n"
-                    "Instructions: 2\n"
-                    "Driver: READY\n"
-                    "Consecutive failures: 0\n"
-                ),
-                "MATCHED_COMPLETION",
-            )[0]
-            == RESULT_FAIL,
-        )
-    )
-    checks.append(
-        (
-            "require pass exit zero",
-            exit_code_for_verdict("PASS", argparse.Namespace(require_pass=True, fail_on_review=False)) == 0,
-        )
-    )
-    checks.append(
-        (
-            "require pass exit three",
-            exit_code_for_verdict("OPERATOR_REVIEW_REQUIRED", argparse.Namespace(require_pass=True, fail_on_review=False)) == 3,
-        )
-    )
-    checks.append(
-        (
-            "fail on review exit three",
-            exit_code_for_verdict("OPERATOR_REVIEW_REQUIRED", argparse.Namespace(require_pass=False, fail_on_review=True)) == 3,
-        )
-    )
-    failures = [name for name, ok in checks if not ok]
-    return not failures, failures
-
-
 def duration_soak_cycle_commands(args: argparse.Namespace, cycle_index: int) -> tuple[CommandSpec, ...]:
     stress_count_value = getattr(args, "soak_cycle_stress_count", 50)
     mix_count_value = getattr(args, "soak_cycle_mix_count", 70)
@@ -3199,7 +3026,7 @@ def duration_soak_cycle_commands(args: argparse.Namespace, cycle_index: int) -> 
                 "Health delta:",
                 "Restore status: OK",
             ),
-            completion=("Restore status:",),
+            completion=("Health delta:",),
             validators=(VALIDATOR_STRESS_MIX_ZERO_FAIL,),
             timeout_s=max(30.0, min(300.0, 0.4 * float(mix_count_value) + 30.0)),
             operator_check=True,
@@ -4643,7 +4470,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--reconnect-delay-s", type=parse_nonnegative_float, default=1.0, help="Delay between serial-open retry attempts.")
     parser.add_argument("--verbose", action="store_true", help="Echo transcript chunks to stdout while running.")
-    parser.add_argument("--parser-self-test", action="store_true", help="Run parser/classifier self-tests and exit.")
     parser.add_argument("--dry-run", action="store_true", help="Write planned artifacts without opening serial.")
     parser.add_argument("--commands", help="Optional newline-delimited command file.")
     parser.add_argument("--address", type=parse_address, default="0x76", help="BME280 I2C address: 0x76 or 0x77.")
@@ -4708,13 +4534,6 @@ def execution_safety_errors(args: argparse.Namespace, executable: list[CommandSp
 def main(argv: list[str] | None = None) -> int:
     runner_argv = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(runner_argv)
-    if args.parser_self_test:
-        ok, failures = parser_self_test()
-        if ok:
-            print("HIL parser self-test PASSED")
-            return 0
-        print("HIL parser self-test FAILED: " + ", ".join(failures), file=sys.stderr)
-        return 1
     if not args.dry_run and not args.port:
         print("--port is required unless --dry-run is used.", file=sys.stderr)
         return 2

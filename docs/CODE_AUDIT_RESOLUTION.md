@@ -6,6 +6,8 @@ Audit reviewed: `docs/CODE_AUDIT.md`
 
 Review baseline: `main` at `558a31f`, synchronized with `origin/main`
 
+Completed-work baseline independently re-audited: `184eee9`
+
 ## Scope and method
 
 Every item in the audit was checked against the current implementation, native
@@ -15,6 +17,49 @@ audit's proposed change was adopted only when it was both correct and the
 smallest robust solution. Where a proposal would weaken device correctness,
 break the 2.x API, add hidden I2C work, or solve an unreachable condition, the
 item was retained, deferred, or resolved differently and is recorded below.
+
+## Fresh independent re-audit of the completed work
+
+The complete 951-line audit was reread, and the completed-work commit and its
+full diff from `558a31f` were reviewed again without relying on the earlier
+summary. Three parallel read-only reviews covered core requirements and edge
+cases, tooling/examples and evidence semantics, and adversarial scope/API/test
+quality. Their findings were then checked directly against the current source,
+tests, generated command plans, and Bosch status semantics.
+
+The re-audit and its final verification confirmed six gaps in the completed
+work:
+
+1. Init and non-reset resync still checked `im_update` and read calibration
+   before quiescing a potentially normal-mode device. The unsafe proposal to
+   skip `im_update` was still rejected, but the liveness/coherency issue is now
+   fixed correctly: request sleep, confirm idle, retain the NVM gate, read
+   calibration, then apply settings. Existing staged phases were rerouted, so
+   no public enum value or worst-case callback cap changed.
+2. Six HIL typed-setter callback profiles still described the old pre-readback
+   implementation. They now assert the exact current profiles, and the parser
+   suite checks every command-to-profile mapping.
+3. Two mixed-stress plans considered `Restore status:` complete even though
+   required `Health delta:` evidence is printed later. Both now wait for the
+   final health line, with a chunked-serial regression test.
+4. The embedded `parser_self_test()` duplicated a weaker subset of the
+   maintained parser unit suite. It, its CLI flag, duplicate contract call, and
+   duplicate documentation path were removed; the larger low-value module
+   split remains deliberately deferred.
+5. Two tests named as begin/recover NVM transport-error coverage injected a
+   failure by register, so the new earlier idle-status read consumed it and
+   allowed a false-positive. They now fail the exact later callback, and assert
+   that identity and quiesce completed before the NVM status read failed.
+6. Parallel final-gate dry-runs exposed a time-of-check/time-of-use race in
+   timestamped artifact-directory creation. Allocation now validates the base
+   path once, attempts each child name atomically, and retries only a concurrent
+   child-name claim; deterministic regressions cover the race and invalid base.
+
+The re-audit also strengthened enabled-sentinel coverage for temperature and
+humidity, added warm-normal init/resync and caller-retry regressions, removed
+the unreachable duplicate `APPLY_WAIT_IDLE` polling body while retaining its
+public numeric enum value, and made a staged job's terminal root cause replace
+only provisional dirty evidence created by that same job.
 
 ## Findings A-G: fixes already present at the review baseline
 
@@ -32,12 +77,12 @@ item was retained, deferred, or resolved differently and is recorded below.
 
 | Finding | Assessment and action |
 | --- | --- |
-| 1. Skipped-channel sentinels | **Valid; fixed with a simpler rule.** Bosch's disabled-channel sentinel values are also valid ADC codes when a channel is enabled. Sample validity now follows the configured oversampling selection. No conditional register read was added: that would create a surprising extra callback and violate staged callback budgeting. Defensive compensation guards remain. Tests cover the legitimate sentinel-shaped raw values and actually skipped channels. |
+| 1. Skipped-channel sentinels | **Valid; fixed with a simpler rule.** Bosch's disabled-channel sentinel values are also valid ADC codes when a channel is enabled. Sample validity now follows the configured oversampling selection. No conditional register read was added: that would create a surprising extra callback and violate staged callback budgeting. Defensive compensation guards remain. Tests cover enabled pressure, temperature, and humidity sentinel-shaped values plus actually skipped channels. |
 | 2. Multi-byte register writes | **Valid; fixed.** BME280 I2C writes do not auto-increment across register addresses. Multi-register writes are encoded as repeated address/value pairs in a bounded stack buffer. Single-register writes keep their existing transaction. The fake bus now models pair decoding strictly, and tests check exact payloads and malformed writes. |
-| 3. `im_update` outside reset | **Observation valid; proposed change rejected.** `im_update` means the calibration image is actively being copied, irrespective of why it is observed. Reading calibration while it is set can cache torn coefficients. The bounded synchronous and staged readiness gates therefore remain. They return observable `BUSY`/`TIMEOUT` rather than polling without bound. |
-| 4. Apply while measuring | **Valid; fixed.** The driver issues the legal sleep request first and then performs a one-shot idle check before applying sleep-only settings. If the queued transition is not complete it returns `BUSY` for caller-directed retry, so repeated calls can make progress. The staged path starts with the same sleep transition. |
+| 3. `im_update` outside reset | **Observation valid; fixed with a safer solution than proposed.** Skipping the gate could cache torn calibration while the image is being copied. Synchronous begin/recover and staged init/resync now request sleep and confirm idle before the retained bounded `im_update` gate and calibration bursts. This prevents normal-mode pulses from causing a liveness loop or racing calibration, while stuck NVM copy still reports observable `BUSY`/`TIMEOUT`. Warm-normal regressions cover all four paths. |
+| 4. Apply while measuring | **Valid; fixed.** The driver issues the legal sleep request first and then checks idle before sleep-only work. If a synchronous queued transition is incomplete it returns `BUSY` for caller-directed retry; tests prove a later retry succeeds and clears dirty state. Staged jobs poll the same transition within their callback/deadline bounds. |
 | 5. Lost `ctrl_hum` write | **Valid; fixed.** Individual setters use the same ordered sequence as whole-settings application, so `ctrl_hum` is always latched by the required following `ctrl_meas` write. |
-| 6. Four duplicated sequences | **Valid, but the proposed always-write-full-tuple helper and late cache exposure were unnecessarily disruptive.** One shared selective apply engine now owns ordering, verification, and the documented cache/dirty transitions. It writes only the groups required by the requested change, avoiding needless `config` writes that reset IIR history. Staged jobs retain the 2.x contract: desired settings are observable while active and remain the recovery target after a touched failure; the explicit dirty state prevents them from being mistaken for verified hardware state. |
+| 6. Four duplicated sequences | **Valid, but the proposed always-write-full-tuple helper and late cache exposure were unnecessarily disruptive.** One shared selective apply engine now owns ordering, verification, and the documented cache/dirty transitions. It writes only the groups required by the requested change, avoiding needless `config` writes that reset IIR history. The re-audit split synchronous quiesce from post-quiesce writes so calibration can safely occur between them, and deleted the unreachable duplicate legacy wait body. Staged jobs retain the 2.x desired-settings contract. |
 | 7. No configuration readback | **Valid; fixed.** A single `0xF2..0xF5` read verifies the owned bits after application. Reserved/status bits are ignored; the requested `ctrl_meas` mode is verified exactly. A mismatch preserves the original evidence in `Status::detail`, marks configuration dirty, returns `RESYNC_REQUIRED`, and has a distinct staged `APPLY_VERIFY` phase appended without renumbering existing phases. Transport failures remain distinguishable. |
 | 8. Normal freshness tolerance | **Valid; fixed.** The private freshness budget includes Bosch's maximum standby tolerance (+25%, rounded up). Public timing accessors continue to report nominal configured timing. |
 | 9. Discarded diagnostic messages | **Valid as an internal cleanup, overstated as an API defect.** Unused internal message arguments were removed where practical. The public message-bearing `Status` construction/overload remains for 2.x source compatibility and still stores only library-owned canonical static message text. |
@@ -61,11 +106,11 @@ item was retained, deferred, or resolved differently and is recorded below.
 | --- | --- |
 | 14. Classification on truncated output | **Valid latent risk; fixed without retaining a second unbounded transcript.** Recovery classification now consumes structured parsed evidence, including driver state and hardware-dirty status. CSV and manifest behavior remains bounded, and regression coverage uses relevant evidence beyond the former 1,000-character tail. |
 | 15. Job budget parser | **Parser defect valid, current result impact overstated; fixed.** Non-numeric verbs such as start/cancel/status are now recognized semantically as zero-callback operations. Existing row validators still enforce actual callback usage. |
-| 16. `output_has_expected()` semantics | **Valid; fixed and renamed around completion evidence.** Explicit completion tokens govern read termination when supplied; otherwise `expected`/`expected_any` provide that evidence. Early idle handling now requires the applicable completion evidence, closing the reset-command gap, while final classification still independently enforces expected output. |
+| 16. `output_has_expected()` semantics | **Valid; fixed and renamed around completion evidence.** Explicit completion tokens govern read termination when supplied; otherwise `expected`/`expected_any` provide that evidence. Early idle handling now requires the applicable completion evidence, closing the reset-command gap, while final classification still independently enforces expected output. The re-audit also corrected both `stress_mix` plans to wait for the final required health line rather than the earlier restore line. |
 | 17. `SKIPPED_UNSAFE` verdict | **Proposed behavior change rejected.** The state is emitted only during dry-run planning, whose verdict is already `INCOMPLETE`; it is unreachable in a live final verdict. Treating it as a new live failure would add dead policy. |
 | 18. Checkout-directory-dependent IDF component | **Valid; fixed more simply.** The special ESP-IDF `main` component automatically depends on discovered components, so its hard-coded `REQUIRES BME280` entry was removed while explicit ESP-IDF dependencies remain. The contract checker prevents its reintroduction. |
 | 19. Native stubs | **Both valid gaps fixed.** The fake sensor decodes repeated address/value writes rather than imaginary auto-increment writes. The Arduino Wire stub exposes the platform's `I2C_BUFFER_LENGTH` (128 for the pinned Arduino-ESP32 core), the example adapter uses that bound, and boundary tests cover 128/129-byte requests. |
-| 20. Monolithic HIL runner | **Design debt confirmed; split deferred.** The file's command grammar, parser, live state machine, recovery, and reporting are tightly coupled and extensively tested. A module split mixed into protocol fixes would add regression risk without changing behavior. The self-test remains a standalone supported entry point; one genuinely dead duration helper was removed. |
+| 20. Monolithic HIL runner | **Design debt confirmed; broad split deferred, simple deletions completed.** Moving tightly coupled plan/parser/live/reporting sections would add behavior-neutral risk to this correctness pass. The genuinely dead duration helper and the redundant 174-line embedded parser self-test were removed. `tools/test_run_i2c_hil_parser.py` is now the single maintained parser/classifier verification path. |
 
 ### Finding 21: minor example and tooling items
 
@@ -98,8 +143,8 @@ deleted.
 
 The integrated change set passed:
 
-- 189/189 native Unity tests through `scripts/pio.cmd`;
-- 85/85 HIL parser unit tests and the standalone parser self-test;
+- 191/191 native Unity tests through `scripts/pio.cmd`;
+- 87/87 HIL parser/tooling unit tests;
 - core timing, CLI, HIL, ESP-IDF example, release-metadata, version-sync, and
   package-content contract checks;
 - Python bytecode compilation for the maintained HIL/release tools;

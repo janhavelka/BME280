@@ -93,9 +93,11 @@ The native IDF adapter uses the modern ESP-IDF I2C master driver:
 - Preserve transport error detail: map address NACK to optional absence only at
   chip-ID presence checks, and keep timeout/bus/data NACK faults distinct.
 - `Config::nvmReadyTimeoutMs` controls the visible NVM-ready deadline after POR
-  or reset. Synchronous checks perform one status-register transaction per call
-  and return `BUSY`, `TIMEOUT`, or the detailed transport error; staged jobs
-  poll NVM readiness through `pollJob()` with a fixed 255-status-callback cap.
+  or reset. Init and non-reset resync request sleep and confirm idle before the
+  NVM check and calibration reads. Synchronous checks perform one NVM-status
+  transaction per call and return `BUSY`, `TIMEOUT`, or the detailed transport
+  error; staged jobs poll through `pollJob()` with a fixed
+  255-NVM-status-callback cap.
   The library exposes no writable-NVM or factory-programming API.
 - Use `startResyncJob()` for non-reset cooperative identity/calibration/config
   resynchronization. `startRecoveryJob()` is its compatibility alias. Use

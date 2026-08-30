@@ -157,7 +157,7 @@ comparisons are not release requirements and are not claimed by this ledger.
 2. Record the setup fields below. Do not infer wiring or electrical facts from
    a successful I2C exchange.
 3. Build and flash the diagnostic CLI that matches the connected target.
-4. Run the parser self-test and a dry run.
+4. Run the parser unit suite and a dry run.
 5. Run the serial plan with setup metadata and `--include-job-api` for the
    staged v2 API.
 6. Review `summary.md`, `results.csv`, `operator_checklist.md`, the transcript,
@@ -199,7 +199,7 @@ idf.py -C examples/idf/basic -p <PORT> flash monitor
 Verify the runner before hardware access:
 
 ```powershell
-python tools/run_i2c_hil.py --parser-self-test
+python tools/test_run_i2c_hil_parser.py
 python tools/run_i2c_hil.py --dry-run --include-job-api `
   --include-config-matrix --include-invalid-inputs --include-benchmarks `
   --include-normal-soak --normal-soak-count 10 --soak-duration-s 3700 `

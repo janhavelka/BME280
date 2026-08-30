@@ -230,8 +230,8 @@ def validate_optional_plans(runner) -> None:
         "filter x2",
         "standby 250ms",
         "settings set sleep x1 x1 x1 off ms_125",
-        "xfer_assert 0 1 1",
-        "xfer_assert 0 2 2",
+        "xfer_assert 2 1 3",
+        "xfer_assert 2 2 4",
         "xfer_assert 2 3 5",
         "xfer_assert 2 4 6",
     }
@@ -389,9 +389,6 @@ def main() -> int:
             fail(f"missing required file: {path.relative_to(ROOT)}")
     py_compile.compile(str(RUNNER), doraise=True)
     runner = load_runner()
-    parser_ok, parser_failures = runner.parser_self_test()
-    if not parser_ok:
-        fail("runner parser self-test failed: " + ", ".join(parser_failures))
 
     validation_text = read(VALIDATION)
     validate_default_plan(runner, validation_text)
