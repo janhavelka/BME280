@@ -42,11 +42,14 @@ constexpr size_t HELP_COMMAND_WIDTH = 32U;
 constexpr uint8_t BME280_DEFAULT_ADDR = 0x76;
 constexpr uint32_t I2C_TIMEOUT_MS = 50;
 constexpr uint32_t CLI_TICK_MS = 5;
-constexpr size_t CLI_LINE_LEN = 160U;
+constexpr size_t CLI_INPUT_MAX_LEN = 127U;
+constexpr size_t CLI_LINE_LEN = CLI_INPUT_MAX_LEN + 2U;
+static_assert(CLI_LINE_LEN == 129U, "CLI line buffer contract changed");
 constexpr int CLI_QUEUE_DEPTH = 4;
 constexpr uint32_t DEFAULT_STRESS_COUNT = 10U;
 constexpr uint32_t DEFAULT_STRESS_MIX_COUNT = 50U;
 constexpr uint32_t MAX_STRESS_COUNT = 100000U;
+constexpr uint32_t STRESS_PROGRESS_UPDATES = 10U;
 constexpr uint8_t JOB_CLI_DEFAULT_BUDGET = 1U;
 constexpr uint8_t JOB_CLI_MAX_BUDGET = 8U;
 constexpr uint16_t JOB_CLI_MAX_POLLS = 1024U;
@@ -232,6 +235,37 @@ const char* successRateColor(float pct) {
   if (pct >= 99.9f) return LOG_COLOR_GREEN;
   if (pct >= 80.0f) return LOG_COLOR_YELLOW;
   return LOG_COLOR_RED;
+}
+
+uint32_t stressProgressStep(uint32_t total) {
+  if (total == 0U) {
+    return 0U;
+  }
+  const uint32_t step = total / STRESS_PROGRESS_UPDATES;
+  return (step == 0U) ? 1U : step;
+}
+
+void printStressProgress(uint32_t completed, uint32_t total,
+                         uint32_t okCount, uint32_t failCount) {
+  if (completed == 0U || total == 0U) {
+    return;
+  }
+  const uint32_t step = stressProgressStep(total);
+  if (step == 0U || (completed != total && (completed % step) != 0U)) {
+    return;
+  }
+  const float pct =
+      (100.0f * static_cast<float>(completed)) / static_cast<float>(total);
+  std::printf("  Progress: %lu/%lu (%.0f%%, ok=%s%lu%s, fail=%s%lu%s)\n",
+              static_cast<unsigned long>(completed),
+              static_cast<unsigned long>(total),
+              pct,
+              nonZeroGoodColor(okCount),
+              static_cast<unsigned long>(okCount),
+              LOG_COLOR_RESET,
+              zeroGoodColor(failCount),
+              static_cast<unsigned long>(failCount),
+              LOG_COLOR_RESET);
 }
 
 char* trim(char* value) {
@@ -1509,6 +1543,10 @@ void handleMeasurementReady() {
       if (gStressRemaining > 0) {
         --gStressRemaining;
       }
+      printStressProgress(static_cast<uint32_t>(gStress.attempts),
+                          static_cast<uint32_t>(gStress.target),
+                          static_cast<uint32_t>(gStress.success),
+                          gStress.errors);
       if (gStressRemaining == 0) {
         finishStressStats();
       }
@@ -1527,6 +1565,10 @@ void handleMeasurementReady() {
       if (gStressRemaining > 0) {
         --gStressRemaining;
       }
+      printStressProgress(static_cast<uint32_t>(gStress.attempts),
+                          static_cast<uint32_t>(gStress.target),
+                          static_cast<uint32_t>(gStress.success),
+                          gStress.errors);
       if (gStressRemaining == 0) {
         finishStressStats();
       }
@@ -1541,6 +1583,10 @@ void handleMeasurementReady() {
     if (gStressRemaining > 0) {
       --gStressRemaining;
     }
+    printStressProgress(static_cast<uint32_t>(gStress.attempts),
+                        static_cast<uint32_t>(gStress.target),
+                        static_cast<uint32_t>(gStress.success),
+                        gStress.errors);
     if (gStressRemaining == 0) {
       finishStressStats();
     }
@@ -1704,6 +1750,10 @@ void runStressMix(int count) {
                     errToStr(st.code));
       }
     }
+    printStressProgress(static_cast<uint32_t>(i + 1),
+                        static_cast<uint32_t>(count),
+                        okTotal,
+                        failTotal);
     vTaskDelay(delayTicksAtLeastOne(1U));
   }
 
@@ -2525,6 +2575,10 @@ void tickApp() {
       noteStressError(st);
       ++gStress.attempts;
       --gStressRemaining;
+      printStressProgress(static_cast<uint32_t>(gStress.attempts),
+                          static_cast<uint32_t>(gStress.target),
+                          static_cast<uint32_t>(gStress.success),
+                          gStress.errors);
       if (gStressRemaining == 0) {
         finishStressStats();
       }

@@ -85,7 +85,7 @@ class HilCalibClassificationTest(unittest.TestCase):
             "  Plausibility: PASS (T1/P1 nonzero, humidity coeffs not all zero)\n"
         )
 
-        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_COMPLETION")
 
         self.assertEqual(run_i2c_hil.RESULT_PASS, result)
         self.assertIn("Matched expected serial tokens", reason)
@@ -102,11 +102,11 @@ class HilCalibClassificationTest(unittest.TestCase):
         partial = "".join(chunks[:-1])
         complete = "".join(chunks)
 
-        self.assertFalse(run_i2c_hil.output_has_expected(spec, partial))
-        self.assertTrue(run_i2c_hil.output_has_expected(spec, complete))
+        self.assertFalse(run_i2c_hil.output_is_complete(spec, partial))
+        self.assertTrue(run_i2c_hil.output_is_complete(spec, complete))
         self.assertEqual(
             run_i2c_hil.RESULT_PASS,
-            run_i2c_hil.classify_output(spec, complete, "MATCHED_EXPECTED")[0],
+            run_i2c_hil.classify_output(spec, complete, "MATCHED_COMPLETION")[0],
         )
 
     def test_truncated_calib_output_times_out(self) -> None:
@@ -130,7 +130,7 @@ class HilCalibClassificationTest(unittest.TestCase):
             "[E] I2C_TIMEOUT\n"
         )
 
-        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_COMPLETION")
 
         self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
         self.assertIn("I2C_TIMEOUT", reason)
@@ -163,8 +163,8 @@ class HilCalibClassificationTest(unittest.TestCase):
             + "  Hardware config dirty: false\n"
         )
 
-        self.assertFalse(run_i2c_hil.output_has_expected(spec, partial))
-        self.assertTrue(run_i2c_hil.output_has_expected(spec, complete))
+        self.assertFalse(run_i2c_hil.output_is_complete(spec, partial))
+        self.assertTrue(run_i2c_hil.output_is_complete(spec, complete))
         self.assertEqual(
             run_i2c_hil.RESULT_TIMEOUT,
             run_i2c_hil.classify_output(spec, partial, run_i2c_hil.RESULT_TIMEOUT)[0],
@@ -208,7 +208,7 @@ class HilCalibClassificationTest(unittest.TestCase):
             "  Restore status: OK\n"
         )
 
-        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_COMPLETION")
         evidence = run_i2c_hil.extract_parsed_evidence(output)
 
         self.assertEqual(run_i2c_hil.RESULT_PASS, result)
@@ -233,7 +233,7 @@ class HilCalibClassificationTest(unittest.TestCase):
             "  Restore status: OK\n"
         )
 
-        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_COMPLETION")
 
         self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
         self.assertIn("fail=1", reason)
@@ -252,10 +252,10 @@ class HilCalibClassificationTest(unittest.TestCase):
         )
 
         missing, missing_reason = run_i2c_hil.classify_output(
-            spec, prefix, "MATCHED_EXPECTED"
+            spec, prefix, "MATCHED_COMPLETION"
         )
         failed, failed_reason = run_i2c_hil.classify_output(
-            spec, prefix + "  Restore status: I2C_TIMEOUT\n", "MATCHED_EXPECTED"
+            spec, prefix + "  Restore status: I2C_TIMEOUT\n", "MATCHED_COMPLETION"
         )
 
         self.assertEqual(run_i2c_hil.RESULT_REVIEW, missing)
@@ -275,7 +275,7 @@ class HilCalibClassificationTest(unittest.TestCase):
         )
 
         result, reason = run_i2c_hil.classify_output(
-            spec, output, "MATCHED_EXPECTED"
+            spec, output, "MATCHED_COMPLETION"
         )
 
         self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
@@ -288,12 +288,13 @@ class HilCalibClassificationTest(unittest.TestCase):
             "  Message: BUSY\n"
         )
 
-        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_COMPLETION")
 
         self.assertEqual(run_i2c_hil.RESULT_UNKNOWN, result)
         self.assertIn("Status: BUSY", reason)
 
-    def test_recovered_reset_busy_reclassifies_to_controlled_pass(self) -> None:
+    def test_recovered_reset_busy_uses_parsed_evidence_beyond_excerpt(self) -> None:
+        omitted_tail = "x" * 1200
         results = [
             {
                 "command": "reset",
@@ -309,15 +310,21 @@ class HilCalibClassificationTest(unittest.TestCase):
                 "command": "recover",
                 "group": "soak-duration",
                 "serial_result": run_i2c_hil.RESULT_PASS,
-                "parsed_evidence": {},
-                "output_excerpt": "Status: OK (code=0, detail=0)\n",
+                "parsed_evidence": run_i2c_hil.extract_parsed_evidence(
+                    "Status: OK (code=0, detail=0)\n" + omitted_tail
+                ),
+                "output_excerpt": omitted_tail[-1000:],
             },
             {
                 "command": "status",
                 "group": "soak-duration",
                 "serial_result": run_i2c_hil.RESULT_PASS,
-                "parsed_evidence": {"measuring": 0, "im_update": 0},
-                "output_excerpt": "Status: 0x00 (measuring=0, im_update=0)\nDriver: state=READY online=true dirty=false\n",
+                "parsed_evidence": run_i2c_hil.extract_parsed_evidence(
+                    "Status: 0x00 (measuring=0, im_update=0)\n"
+                    "Driver: state=READY online=true dirty=false\n"
+                    + omitted_tail
+                ),
+                "output_excerpt": omitted_tail[-1000:],
             },
         ]
 
@@ -326,6 +333,48 @@ class HilCalibClassificationTest(unittest.TestCase):
         self.assertEqual(1, count)
         self.assertEqual(run_i2c_hil.RESULT_RESET_BUSY_RECOVERED, results[0]["serial_result"])
         self.assertIn("immediate follow-up", results[0]["classification_reason"])
+        self.assertNotIn("Status:", results[1]["output_excerpt"])
+        self.assertNotIn("Driver:", results[2]["output_excerpt"])
+
+    def test_fixed_reset_recovery_proof_uses_only_parsed_evidence(self) -> None:
+        omitted_tail = "y" * 1200
+
+        def row(command: str, output: str, result: str = run_i2c_hil.RESULT_PASS) -> dict:
+            return {
+                "command": command,
+                "group": "reset-recover",
+                "serial_result": result,
+                "parsed_evidence": run_i2c_hil.extract_parsed_evidence(
+                    output + omitted_tail
+                ),
+                "output_excerpt": omitted_tail[-1000:],
+            }
+
+        results = [
+            row(
+                "reset",
+                "Status: BUSY (code=11, detail=5)\nMessage: BUSY\n",
+                run_i2c_hil.RESULT_UNKNOWN,
+            ),
+            row("status", "Status: 0x00 (measuring=0, im_update=0)\n"),
+            row("recover", "Status: OK (code=0, detail=0)\n"),
+            row(
+                "cfg",
+                "ctrl_hum: 0x01\nctrl_meas: 0x24\nconfig: 0x40\n",
+            ),
+            row(
+                "status",
+                "Status: 0x00 (measuring=0, im_update=0)\n"
+                "Driver: state=READY online=true dirty=false\n",
+            ),
+        ]
+
+        self.assertEqual(1, run_i2c_hil.reclassify_recovered_reset_busy(results))
+        self.assertEqual(
+            run_i2c_hil.RESULT_RESET_BUSY_RECOVERED,
+            results[0]["serial_result"],
+        )
+        self.assertTrue(all(len(item["output_excerpt"]) == 1000 for item in results))
 
     def test_reset_busy_stays_unknown_without_clean_ready_status(self) -> None:
         results = [
@@ -343,14 +392,19 @@ class HilCalibClassificationTest(unittest.TestCase):
                 "command": "recover",
                 "group": "soak-duration",
                 "serial_result": run_i2c_hil.RESULT_PASS,
-                "parsed_evidence": {},
+                "parsed_evidence": run_i2c_hil.extract_parsed_evidence(
+                    "Status: OK (code=0, detail=0)\n"
+                ),
                 "output_excerpt": "Status: OK (code=0, detail=0)\n",
             },
             {
                 "command": "status",
                 "group": "soak-duration",
                 "serial_result": run_i2c_hil.RESULT_PASS,
-                "parsed_evidence": {"measuring": 0, "im_update": 1},
+                "parsed_evidence": run_i2c_hil.extract_parsed_evidence(
+                    "Status: 0x01 (measuring=0, im_update=1)\n"
+                    "Driver: state=READY online=true dirty=false\n"
+                ),
                 "output_excerpt": "Status: 0x01 (measuring=0, im_update=1)\nDriver: state=READY online=true dirty=false\n",
             },
         ]
@@ -545,7 +599,7 @@ class HilCalibClassificationTest(unittest.TestCase):
             "Consecutive failures: 0\n"
         )
 
-        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_COMPLETION")
 
         self.assertEqual(run_i2c_hil.RESULT_PASS, result)
         self.assertIn("job state=DONE", reason)
@@ -567,7 +621,7 @@ class HilCalibClassificationTest(unittest.TestCase):
             "Consecutive failures: 1\n"
         )
 
-        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_COMPLETION")
 
         self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
         self.assertIn("consecutive failures=1", reason)
@@ -589,10 +643,28 @@ class HilCalibClassificationTest(unittest.TestCase):
             "Consecutive failures: 0\n"
         )
 
-        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+        result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_COMPLETION")
 
         self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
         self.assertIn("budget was 1", reason)
+
+    def test_job_command_budget_is_verb_aware(self) -> None:
+        for command in (
+            "job start init",
+            "job cancel owner",
+            "job cancel deadline",
+            "job status",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(0, run_i2c_hil.job_command_budget(command))
+
+        self.assertEqual(0, run_i2c_hil.job_command_budget("job poll 0"))
+        self.assertEqual(1, run_i2c_hil.job_command_budget("job poll 1"))
+        self.assertEqual(3, run_i2c_hil.job_command_budget("job force 3"))
+        self.assertEqual(
+            run_i2c_hil.JOB_CLI_DEFAULT_BUDGET,
+            run_i2c_hil.job_command_budget("job force malformed"),
+        )
 
     def test_staged_cancel_zero_budget_exactly_once_fixtures(self) -> None:
         cases = (
@@ -662,7 +734,7 @@ class HilCalibClassificationTest(unittest.TestCase):
                     expected=("Job Status",),
                     validators=validators,
                 )
-                result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_EXPECTED")
+                result, reason = run_i2c_hil.classify_output(spec, output, "MATCHED_COMPLETION")
                 self.assertEqual(run_i2c_hil.RESULT_PASS, result, reason)
 
     def test_staged_cancel_sequence_correlates_identity_and_terminal(self) -> None:
@@ -818,7 +890,7 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             spec,
             "XFER_ASSERT FAIL expected_read=1 expected_write=0 expected_total=1 "
             "actual_read=2 actual_write=0 actual_total=2\n",
-            "MATCHED_EXPECTED",
+            "MATCHED_COMPLETION",
         )
 
         self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
@@ -830,7 +902,7 @@ class HilEvidenceHardeningTest(unittest.TestCase):
         )
 
         result, _ = run_i2c_hil.classify_output(
-            spec, "Status: INVALID_PARAM (code=2, detail=0)\n", "MATCHED_EXPECTED"
+            spec, "Status: INVALID_PARAM (code=2, detail=0)\n", "MATCHED_COMPLETION"
         )
         self.assertEqual(run_i2c_hil.RESULT_PASS, result)
 
@@ -839,7 +911,7 @@ class HilEvidenceHardeningTest(unittest.TestCase):
                 result, _ = run_i2c_hil.classify_output(
                     spec,
                     "Status: INVALID_PARAM (code=2, detail=0)\n" + extra,
-                    "MATCHED_EXPECTED",
+                    "MATCHED_COMPLETION",
                 )
                 self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
 
@@ -950,15 +1022,6 @@ class HilEvidenceHardeningTest(unittest.TestCase):
         self.assertEqual(2, count)
         self.assertEqual(run_i2c_hil.RESULT_REVIEW, rows[0]["serial_result"])
 
-    def test_duration_row_requires_its_full_timeout_window(self) -> None:
-        args = run_i2c_hil.parse_args(["--dry-run"])
-        spec = run_i2c_hil.CommandSpec(
-            command="stress 50", purpose="soak", timeout_s=55.0
-        )
-
-        self.assertFalse(run_i2c_hil.duration_command_fits(54.999, spec, args))
-        self.assertTrue(run_i2c_hil.duration_command_fits(55.0, spec, args))
-
     def test_config_matrix_restores_forced_policy(self) -> None:
         args = run_i2c_hil.parse_args(["--dry-run", "--include-config-matrix"])
         executable, _ = run_i2c_hil.build_command_sequence(args)
@@ -1035,7 +1098,7 @@ class HilEvidenceHardeningTest(unittest.TestCase):
         )
 
         result, reason = run_i2c_hil.classify_output(
-            spec, output, "MATCHED_EXPECTED"
+            spec, output, "MATCHED_COMPLETION"
         )
         self.assertEqual(run_i2c_hil.RESULT_PASS, result)
         self.assertIn("standby=7", reason)
@@ -1044,7 +1107,7 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             spec, expected_settings=(("filter", 3),)
         )
         result, reason = run_i2c_hil.classify_output(
-            mismatch, output, "MATCHED_EXPECTED"
+            mismatch, output, "MATCHED_COMPLETION"
         )
         self.assertEqual(run_i2c_hil.RESULT_FAIL, result)
         self.assertIn("filter=4, expected 3", reason)
@@ -1164,7 +1227,7 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             "command": "version",
             "group": "serial-reconnect",
             "serial_result": run_i2c_hil.RESULT_PASS,
-            "completion": "MATCHED_EXPECTED",
+            "completion": "MATCHED_COMPLETION",
             "classification_reason": "matched",
             "parsed_evidence": self.firmware_identity_values(),
         }
@@ -1193,6 +1256,29 @@ class HilEvidenceHardeningTest(unittest.TestCase):
         self.assertEqual("version", run.call_args.args[1].command)
         self.assertEqual(0.0, run.call_args.kwargs["command_pacing_s"])
 
+    def test_zero_reconnect_budget_leaves_serial_handle_untouched(self) -> None:
+        args = run_i2c_hil.parse_args([
+            "--dry-run", "--reconnect-attempts", "0",
+        ])
+        serial = mock.Mock()
+
+        outcome = run_i2c_hil.reconnect_serial_in_place(
+            serial,
+            io.StringIO(),
+            args,
+            max_attempts=0,
+            expected_identity=self.firmware_identity_values(),
+            probe_timeout_s=5.0,
+        )
+
+        self.assertFalse(outcome.recovered)
+        self.assertEqual(0, outcome.attempts)
+        self.assertEqual(0.0, outcome.downtime_s)
+        self.assertEqual([], outcome.rows)
+        self.assertEqual("reconnect attempt budget is zero", outcome.reason)
+        serial.close.assert_not_called()
+        serial.open.assert_not_called()
+
     def test_reconnect_rejects_different_full_firmware_identity(self) -> None:
         args = run_i2c_hil.parse_args([
             "--dry-run", "--reconnect-delay-s", "0", "--boot-settle-s", "0",
@@ -1201,7 +1287,7 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             "command": "version",
             "group": "serial-reconnect",
             "serial_result": run_i2c_hil.RESULT_PASS,
-            "completion": "MATCHED_EXPECTED",
+            "completion": "MATCHED_COMPLETION",
             "classification_reason": "matched labels",
             "parsed_evidence": self.firmware_identity_values("-different"),
         }
@@ -1246,7 +1332,7 @@ class HilEvidenceHardeningTest(unittest.TestCase):
             "group": "serial-reconnect",
             "serial_result": run_i2c_hil.RESULT_PASS,
             "operator_result": "",
-            "completion": "MATCHED_EXPECTED",
+            "completion": "MATCHED_COMPLETION",
             "classification_reason": "matched",
             "parsed_evidence": self.firmware_identity_values(),
         }
@@ -1528,6 +1614,41 @@ class HilEvidenceHardeningTest(unittest.TestCase):
                 )
                 self.assertFalse(row["command_sent"])
                 serial.write.assert_not_called()
+
+    def test_reset_waits_for_expected_any_completion_after_partial_output(self) -> None:
+        class ChunkedSerial:
+            def __init__(self) -> None:
+                self.chunks = [
+                    b"Reset requested; waiting for result\n",
+                    b"Status: OK (code=0, detail=0)\n",
+                ]
+
+            @property
+            def in_waiting(self) -> int:
+                return len(self.chunks[0]) if self.chunks else 0
+
+            def write(self, payload: bytes) -> int:
+                return len(payload)
+
+            def read(self, _size: int) -> bytes:
+                return self.chunks.pop(0) if self.chunks else b""
+
+        spec = next(
+            item for item in run_i2c_hil.BASE_COMMANDS
+            if item.command == "reset"
+        )
+        row = run_i2c_hil.run_serial_command(
+            ChunkedSerial(),
+            spec,
+            io.StringIO(),
+            timeout_s=1.0,
+            idle_after_output_s=0.0,
+            idle_after_match_s=0.0,
+        )
+
+        self.assertEqual(run_i2c_hil.RESULT_PASS, row["serial_result"])
+        self.assertEqual("MATCHED_COMPLETION", row["completion"])
+        self.assertIn("Status: OK", row["output_excerpt"])
 
     def test_serial_read_exception_preserves_partial_output_and_send_state(self) -> None:
         class PartialSerial:

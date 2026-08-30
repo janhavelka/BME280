@@ -170,7 +170,7 @@ enum class JobPhase : uint8_t {
   CALIB_TP,                ///< Temperature/pressure calibration burst read
   CALIB_H,                 ///< Humidity calibration burst read
   VALIDATE_CALIBRATION,    ///< Local-only calibration validation and commit
-  APPLY_WAIT_IDLE,         ///< Wait for an existing conversion before settings apply
+  APPLY_WAIT_IDLE,         ///< Legacy pre-wait phase retained for numeric compatibility
   APPLY_CTRL_MEAS_SLEEP,   ///< Request sleep before changing configuration
   APPLY_WAIT_AFTER_SLEEP,  ///< Verify the device is idle after the sleep request
   APPLY_CONFIG,            ///< Write filter and standby settings
@@ -185,7 +185,8 @@ enum class JobPhase : uint8_t {
   SOFT_RESET_WRITE,        ///< Explicit soft-reset register write
   RESYNC_READ_CHIP_ID,     ///< Non-reset identity verification
   RESYNC_NVM_START,        ///< Resynchronization NVM deadline setup
-  COMPLETE                 ///< Local-only successful terminal transition
+  COMPLETE,                ///< Local-only successful terminal transition
+  APPLY_VERIFY             ///< Read back and verify all driver-owned settings
 };
 
 /// Return the canonical string for a staged job phase.
@@ -217,6 +218,7 @@ constexpr const char* toString(JobPhase value) {
     case JobPhase::RESYNC_READ_CHIP_ID: return "RESYNC_READ_CHIP_ID";
     case JobPhase::RESYNC_NVM_START: return "RESYNC_NVM_START";
     case JobPhase::COMPLETE: return "COMPLETE";
+    case JobPhase::APPLY_VERIFY: return "APPLY_VERIFY";
     default: return "UNKNOWN_JOB_PHASE";
   }
 }
@@ -506,7 +508,8 @@ public:
 
   /// Return the compact cached sensor settings without accessing I2C.
   /// During startApplySettingsJob(), this reports the staged desired settings;
-  /// an untouched failed/cancelled apply restores the prior snapshot.
+  /// an untouched failed/cancelled apply restores the prior snapshot, while a
+  /// touched failure retains the desired snapshot with RESYNC_REQUIRED.
   /// @return Current cached sensor settings by value
   SensorSettings sensorSettings() const;
 
@@ -537,9 +540,9 @@ public:
 
   /// Validate and stage a desired settings snapshot using the existing
   /// APPLY_CONFIG state machine. This start performs no transport callback.
-  /// Before the first mutating/ambiguous write, failure or cancellation restores
-  /// prior cached settings and sync state. Afterwards desired settings remain
-  /// cached with RESYNC_REQUIRED until a successful full apply/resync.
+  /// Before the first mutating or ambiguous write, failure or cancellation
+  /// restores prior cached settings and sync state. Afterwards desired settings
+  /// remain cached with RESYNC_REQUIRED until a successful full apply/resync.
   /// @param settings Desired sensor settings
   /// @return IN_PROGRESS when accepted, validation/precondition error otherwise
   Status startApplySettingsJob(const SensorSettings& settings);
@@ -667,9 +670,11 @@ public:
   /// @return Current health/lifecycle state
   DriverState driverState() const { return state(); }
   
-  /// Check if driver is ready for operations
-  /// This is an observational health classification; OFFLINE does not block an
-  /// explicit owner-directed operation.
+  /// Check the observational driver-health classification.
+  /// This does not probe device reachability and does not imply synchronized
+  /// configuration, valid calibration, or that the next operation will
+  /// succeed. OFFLINE is diagnostic and does not block an explicit
+  /// owner-directed operation.
   /// @return true for READY or DEGRADED, false for UNINIT or OFFLINE
   bool isOnline() const { 
     return _driverState == DriverState::READY || 
@@ -794,8 +799,8 @@ public:
   /// Get raw ADC values.
   /// @param[out] out Last cached raw ADC sample
   /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
-  /// Channels skipped by configuration or reported as Bosch skipped sentinels
-  /// have their validity flag set false.
+  /// Validity follows configured oversampling. The Bosch skipped-output numeric
+  /// encoding remains a valid ADC result when that channel is enabled.
   Status getRawSample(RawSample& out) const;
 
   /// Get fixed-point compensated values.
@@ -850,14 +855,17 @@ public:
 
   /// Set oversampling for temperature.
   /// Temperature must be enabled when pressure or humidity is enabled. A
-  /// successful change invalidates the cached sample.
+  /// successful change invalidates the cached sample. This setter does not
+  /// write config, so it does not reset the BME280 IIR filter history.
   /// @param osrs New temperature oversampling
   /// @return Status::Ok() on success, error otherwise
   Status setOversamplingT(Oversampling osrs);
 
   /// Set oversampling for pressure.
   /// Temperature must be enabled when pressure is enabled. A successful change
-  /// invalidates the cached sample.
+  /// invalidates the cached sample. Skipping pressure retains the BME280 IIR
+  /// filter's prior pressure history; call setFilter() to reset filter memory
+  /// before re-enabling when required.
   /// @param osrs New pressure oversampling
   /// @return Status::Ok() on success, error otherwise
   Status setOversamplingP(Oversampling osrs);
@@ -870,22 +878,21 @@ public:
   /// @return Status::Ok() on success, error otherwise
   Status setOversamplingH(Oversampling osrs);
 
-  /// Set IIR filter coefficient. The driver verifies the device is not
-  /// currently measuring, switches to sleep, verifies again before writing
-  /// config, then restores the cached mode. A successful change invalidates the
-  /// cached sample. The BME280 IIR filter applies to pressure and temperature,
-  /// not humidity, and changing it resets the hardware filter memory. If
-  /// measuring appears after the sleep write, config is skipped and dirty state
-  /// is set.
+  /// Set IIR filter coefficient. The driver requests sleep, verifies the
+  /// device is no longer measuring, writes config, then restores normal mode
+  /// when required. A successful change invalidates the cached sample. The
+  /// BME280 IIR filter applies to pressure and temperature, not humidity, and
+  /// changing it resets the hardware filter memory. If measuring persists
+  /// after the sleep write, config is skipped and dirty state is set.
   /// @param filter New IIR filter coefficient
   /// @return Status::Ok() on success, error otherwise
   Status setFilter(Filter filter);
 
-  /// Set standby time (normal mode only). The driver verifies the device is not
-  /// currently measuring, switches to sleep, verifies again before writing
-  /// config, then restores the cached mode. A successful change invalidates the
-  /// cached sample. If measuring appears after the sleep write, config is
-  /// skipped and dirty state is set.
+  /// Set standby time (normal mode only). The driver requests sleep, verifies
+  /// the device is no longer measuring, writes config, then restores normal
+  /// mode when required. A successful change invalidates the cached sample. If
+  /// measuring persists after the sleep write, config is skipped and dirty
+  /// state is set.
   /// @param standby New normal-mode standby interval
   /// @return Status::Ok() on success, error otherwise
   Status setStandby(Standby standby);
@@ -968,11 +975,14 @@ public:
   ///         by the class contract, or the original tracked transport status.
   Status readRegisters(uint8_t startReg, uint8_t* buf, size_t len);
 
-  /// Write a contiguous register block through tracked I2C.
+  /// Write a logically contiguous register block through tracked I2C.
+  /// Each value is encoded as its own register-address/data pair because the
+  /// BME280 write protocol does not auto-increment write addresses.
   /// @param startReg First register address to write
   /// @param buf Source buffer; must not be null
-  /// @param len Number of bytes to write; must be nonzero and fit the internal
-  ///            bounded stack payload
+  /// @param len Number of register values to write; must be 1..16 and must not
+  ///            wrap beyond register 0xFF. The transport callback receives
+  ///            exactly `2 * len` bytes (at most 32 bytes).
   /// @return Status::Ok() on success, NOT_INITIALIZED before begin(),
   ///         INVALID_PARAM for null/zero/oversized writes, admission BUSY as
   ///         described by the class contract, or the original tracked
@@ -1028,6 +1038,13 @@ public:
   uint32_t estimateNormalCycleMs() const;
 
 private:
+  enum class SettingsWritePlan : uint8_t {
+    CTRL_MEAS_ONLY,
+    CTRL_HUM,
+    CONFIG,
+    FULL
+  };
+
   // =========================================================================
   // Transport Wrappers
   // =========================================================================
@@ -1101,6 +1118,9 @@ private:
   void _commitCalibration(const Calibration& calibration,
                           bool humidityCalibrationValid);
   Status _applyConfig();
+  Status _writeSettingsSynchronously(const SensorSettings& settings,
+                                     SettingsWritePlan plan);
+  Status _verifySettingsReadback(const SensorSettings& settings);
   Status _ensureConfigWriteReady();
   Status _waitForNvmReady(bool tracked);
   Status _readRawData(RawSample& out);

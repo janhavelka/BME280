@@ -37,6 +37,7 @@ BASE_REQUIRED_PATHS = {
     "docs/PRODUCTION_SHARED_BUS_GUIDE.md",
     "docs/HARDWARE_VALIDATION.md",
     "docs/BME280_Register_Reference.md",
+    "docs/CODE_AUDIT_RESOLUTION.md",
     "docs/BME280_datasheet.pdf",
     "src/BME280.cpp",
 }

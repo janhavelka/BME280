@@ -15,6 +15,8 @@ under `include/BME280/`; release history lives in `../CHANGELOG.md`.
   status, and qualification boundary.
 - `BME280_Register_Reference.md`: implementation-facing register, calibration,
   and timing notes.
+- `CODE_AUDIT_RESOLUTION.md`: finding-by-finding verification and disposition
+  of the 2026-08-30 code audit.
 - `BME280_datasheet.pdf`: Bosch BME280 datasheet used as primary device
   evidence. Verify critical values against the PDF when changing protocol,
   compensation, timing, or electrical contracts.

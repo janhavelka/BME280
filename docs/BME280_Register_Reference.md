@@ -147,7 +147,14 @@ only; SPI and BMP280 compatibility are outside its public contract.
 | 011 | 8 |
 | 100, others | 16 |
 
-> Datasheet rule: `config` is writable only in **sleep** mode. If you're in normal mode, switch to sleep -> write config -> restore mode.
+> Datasheet behavior: a `config` write in **normal** mode may be ignored. This
+> driver therefore requests sleep, confirms `status.measuring` is clear, writes
+> `config`, and restores normal mode when required.
+
+When temperature or pressure acquisition is skipped, its IIR filter memory is
+retained rather than reset. The first sample after re-enabling that channel can
+therefore be filtered against pre-skip history; changing the filter setting is
+the explicit way to reset that history.
 
 ---
 
@@ -183,7 +190,8 @@ Practical driver guidance:
 
 ## 7) Driver "gotchas" worth encoding as tests
 - Changing `ctrl_hum` requires a subsequent write to `ctrl_meas`.
-- `config` writes must be done in sleep.
+- Normal-mode `config` writes may be ignored; this driver applies them only
+  after requesting sleep and confirming measurement has stopped.
 - Always burst-read `0xF7..0xFE` to keep pressure/temp/humidity coherent.
 - Verify chip_id before trusting calibration data.
 
@@ -197,7 +205,10 @@ Practical driver guidance:
 - `0xD1..0xDF`: reserved
 - `0xE0`: soft reset
 - `0xE1..0xE7`: calibration block 1 (humidity)
-- `0xE8..0xF1`: reserved
+- `0xE8..0xF1`: left untouched by this driver. Datasheet Table 18 labels
+  `0xE1..0xF0` as `calib26..calib41`, while section 4.2.2 documents humidity
+  calibration only through `0xE7`; the stricter range here acknowledges that
+  internal ambiguity rather than treating either description as settled.
 - `0xF2..0xF5`: control/status/config
 - `0xF6`: reserved
 - `0xF7..0xFE`: measurement data

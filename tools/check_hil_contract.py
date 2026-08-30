@@ -28,14 +28,6 @@ RETAINED_TRANSCRIPT_SHA256 = (
     "7b858255bfc5053e18c224f3d14621e18b3db21ed1cfef16d92f727f4ba55415"
 )
 
-REMOVED_HIL_DOCS = (
-    ROOT / "docs" / "I2C_HIL_RUNBOOK.md",
-    ROOT / "docs" / "I2C_HIL_TARGET_TEMPLATE.md",
-    ROOT / "docs" / "BME280_HARDWARE_VALIDATION_MATRIX.md",
-    ROOT / "docs" / "reports" / "esp32s2-com28-hil-summary.md",
-)
-
-
 def fail(message: str) -> None:
     print(f"HIL contract FAILED: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -280,10 +272,6 @@ def validate_optional_plans(runner) -> None:
         fail("duration-soak cycle lost required safe commands")
     if any(spec.command.startswith("wreg") for spec in duration_specs):
         fail("duration-soak cycle contains a destructive raw write")
-    first = duration_specs[0]
-    required = runner.duration_command_timeout_s(first, duration_args)
-    if runner.duration_command_fits(required - 0.001, first, duration_args):
-        fail("duration soak can start a command without its full timeout window")
     grouped = [
         [spec.command for spec in group]
         for group in runner.duration_soak_command_groups(
@@ -294,9 +282,14 @@ def validate_optional_plans(runner) -> None:
         fail("duration soak does not reserve normal-mode cleanup as one group")
     if ["reset", "recover"] not in grouped:
         fail("duration soak does not reserve reset recovery as one group")
-    reconnect_args = runner_args(reconnect_attempts=3)
+    default_args = runner.parse_args(["--dry-run"])
+    if default_args.reconnect_attempts != 0:
+        fail("reconnect attempts must default to zero")
+    reconnect_args = runner.parse_args([
+        "--dry-run", "--reconnect-attempts", "3",
+    ])
     if reconnect_args.reconnect_attempts != 3:
-        fail("duration-soak reconnect budget is not configurable")
+        fail("explicit reconnect attempt budget was not preserved")
     final_cleanup = runner.final_cleanup_commands()
     if [spec.command for spec in final_cleanup] != [
         "normal off", "recover", "cfg", "status", "drv"
@@ -394,10 +387,6 @@ def main() -> int:
     ):
         if not path.exists():
             fail(f"missing required file: {path.relative_to(ROOT)}")
-    for path in REMOVED_HIL_DOCS:
-        if path.exists():
-            fail(f"superseded HIL document still exists: {path.relative_to(ROOT)}")
-
     py_compile.compile(str(RUNNER), doraise=True)
     runner = load_runner()
     parser_ok, parser_failures = runner.parser_self_test()
@@ -423,7 +412,6 @@ def main() -> int:
             "command_plan.json",
             "reclassify_version_provenance(",
             "dirty host or firmware source cannot qualify exact build provenance",
-            "duration_command_fits(",
             "BUSY_REASON_NVM_UPDATE",
             "run_automatic_recovery(",
             "run_final_cleanup(",
@@ -433,11 +421,37 @@ def main() -> int:
             "serial_reconnect_event_result(",
             "REPLAYING SAFE GROUP FROM FIRST ROW",
             "expected_settings",
+            "output_is_complete(",
+            '"MATCHED_COMPLETION"',
+            'evidence["driver_state"]',
+            'evidence["hardware_config_dirty"]',
         ),
         RUNNER,
     )
-    assert_contains(read(GITIGNORE), "hil_logs/*", GITIGNORE)
-    assert_contains(read(GITIGNORE), "!hil_logs/*/serial_transcript.txt", GITIGNORE)
+    runner_text = read(RUNNER)
+    for removed_helper in ("duration_command_fits(", "row_output(", "output_full"):
+        if removed_helper in runner_text:
+            fail(f"runner retained obsolete evidence/helper token: {removed_helper}")
+
+    gitignore_text = read(GITIGNORE)
+    assert_contains(gitignore_text, "hil_logs/*", GITIGNORE)
+    for run_id in (
+        "i2c_20260803_144215",
+        "i2c_20260804_155442",
+        "i2c_20260804_171428",
+    ):
+        assert_contains(gitignore_text, f"!hil_logs/{run_id}/", GITIGNORE)
+        assert_contains(
+            gitignore_text,
+            f"!hil_logs/{run_id}/serial_transcript.txt",
+            GITIGNORE,
+        )
+    for broad_exception in (
+        "!hil_logs/*/",
+        "!hil_logs/*/serial_transcript.txt",
+    ):
+        if broad_exception in gitignore_text:
+            fail(f".gitignore retained broad HIL exception: {broad_exception}")
     assert_contains(
         read(GITATTRIBUTES), "hil_logs/*/serial_transcript.txt -text", GITATTRIBUTES
     )
@@ -473,10 +487,6 @@ def main() -> int:
         ),
         SHARED_BUS,
     )
-    combined = "\n".join(read(path) for path in (README, DOCS_INDEX, IDF_PORT, SHARED_BUS))
-    for removed in REMOVED_HIL_DOCS:
-        if removed.name in combined:
-            fail(f"maintained docs still reference {removed.name}")
     claim_text = "\n".join(
         read(path) for path in (README, DOCS_INDEX, IDF_PORT, SHARED_BUS, VALIDATION)
     )

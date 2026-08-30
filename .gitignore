@@ -4,6 +4,7 @@
 .idea/
 
 # Build artifacts
+/build/
 *.o
 *.a
 *.elf
@@ -40,9 +41,13 @@ wifi_credentials.h
 # HIL output artifacts. Keep selected raw transcripts; derived reports remain
 # disposable unless explicitly promoted as a formal qualification package.
 hil_logs/*
-!hil_logs/*/
+!hil_logs/i2c_20260803_144215/
+!hil_logs/i2c_20260804_155442/
+!hil_logs/i2c_20260804_171428/
 hil_logs/*/*
-!hil_logs/*/serial_transcript.txt
+!hil_logs/i2c_20260803_144215/serial_transcript.txt
+!hil_logs/i2c_20260804_155442/serial_transcript.txt
+!hil_logs/i2c_20260804_171428/serial_transcript.txt
 
 # Generated documentation
 docs/doxygen/

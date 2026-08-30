@@ -170,6 +170,19 @@ def main() -> int:
         if token not in idf_cmake:
             fail(f"IDF example CMake missing firmware provenance contract: {token}")
 
+    if re.search(
+        r"\b(?:PRIV_REQUIRES|REQUIRES)\b[^)]*\bBME280\b",
+        idf_cmake,
+        re.DOTALL,
+    ):
+        fail("IDF main component must not hard-code the root component name")
+    for token in (
+        "REQUIRES esp_driver_i2c esp_driver_gpio esp_timer freertos",
+        "special main component automatically depends",
+    ):
+        if token not in idf_cmake:
+            fail(f"IDF main-component dependency assumption missing: {token}")
+
     arduino_help = help_items(arduino)
     idf_help = help_items(idf)
     if arduino_help != idf_help:
@@ -236,6 +249,12 @@ def main() -> int:
         "cancelPendingForCommand()",
         "cancelPendingForRecovery()",
         "Command too long",
+        "CLI_INPUT_MAX_LEN = 127U",
+        "CLI_LINE_LEN = CLI_INPUT_MAX_LEN + 2U",
+        'static_assert(CLI_LINE_LEN == 129U, "CLI line buffer contract changed")',
+        "STRESS_PROGRESS_UPDATES = 10U",
+        "void printStressProgress(",
+        "Progress: %lu/%lu",
     ):
         if token not in idf:
             fail(f"IDF staged-job contract missing token: {token}")
@@ -303,6 +322,7 @@ def main() -> int:
         "gPendingRead = false",
         "noteStressError(terminalStatus)",
         "printStatus(terminalStatus)",
+        "printStressProgress(",
     ):
         if token not in measurement_text:
             fail(f"IDF terminal async measurement handling is incomplete: {token}")
@@ -323,6 +343,7 @@ def main() -> int:
         "captureSensorSettings(originalSettings)",
         "restoreSensorSettings(originalSettings)",
         '"  Restore status: %s\\n"',
+        "printStressProgress(",
     ):
         if token not in stress_text:
             fail(f"IDF mixed-stress parity/state contract is incomplete: {token}")
@@ -428,9 +449,24 @@ def main() -> int:
         "next != '\\r'",
         'std::printf("Command too long\\n")',
         "continue;",
+        "char buffer[CLI_LINE_LEN]",
     ):
         if token not in input_text:
             fail(f"IDF overlong-input discard contract missing token: {token}")
+    if idf.count("printStressProgress(") < 6:
+        fail("IDF async and mixed stress paths lost periodic progress output")
+    if arduino.count("Progress: %lu/%lu") != 1 or idf.count("Progress: %lu/%lu") != 1:
+        fail("Arduino/IDF stress progress output format diverged")
+
+    arduino_selftest = re.search(
+        r"void runSelfTest\(\).*?\n}\n\nvoid clearPendingBookkeeping",
+        arduino,
+        re.DOTALL,
+    )
+    if arduino_selftest is None:
+        fail("Arduino selftest implementation could not be isolated")
+    if 'reportSkip("restore baseline settings", "baseline unavailable")' not in arduino_selftest.group(0):
+        fail("Arduino selftest must skip restore when no baseline was captured")
 
     settings_handler = re.search(
         r"void handleSettingsCommand\(.*?\n}\n\nvoid printSampleFreshness",

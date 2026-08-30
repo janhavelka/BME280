@@ -220,11 +220,43 @@ struct SensorSettings {
   Mode mode = Mode::FORCED;              ///< Measurement mode policy
 };
 
+/// Deterministic reason encoded in Status::detail when settings validation
+/// returns INVALID_PARAM (or INVALID_CONFIG while admitting Config).
+enum class SettingsValidationReason : int32_t {
+  NONE = 0,  ///< Settings are valid
+  OSRS_T,    ///< Temperature oversampling encoding is invalid
+  OSRS_P,    ///< Pressure oversampling encoding is invalid
+  OSRS_H,    ///< Humidity oversampling encoding is invalid
+  FILTER,    ///< IIR filter encoding is invalid
+  STANDBY,   ///< Standby-time encoding is invalid
+  MODE,      ///< Measurement-mode encoding is invalid
+  SELECTION  ///< Channel selection cannot be compensated
+};
+
+/// Return the canonical string for a settings-validation reason.
+/// @param value Validation reason to describe.
+/// @return Static canonical reason name; invalid values return
+///         `UNKNOWN_SETTINGS_VALIDATION_REASON`.
+constexpr const char* toString(SettingsValidationReason value) {
+  switch (value) {
+    case SettingsValidationReason::NONE: return "NONE";
+    case SettingsValidationReason::OSRS_T: return "OSRS_T";
+    case SettingsValidationReason::OSRS_P: return "OSRS_P";
+    case SettingsValidationReason::OSRS_H: return "OSRS_H";
+    case SettingsValidationReason::FILTER: return "FILTER";
+    case SettingsValidationReason::STANDBY: return "STANDBY";
+    case SettingsValidationReason::MODE: return "MODE";
+    case SettingsValidationReason::SELECTION: return "SELECTION";
+    default: return "UNKNOWN_SETTINGS_VALIDATION_REASON";
+  }
+}
+
 /// Validate a settings tuple without accessing hardware.
 /// Temperature must be enabled whenever pressure or humidity is enabled, and
 /// at least one measurement channel must be selected.
 /// @param settings Settings to validate
-/// @return OK for a supported tuple, INVALID_PARAM otherwise
+/// @return OK for a supported tuple, or INVALID_PARAM with detail set to the
+///         first failing SettingsValidationReason in declaration order
 Status validateSettings(const SensorSettings& settings);
 
 /// Estimate the exact Bosch maximum conversion duration for a settings tuple.

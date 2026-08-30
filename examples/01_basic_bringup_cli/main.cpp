@@ -1272,14 +1272,16 @@ void runSelfTest() {
   reportCheck("recover", st.ok(), st.ok() ? "" : errToStr(st.code));
   reportCheck("isOnline", device.isOnline(), "");
 
-  const BME280::Status restoreStatus = haveSnapshot
-                                           ? restoreSensorSettings(originalSettings)
-                                           : captureStatus;
-  reportCheck("restore baseline settings", restoreStatus.ok(),
-              restoreStatus.ok() ? "" : errToStr(restoreStatus.code));
-  Serial.printf("Restore status: %s\n", BME280::toString(restoreStatus.code));
-  if (!restoreStatus.ok()) {
-    printStatus(restoreStatus);
+  if (haveSnapshot) {
+    const BME280::Status restoreStatus = restoreSensorSettings(originalSettings);
+    reportCheck("restore baseline settings", restoreStatus.ok(),
+                restoreStatus.ok() ? "" : errToStr(restoreStatus.code));
+    Serial.printf("Restore status: %s\n", BME280::toString(restoreStatus.code));
+    if (!restoreStatus.ok()) {
+      printStatus(restoreStatus);
+    }
+  } else {
+    reportSkip("restore baseline settings", "baseline unavailable");
   }
 
   Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
@@ -2679,6 +2681,8 @@ void loop() {
         cli::printPrompt();
         continue;
       }
+      // CRLF supplies two terminators; ignore the empty second half so the
+      // command runs and the prompt prints exactly once.
       if (inputBuffer.length() > 0) {
         processCommand(inputBuffer);
         inputBuffer = "";

@@ -99,8 +99,8 @@ inline BME280::TransportResult wireWrite(uint8_t addr, const uint8_t* data,
     return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -2);
   }
 
-  // Check for oversized writes (ESP32 Wire buffer is 128 bytes)
-  if (len > 128) {
+  // Respect the selected Wire implementation's compile-time buffer capacity.
+  if (len > I2C_BUFFER_LENGTH) {
     return BME280::TransportResult::Error(BME280::TransportErr::OTHER,
                                           static_cast<int32_t>(len));
   }
@@ -154,7 +154,7 @@ inline BME280::TransportResult wireWriteRead(uint8_t addr, const uint8_t* tx,
   if (txLen == 0 || rxLen == 0) {
     return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -3);
   }
-  if (txLen > 128 || rxLen > 128) {
+  if (txLen > I2C_BUFFER_LENGTH || rxLen > I2C_BUFFER_LENGTH) {
     return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -4);
   }
 

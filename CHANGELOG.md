@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added deterministic settings-validation reason codes and post-apply register
+  verification, including a distinct staged verification phase and mismatch
+  evidence in `Status::detail`.
+- Added a finding-by-finding resolution report for the August 2026 code audit.
+
+### Changed
+
+- Consolidated settings writes behind one selective sleep/apply/verify/cache
+  sequence, preserving unrelated register groups and IIR history.
+- Made the native sensor and Wire stubs match BME280 address/value write pairs
+  and the pinned Arduino-ESP32 I2C buffer boundary.
+- Hardened HIL completion, recovery, and callback-budget evidence around parsed
+  structured state instead of truncated display output.
+- Aligned the Arduino and ESP-IDF diagnostic CLIs on self-test accounting,
+  stress progress, command length, and operator-facing health state color.
+- Clarified configuration, IIR-memory, calibration-range, state-health, and
+  retained-evidence contracts in the maintained documentation.
+
+### Fixed
+
+- Accepted legitimate enabled-channel ADC values that equal Bosch's skipped
+  sentinel encodings while continuing to invalidate configured-off channels.
+- Encoded multi-register BME280 writes as repeated address/value pairs instead
+  of relying on unsupported register auto-increment.
+- Allowed configuration to request sleep before waiting for an in-progress
+  conversion, and ensured humidity changes are latched by `ctrl_meas`.
+- Included Bosch's +25% normal-mode standby tolerance in the private sample
+  freshness budget.
+- Removed the ESP-IDF example's dependency on the repository checkout
+  directory name and tightened package/example configuration contracts.
+
+### Removed
+
+- Removed an accidentally tracked generated top-level CMake `build/` tree and
+  now ignore that reproducible output.
+
 ## [2.1.0] - 2026-08-05
 
 ### Added

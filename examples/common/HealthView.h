@@ -24,6 +24,16 @@ inline const char* failureColor(uint32_t failures) {
   return colorRed();
 }
 
+inline const char* stateColor(int state) {
+  switch (state) {
+    case 0: return colorGray();
+    case 1: return colorGreen();
+    case 2: return colorYellow();
+    case 3: return colorRed();
+    default: return colorRed();
+  }
+}
+
 inline const char* successColor(uint32_t successes) {
   return (successes > 0U) ? colorGreen() : colorGray();
 }
@@ -78,7 +88,7 @@ inline void printHealthView(const DriverT& driver) {
                         : 0.0f;
 
   Serial.printf("Health: state=%s%s%s online=%s%s%s dirty=%s%s%s consec=%s%u%s ok=%s%lu%s fail=%s%lu%s rate=%s%.1f%%%s\n",
-                failureColor(static_cast<uint32_t>(snap.consecutiveFailures)),
+                stateColor(snap.state),
                 stateToString(snap.state),
                 colorReset(),
                 boolColor(snap.online),
@@ -108,10 +118,10 @@ inline void printHealthDiff(const Snapshot<DriverT>& before,
 
   if (before.state != after.state) {
     Serial.printf("  State: %s%s%s -> %s%s%s\n",
-                  failureColor(static_cast<uint32_t>(before.consecutiveFailures)),
+                  stateColor(before.state),
                   stateToString(before.state),
                   colorReset(),
-                  failureColor(static_cast<uint32_t>(after.consecutiveFailures)),
+                  stateColor(after.state),
                   stateToString(after.state),
                   colorReset());
     changed = true;

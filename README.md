@@ -62,7 +62,7 @@ without including Arduino source or compatibility facades.
 ```cpp
 #include <Wire.h>
 #include "BME280/BME280.h"
-#include "common/I2cTransport.h"
+#include "examples/common/I2cTransport.h"
 
 BME280::BME280 device;
 
@@ -117,7 +117,7 @@ transfer. The separate `conversionReadyTimeoutMs` is chip-level grace after the
 estimated conversion or idle time. Inject `Config::nowMs` for synchronous
 scheduling and meaningful timestamps; absent an injected or explicit poll/tick
 time, timestamp values are zero and the matching validity flag is false.
-`common/I2cTransport.h` is example-only glue; when manually copying only `include/` and
+`examples/common/I2cTransport.h` is example-only glue; when manually copying only `include/` and
 `src/`, provide equivalent `Config::i2cWrite` and `Config::i2cWriteRead` callbacks in
 your application.
 
@@ -335,16 +335,16 @@ effect, the desired settings remain the explicit resync target and
 apply/resync succeeds. The last-good sample remains readable only with its
 existing freshness/generation provenance.
 
-Humidity oversampling follows the Bosch latch rule: `setOversamplingH()` writes
-`ctrl_hum` first and then writes `ctrl_meas` so the new humidity setting becomes
-effective. `setFilter()` and `setStandby()` first verify that the status
-`measuring` bit is clear. If the device is already measuring, they return `BUSY`
-without writing config registers. Otherwise they switch `ctrl_meas` to sleep,
-verify `measuring` is still clear, write `config`, and restore the cached mode.
-If the second status check reports busy after the sleep write, the config write
-is skipped and `hardwareConfigDirty()` is set because hardware mode may no
-longer match the cache. Successful typed configuration changes invalidate cached
-samples so callers cannot read a sample captured under old settings.
+Every typed settings change first queues `ctrl_meas` sleep, then confirms that
+`status.measuring` is clear before writing any sleep-only register. Humidity
+oversampling follows the Bosch latch rule: `setOversamplingH()` then writes
+`ctrl_hum` followed by `ctrl_meas`. Filter and standby changes write `config`,
+then restore normal mode when required. If the post-sleep status check remains
+busy, later writes are skipped and `hardwareConfigDirty()` is set because
+hardware mode may no longer match the cache. A final `0xF2..0xF5` readback must
+match all driver-owned settings bits before the cache is committed. Successful
+typed configuration changes invalidate cached samples so callers cannot read a
+sample captured under old settings.
 
 If a multi-register configuration sequence touches hardware and then fails, the
 driver sets `hardwareConfigDirty()` and preserves the original error in
@@ -401,14 +401,14 @@ sample remains explicitly stale under its prior generation.
 
 | API | Typical I2C transactions | Notes |
 |-----|--------------------------|-------|
-| `begin()` | chip ID read, one NVM status read, calibration reads, status guard, config writes | Returns visible `BUSY`/`TIMEOUT` if NVM is not ready; staged init owns repeated polling |
+| `begin()` | chip ID read, one NVM status read, calibration reads, sleep write, idle-status read, full settings writes, settings readback | Returns visible `BUSY`/`TIMEOUT` if NVM is not ready; staged init owns repeated polling |
 | `requestMeasurement()` in forced mode | status read, `ctrl_meas` write | Returns `IN_PROGRESS` when accepted |
 | `tick()` after deadline | status read, one `0xF7..0xFE` burst read | Captures coherent pressure, temperature, and humidity ADC bytes |
-| `setOversamplingT/P()` | one `ctrl_meas` write | Invalid combinations are rejected before I2C |
-| `setOversamplingH()` | `ctrl_hum` write, `ctrl_meas` write | `ctrl_meas` latches humidity oversampling |
-| `setFilter()` / `setStandby()` | status read, sleep write, status read, `config` write, restore write | Returns `BUSY` without writes if already measuring; skips `config` and marks dirty if still measuring after sleep write |
-| `recover()` | chip ID read, one NVM status read, calibration reads, status guard, config resync writes | Non-reset compatibility helper; OFFLINE does not block it |
-| `softReset()` | reset write, one NVM status read, calibration reads, status guard, config resync writes | Marks dirty if reset succeeds but any later step fails |
+| `setMode()` / `setOversamplingT/P()` | sleep/desired `ctrl_meas` write, idle-status read, optional normal-mode restore, settings readback | Invalid settings are rejected before I2C; these setters never write `config` and therefore do not reset IIR history |
+| `setOversamplingH()` | sleep/desired `ctrl_meas` write, idle-status read, `ctrl_hum` write, `ctrl_meas` latch, settings readback | `ctrl_meas` latches humidity oversampling |
+| `setFilter()` / `setStandby()` | sleep write, idle-status read, `config` write, optional normal-mode restore, settings readback | Skips `config` and marks dirty if measuring persists after the sleep request |
+| `recover()` | chip-ID read, one NVM status read, calibration reads, sleep/idle sequence, full settings writes and readback | Non-reset compatibility helper; OFFLINE does not block it |
+| `softReset()` | reset write, one NVM status read, calibration reads, sleep/idle sequence, full settings writes and readback | Marks dirty if reset succeeds but any later step fails |
 | Staged job starts / `cancelJob()` / `end()` | none | Zero-I2C state transitions |
 | `pollJob(nowMs, budget)` | at most `budget` callbacks | Zero budget still permits bounded local-only phase transitions |
 
@@ -426,20 +426,20 @@ All transport callbacks are synchronous and individually bounded by
 
 | API | Blocking bound |
 |-----|----------------|
-| `begin()` | A fixed sequence of I2C operations including one NVM status read; each transport callback receives `Config::i2cTimeoutMs` |
+| `begin()` | A fixed sequence including one NVM status read and verified full settings apply; each transport callback receives `Config::i2cTimeoutMs` |
 | `probe()` | One chip-ID register read through raw I2C, bounded by `Config::i2cTimeoutMs` |
 | `requestMeasurement()` | Forced mode performs one status read and one mode write; normal mode schedules work and returns |
 | `tick()` | Before deadline: no I2C. After deadline: one status read and one `0xF7..0xFE` burst read |
-| Typed setters | One or a small fixed sequence of register reads/writes; `setFilter()` and `setStandby()` use a sleep/config/restore sequence |
-| `recover()` | Chip-ID read, one NVM status read, calibration reload, and full config resync |
-| `softReset()` | Reset write, one NVM status read, calibration reload, and config resync |
+| Typed setters | Sleep/desired write, one idle-status read, only the needed settings writes, and one `0xF2..0xF5` readback |
+| `recover()` | Chip-ID read, one NVM status read, calibration reload, and verified full settings resync |
+| `softReset()` | Reset write, one NVM status read, calibration reload, and verified settings resync |
 
 Staged readiness is bounded twice: by wrap-safe chip-phase deadlines and by
 fixed counters. NVM readiness permits at most 255 status callbacks. Each
 measuring/idle wait uses a 255-poll counter and can perform at most one final
 status callback before reporting the poll-limit timeout. With no earlier
 deadline or transport failure, the resulting worst-case callback counts are
-518 for init or non-reset resync, 519 for explicit soft reset, 516 for config
+519 for init or non-reset resync, 520 for explicit soft reset, 261 for config
 apply, 258 for a forced job starting from known idle, and 514 for a forced job
 that must first reconcile an ambiguous prior trigger. These are library
 callback caps, not elapsed-time guarantees and not an application owner
@@ -452,6 +452,8 @@ zero for compatibility, so callers must check `temperatureValid`,
 `pressureValid`, and `humidityValid` before using a channel. The raw Bosch
 skipped sentinels are exposed as `cmd::RAW_PRESSURE_SKIPPED`,
 `cmd::RAW_TEMPERATURE_SKIPPED`, and `cmd::RAW_HUMIDITY_SKIPPED`.
+Raw validity follows configured oversampling: the same numeric encoding remains
+a valid ADC result when its channel is enabled.
 
 Calibration coefficients are read from `0x88..0xA1` and `0xE1..0xE7` during
 `begin()`. `dig_T1` and `dig_P1` are unsigned 16-bit values; the other
@@ -576,7 +578,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 7. Measurement scheduling requires `Config::nowMs`. `begin()` does not fail without it, but `requestMeasurement()` returns `INVALID_CONFIG` if no monotonic clock is injected.
 8. Multi-register configuration failures and successful diagnostic raw writes to config/control/reset registers set `hardwareConfigDirty()` and expose the dirty-state cause in `hardwareConfigDirtyError()` and `SettingsSnapshot`.
 9. Driver instances are not thread-safe and public APIs are not ISR-safe. Shared-bus users must serialize access externally.
-10. `setFilter()` and `setStandby()` return `BUSY` without config writes when the device initially reports `measuring`; if `measuring` appears after the sleep write, config is skipped and dirty state is set.
+10. Typed setters first queue sleep without a status pre-read. If the single post-sleep status read still reports `measuring`, later settings writes are skipped and dirty state is set.
 11. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
 12. A running staged job exclusively owns hardware access. Cancellation is zero-I2C and its terminal result must be retrieved once before later hardware work.
 13. Synchronous reset/resync NVM readiness checks perform one status read and return visible `BUSY`, `TIMEOUT`, or the original transport error. Bounded repeated NVM polling belongs to staged jobs advanced by `pollJob()`.
@@ -682,6 +684,8 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - `docs/PRODUCTION_SHARED_BUS_GUIDE.md` - production shared-bus integration guidance
 - `docs/HARDWARE_VALIDATION.md` - consolidated HIL procedure, evidence schema,
   current status, and qualification boundary
+- `docs/CODE_AUDIT_RESOLUTION.md` - verified finding dispositions and changes
+  from the August 2026 code audit
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
 The `2.1.0` changelog entry records the typed-settings and staged-job expansion,

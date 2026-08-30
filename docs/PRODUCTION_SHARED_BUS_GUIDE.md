@@ -456,8 +456,8 @@ bounded by `Config::nvmReadyTimeoutMs` and a fixed 255-status-callback cap.
 Each measuring/idle readiness phase uses `conversionReadyTimeoutMs` plus a
 fixed 255-poll counter and can perform at most one final status callback before
 the poll-limit error. With no earlier phase deadline or transport failure, the
-staged cumulative callback caps are 518 for init or non-reset resync, 519 for
-explicit soft reset, 516 for config apply, 258 for a forced job starting from
+staged cumulative callback caps are 519 for init or non-reset resync, 520 for
+explicit soft reset, 261 for config apply, 258 for a forced job starting from
 known idle, and 514 when a forced job first reconciles an ambiguous conversion.
 These are callback-count caps only. They do not define an overall application
 deadline or elapsed-time guarantee; the bus-manager timeout, owner scheduling

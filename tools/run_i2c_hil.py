@@ -99,8 +99,11 @@ JOB_INSTRUCTIONS_RE = re.compile(r"Instructions:\s*(\d+)")
 XFER_COUNTS_RE = re.compile(
     r"XFER_(?:RESET|STATS|ASSERT PASS)\s+read=(\d+)\s+write=(\d+)\s+total=(\d+)"
 )
-DRIVER_READY_RE = re.compile(r"(?:Driver:\s*state=READY\b|State:\s*READY\b)")
-DIRTY_FALSE_RE = re.compile(r"(?:dirty=false\b|Hardware config dirty:\s*(?:false|no)\b)", re.IGNORECASE)
+DRIVER_STATUS_RE = re.compile(
+    r"Driver:\s*state=(UNINIT|READY|DEGRADED|OFFLINE)\s+"
+    r"online=(true|false)\s+dirty=(true|false)",
+    re.IGNORECASE,
+)
 
 VALIDATOR_CTRL_MEAS_SLEEP = "ctrl_meas_sleep"
 VALIDATOR_STATUS_NOT_MEASURING = "status_not_measuring"
@@ -1874,11 +1877,16 @@ def counted_stress_command(command: str) -> tuple[str, int] | None:
 
 def job_command_budget(command: str) -> int:
     parts = command.strip().split()
-    if len(parts) >= 3 and parts[0].lower() == "job":
+    if not parts or parts[0].lower() != "job":
+        return JOB_CLI_DEFAULT_BUDGET
+    verb = parts[1].lower() if len(parts) >= 2 else ""
+    if verb in {"start", "cancel", "status"}:
+        return 0
+    if len(parts) >= 3:
         try:
             return int(parts[2], 10)
         except ValueError:
-            return JOB_CLI_DEFAULT_BUDGET
+            pass
     return JOB_CLI_DEFAULT_BUDGET
 
 
@@ -2076,6 +2084,10 @@ def extract_parsed_evidence(output: str) -> dict:
         evidence["status_name"] = match.group(1)
         evidence["status_code"] = int(match.group(2))
         evidence["status_detail"] = int(match.group(3))
+    if match := DRIVER_STATUS_RE.search(output):
+        evidence["driver_state"] = match.group(1).upper()
+        evidence["driver_online"] = match.group(2).lower() == "true"
+        evidence["hardware_config_dirty"] = match.group(3).lower() == "true"
     if match := STRESS_ERRORS_RE.search(output):
         evidence["stress_errors"] = int(match.group(1))
     if match := STRESS_DURATION_RE.search(output):
@@ -2333,10 +2345,6 @@ def classify_output(spec: CommandSpec, output: str, completion: str) -> tuple[st
     return RESULT_REVIEW, "No useful serial output captured."
 
 
-def row_output(row: dict) -> str:
-    return strip_ansi(str(row.get("output_excerpt", "")))
-
-
 def row_is_pass(row: dict, command: str | None = None) -> bool:
     if command is not None and row.get("command") != command:
         return False
@@ -2563,21 +2571,26 @@ def row_proves_ready_clean_status(row: dict) -> bool:
     evidence = row.get("parsed_evidence", {})
     if evidence.get("im_update") != 0 or evidence.get("measuring") != 0:
         return False
-    clean = row_output(row)
-    return bool(DRIVER_READY_RE.search(clean) and DIRTY_FALSE_RE.search(clean))
+    return (
+        evidence.get("driver_state") == "READY"
+        and evidence.get("hardware_config_dirty") is False
+    )
 
 
 def row_proves_readable_config(row: dict) -> bool:
     if not row_is_pass(row, "cfg"):
         return False
-    clean = row_output(row)
-    return "ctrl_hum" in clean and "ctrl_meas" in clean and "config" in clean
+    evidence = row.get("parsed_evidence", {})
+    return all(
+        name in evidence
+        for name in ("cfg_ctrl_hum", "cfg_ctrl_meas", "cfg_config")
+    )
 
 
 def row_proves_recover_ok(row: dict) -> bool:
     if not row_is_pass(row, "recover"):
         return False
-    return "Status: OK" in row_output(row)
+    return row.get("parsed_evidence", {}).get("status_name") == "OK"
 
 
 def reset_busy_recovery_proven(results: list[dict], index: int) -> bool:
@@ -2620,7 +2633,7 @@ def reclassify_recovered_reset_busy(results: list[dict]) -> int:
     return count
 
 
-def output_has_expected(spec: CommandSpec, output: str) -> bool:
+def output_is_complete(spec: CommandSpec, output: str) -> bool:
     return completion_tokens_match(spec, output)
 
 
@@ -2784,7 +2797,7 @@ def run_serial_command(
     deadline = start + timeout_s
     last_rx = time.monotonic()
     saw_output = False
-    matched_expected = False
+    matched_completion = False
     matched_failure = False
     command_sent = False
     serial_exception = ""
@@ -2855,14 +2868,16 @@ def run_serial_command(
                         print(chunk, end="", flush=True)
                     last_rx = time.monotonic()
                     clean = strip_ansi("".join(chunks))
-                    matched_expected = output_has_expected(spec, clean)
+                    matched_completion = output_is_complete(spec, clean)
                     matched_failure = output_has_failure(spec, clean)
 
                 now = time.monotonic()
-                if saw_output and (matched_expected or matched_failure) and now - last_rx >= idle_after_match_s:
-                    completion = "MATCHED_FAILURE" if matched_failure else "MATCHED_EXPECTED"
+                if saw_output and (matched_completion or matched_failure) and now - last_rx >= idle_after_match_s:
+                    completion = "MATCHED_FAILURE" if matched_failure else "MATCHED_COMPLETION"
                     break
-                if saw_output and not spec.expected and now - last_rx >= idle_after_output_s:
+                if (saw_output and
+                        not (spec.expected or spec.expected_any or spec.completion) and
+                        now - last_rx >= idle_after_output_s):
                     completion = "SERIAL_IDLE_NO_EXPECTED_TOKENS"
                     break
                 if now >= deadline:
@@ -3008,7 +3023,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
                     validators=(VALIDATOR_CTRL_MEAS_SLEEP,),
                 ),
                 "Reg 0xF4 = 0x24 (36)\n",
-                "MATCHED_EXPECTED",
+                "MATCHED_COMPLETION",
             )[0]
             == RESULT_PASS,
         )
@@ -3037,7 +3052,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
                 "ctrl_hum: 0x01\nctrl_meas: 0x24\nconfig: 0x40\n"
                 "Hardware config dirty: false\n"
             ),
-            "MATCHED_EXPECTED",
+            "MATCHED_COMPLETION",
         )[0] == RESULT_PASS,
     ))
     checks.append(
@@ -3059,7 +3074,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
                 "  Total: ok=7 fail=0 (100.00%)\n"
                 "  Health delta: success +7, failures +0\n"
                 "  Restore status: OK\n",
-                "MATCHED_EXPECTED",
+                "MATCHED_COMPLETION",
             )[0]
             == RESULT_PASS,
         )
@@ -3084,7 +3099,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
                     "Driver: READY\n"
                     "Consecutive failures: 0\n"
                 ),
-                "MATCHED_EXPECTED",
+                "MATCHED_COMPLETION",
             )[0]
             == RESULT_PASS,
         )
@@ -3108,7 +3123,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
                     "Driver: READY\n"
                     "Consecutive failures: 2\n"
                 ),
-                "MATCHED_EXPECTED",
+                "MATCHED_COMPLETION",
             )[0]
             == RESULT_FAIL,
         )
@@ -3132,7 +3147,7 @@ def parser_self_test() -> tuple[bool, list[str]]:
                     "Driver: READY\n"
                     "Consecutive failures: 0\n"
                 ),
-                "MATCHED_EXPECTED",
+                "MATCHED_COMPLETION",
             )[0]
             == RESULT_FAIL,
         )
@@ -3324,13 +3339,6 @@ def duration_soak_cycle_commands(args: argparse.Namespace, cycle_index: int) -> 
 def duration_command_timeout_s(spec: CommandSpec, args: argparse.Namespace) -> float:
     """Return the complete command window required before starting a soak row."""
     return float(spec.timeout_s if spec.timeout_s > 0 else args.timeout)
-
-
-def duration_command_fits(
-    remaining_s: float, spec: CommandSpec, args: argparse.Namespace
-) -> bool:
-    """Return whether a row's full bounded timeout fits in the soak budget."""
-    return remaining_s >= duration_command_timeout_s(spec, args)
 
 
 def duration_soak_command_groups(

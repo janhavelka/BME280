@@ -174,8 +174,8 @@ times. A zero budget can still traverse bounded local-only phases.
 The library uses a 255-poll cap for NVM readiness and a 255-counter cap for each
 measuring/idle wait, with at most one final status callback before the latter
 reports its poll-limit error. With no earlier deadline or adapter failure, the
-cumulative staged callback caps are 518 for init/non-reset resync, 519 for
-explicit soft reset, 516 for config apply, 258 for forced measurement from a
+cumulative staged callback caps are 519 for init/non-reset resync, 520 for
+explicit soft reset, 261 for config apply, 258 for forced measurement from a
 known-idle state, and 514 when forced measurement first reconciles an ambiguous
 trigger. These are callback caps, not an overall owner deadline or elapsed-time
 claim.

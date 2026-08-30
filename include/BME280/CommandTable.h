@@ -86,7 +86,7 @@ static constexpr uint8_t REG_DIG_H3 = 0xE3;     ///< dig_H3 byte.
 static constexpr uint8_t REG_DIG_H4_MSB = 0xE4; ///< dig_H4 high bits.
 static constexpr uint8_t REG_DIG_H4_H5 = 0xE5;  ///< Packed dig_H4 low bits and dig_H5 low bits.
 static constexpr uint8_t REG_DIG_H5_MSB = 0xE6; ///< dig_H5 high bits.
-static constexpr uint8_t REG_DIG_H5_LSB = REG_DIG_H5_MSB; ///< Backward-compatible legacy name.
+static constexpr uint8_t REG_DIG_H5_LSB = REG_DIG_H5_MSB; ///< Historical misnamed alias.
 static constexpr uint8_t REG_DIG_H6 = 0xE7;     ///< dig_H6 byte.
 /// @}
 

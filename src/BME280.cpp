@@ -5,7 +5,6 @@
 
 #include "BME280/BME280.h"
 
-#include <cstring>
 #include <limits>
 
 namespace BME280 {
@@ -16,6 +15,13 @@ static constexpr uint16_t NVM_READY_MAX_POLLS = 255;
 static constexpr uint16_t MEASURING_READY_MAX_POLLS = 255;
 static constexpr uint32_t MEASUREMENT_MARGIN_US = 1000;
 static constexpr int64_t HUMIDITY_MAX_X4096 = 419430400;
+static constexpr uint8_t CTRL_HUM_OWNED_MASK = cmd::MASK_CTRL_HUM_OSRS_H;
+static constexpr uint8_t CTRL_MEAS_OWNED_MASK =
+    cmd::MASK_CTRL_MEAS_OSRS_T | cmd::MASK_CTRL_MEAS_OSRS_P |
+    cmd::MASK_CTRL_MEAS_MODE;
+static constexpr uint8_t CONFIG_OWNED_MASK =
+    cmd::MASK_CONFIG_T_SB | cmd::MASK_CONFIG_FILTER |
+    cmd::MASK_CONFIG_SPI3W_EN;
 
 class ScopedTimeContext {
 public:
@@ -173,6 +179,22 @@ static uint32_t standbyTimeMs(Standby standby) {
   }
 }
 
+// Datasheet standby timing may vary by +25%. Values are the exact nominal
+// intervals multiplied by 1.25 and rounded up to whole milliseconds.
+static uint32_t maximumStandbyTimeMs(Standby standby) {
+  switch (standby) {
+    case Standby::MS_0_5:  return 1;
+    case Standby::MS_62_5: return 79;
+    case Standby::MS_125:  return 157;
+    case Standby::MS_250:  return 313;
+    case Standby::MS_500:  return 625;
+    case Standby::MS_1000: return 1250;
+    case Standby::MS_10:   return 13;
+    case Standby::MS_20:   return 25;
+    default:               return 157;
+  }
+}
+
 // Forced-mode tracking reserves one complete conversion even when the actual
 // start is ambiguous. A normal-mode request can arrive just after a conversion
 // starts, so freshness relative to that request requires the remainder of that
@@ -181,14 +203,14 @@ static uint32_t measurementReadinessIntervalMs(
     const SensorSettings& settings) {
   const uint32_t measurementMs = estimateMeasurementTimeMs(settings);
   if (settings.mode == Mode::NORMAL) {
-    return (2U * measurementMs) + standbyTimeMs(settings.standby);
+    return (2U * measurementMs) + maximumStandbyTimeMs(settings.standby);
   }
   return measurementMs;
 }
 
 static Status mapPresenceError(const Status& st) {
   if (st.code == Err::I2C_NACK_ADDR) {
-    return Status::Error(Err::DEVICE_NOT_FOUND, "Device not responding", st.detail);
+    return Status::Error(Err::DEVICE_NOT_FOUND, st.detail);
   }
   return st;
 }
@@ -237,9 +259,7 @@ static bool touchesDiagnosticConfigRegister(uint8_t startReg, size_t len) {
 }
 
 static Status diagnosticRawWriteDirtyStatus(uint8_t startReg) {
-  return Status::Error(Err::INVALID_CONFIG,
-                       "Diagnostic raw write may desync cached config",
-                       startReg);
+  return Status::Error(Err::INVALID_CONFIG, startReg);
 }
 
 static bool isValidMeasurementSelection(Oversampling osrsT,
@@ -272,6 +292,15 @@ static uint8_t buildCtrlMeas(Oversampling osrsT, Oversampling osrsP, Mode mode) 
 static uint8_t buildConfig(Standby standby, Filter filter) {
   return static_cast<uint8_t>((standbyToReg(standby) << cmd::BIT_CONFIG_T_SB) |
                               (filterToReg(filter) << cmd::BIT_CONFIG_FILTER));
+}
+
+// RESYNC_REQUIRED detail is packed as 0x00RREEAA: register, expected owned
+// bits, and actual owned bits. It stays non-negative in Status::detail.
+static int32_t packSettingsMismatchDetail(uint8_t reg, uint8_t expected,
+                                          uint8_t actual) {
+  return static_cast<int32_t>((static_cast<uint32_t>(reg) << 16) |
+                              (static_cast<uint32_t>(expected) << 8) |
+                              static_cast<uint32_t>(actual));
 }
 
 /// Sign-extend a 12-bit two's-complement field (dig_H4 / dig_H5) to int16_t.
@@ -358,15 +387,35 @@ static void parseCalibrationH(const uint8_t* data, Calibration& out) {
 }  // namespace
 
 Status validateSettings(const SensorSettings& settings) {
-  if (!isValidOversampling(settings.osrsT) ||
-      !isValidOversampling(settings.osrsP) ||
-      !isValidOversampling(settings.osrsH) ||
-      !isValidFilter(settings.filter) ||
-      !isValidStandby(settings.standby) ||
-      !isValidMode(settings.mode) ||
-      !isValidMeasurementSelection(settings.osrsT, settings.osrsP,
+  if (!isValidOversampling(settings.osrsT)) {
+    return Status::Error(Err::INVALID_PARAM,
+                         static_cast<int32_t>(SettingsValidationReason::OSRS_T));
+  }
+  if (!isValidOversampling(settings.osrsP)) {
+    return Status::Error(Err::INVALID_PARAM,
+                         static_cast<int32_t>(SettingsValidationReason::OSRS_P));
+  }
+  if (!isValidOversampling(settings.osrsH)) {
+    return Status::Error(Err::INVALID_PARAM,
+                         static_cast<int32_t>(SettingsValidationReason::OSRS_H));
+  }
+  if (!isValidFilter(settings.filter)) {
+    return Status::Error(Err::INVALID_PARAM,
+                         static_cast<int32_t>(SettingsValidationReason::FILTER));
+  }
+  if (!isValidStandby(settings.standby)) {
+    return Status::Error(Err::INVALID_PARAM,
+                         static_cast<int32_t>(SettingsValidationReason::STANDBY));
+  }
+  if (!isValidMode(settings.mode)) {
+    return Status::Error(Err::INVALID_PARAM,
+                         static_cast<int32_t>(SettingsValidationReason::MODE));
+  }
+  if (!isValidMeasurementSelection(settings.osrsT, settings.osrsP,
                                    settings.osrsH)) {
-    return Status::Error(Err::INVALID_PARAM);
+    return Status::Error(
+        Err::INVALID_PARAM,
+        static_cast<int32_t>(SettingsValidationReason::SELECTION));
   }
   return Status::Ok();
 }
@@ -502,25 +551,24 @@ Status BME280::_prepareBeginConfig(const Config& config) {
   _resetRuntime();
 
   if (config.i2cWrite == nullptr || config.i2cWriteRead == nullptr) {
-    return Status::Error(Err::INVALID_CONFIG, "I2C callbacks not set");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   if (config.i2cTimeoutMs == 0) {
-    return Status::Error(Err::INVALID_CONFIG, "I2C timeout must be > 0");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   if (config.i2cTimeoutMs >=
       static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
-    return Status::Error(Err::INVALID_CONFIG, "I2C timeout too large");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   if (config.nvmReadyTimeoutMs == 0) {
-    return Status::Error(Err::INVALID_CONFIG, "NVM timeout must be > 0");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   if (config.nvmReadyTimeoutMs >=
       static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
-    return Status::Error(Err::INVALID_CONFIG, "NVM timeout too large");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   if (config.conversionReadyTimeoutMs == 0) {
-    return Status::Error(Err::INVALID_CONFIG,
-                         "Conversion ready timeout must be > 0");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   const SensorSettings maximumDurationSettings = {
     Oversampling::X16, Oversampling::X16, Oversampling::X16,
@@ -532,11 +580,10 @@ Status BME280::_prepareBeginConfig(const Config& config) {
       static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
   if (config.conversionReadyTimeoutMs >
       maximumWrapSafeIntervalMs - maximumBaseIntervalMs) {
-    return Status::Error(Err::INVALID_CONFIG,
-                         "Conversion ready timeout too large");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   if (config.i2cAddress != 0x76 && config.i2cAddress != 0x77) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   const SensorSettings settings = {
     config.osrsT, config.osrsP, config.osrsH,
@@ -571,7 +618,7 @@ Status BME280::begin(const Config& config) {
     return mapPresenceError(st);
   }
   if (!isBme280ChipId(chipId)) {
-    return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
+    return Status::Error(Err::CHIP_ID_MISMATCH, chipId);
   }
 
   st = _waitForNvmReady(false);
@@ -616,7 +663,7 @@ void BME280::tick(uint32_t nowMs) {
 
   if (_config.mode == Mode::SLEEP) {
     _finishMeasurementRequest(
-        Status::Error(Err::INVALID_PARAM, "Device is in sleep mode"));
+        Status::Error(Err::INVALID_PARAM));
     return;
   }
 
@@ -648,11 +695,11 @@ void BME280::tick(uint32_t nowMs) {
         _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
       }
       _finishMeasurementRequest(
-          Status::Error(Err::TIMEOUT, "Measurement ready timeout"));
+          Status::Error(Err::TIMEOUT));
       return;
     }
     _measurementStatusPolls++;
-    _lastMeasurementStatus = Status::Error(Err::IN_PROGRESS, "Measurement still running");
+    _lastMeasurementStatus = Status::Error(Err::IN_PROGRESS);
     return;
   }
 
@@ -693,7 +740,7 @@ Status BME280::probe() {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
 
   uint8_t chipId = 0;
@@ -702,7 +749,7 @@ Status BME280::probe() {
     return mapPresenceError(st);
   }
   if (!isBme280ChipId(chipId)) {
-    return Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId);
+    return Status::Error(Err::CHIP_ID_MISMATCH, chipId);
   }
 
   return Status::Ok();
@@ -714,7 +761,7 @@ Status BME280::recover() {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
 
   Status result = [&]() -> Status {
@@ -725,7 +772,7 @@ Status BME280::recover() {
     }
     if (!isBme280ChipId(chipId)) {
       const Status mismatch = _recordFailure(
-          Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId));
+          Status::Error(Err::CHIP_ID_MISMATCH, chipId));
       _calibrationState = CalibrationState::INVALID;
       _humidityCalibrationValid = false;
       _markHardwareConfigDirty(mismatch);
@@ -895,13 +942,11 @@ bool BME280::_jobActive() const {
 Status BME280::_jobStartAdmission() const {
   if (_jobActive()) {
     return Status::Error(
-        Err::BUSY, "Staged job already active",
-        static_cast<int32_t>(BusyReason::STAGED_JOB_ACTIVE));
+        Err::BUSY, static_cast<int32_t>(BusyReason::STAGED_JOB_ACTIVE));
   }
   if (_jobTerminalResultPending) {
     return Status::Error(
-        Err::BUSY, "Terminal job result pending",
-        static_cast<int32_t>(BusyReason::TERMINAL_RESULT_PENDING));
+        Err::BUSY, static_cast<int32_t>(BusyReason::TERMINAL_RESULT_PENDING));
   }
   return Status::Ok();
 }
@@ -953,7 +998,7 @@ Status BME280::_startJob(JobKind kind, JobPhase phase) {
   _jobKind = kind;
   _jobState = JobState::RUNNING;
   _jobPhase = phase;
-  _jobStatus = Status::Error(Err::IN_PROGRESS, "Job in progress");
+  _jobStatus = Status::Error(Err::IN_PROGRESS);
   _jobTerminalResultPending = false;
   _jobDeadlineMs = 0;
   _jobDeadlineActive = false;
@@ -971,7 +1016,7 @@ Status BME280::_startJob(JobKind kind, JobPhase phase) {
   _jobRawSample = RawSample{};
   _jobCompSample = CompensatedSample{};
   _jobTFine = 0;
-  return Status::Error(Err::IN_PROGRESS, "Job started");
+  return Status::Error(Err::IN_PROGRESS);
 }
 
 JobPollResult BME280::_idleJobResult() const {
@@ -1005,6 +1050,10 @@ JobPollResult BME280::_failJob(const Status& st, uint8_t instructionsUsed) {
        _jobKind == JobKind::SOFT_RESET) &&
       !st.ok() && !st.inProgress() &&
       !isTransportFailure(st)) {
+    finalStatus = _recordFailure(st);
+  }
+  if (_jobKind == JobKind::APPLY_CONFIG &&
+      st.code == Err::RESYNC_REQUIRED) {
     finalStatus = _recordFailure(st);
   }
   const bool changedDeviceStateObserved =
@@ -1085,17 +1134,16 @@ Status BME280::startForcedMeasurementJob() {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   if (_configSyncState != ConfigSyncState::SYNCHRONIZED ||
       _calibrationState != CalibrationState::VALID) {
-    const Status st = Status::Error(Err::RESYNC_REQUIRED,
-                                    "Device state requires resynchronization");
+    const Status st = Status::Error(Err::RESYNC_REQUIRED);
     _lastMeasurementStatus = st;
     return st;
   }
   if (_config.mode != Mode::FORCED) {
-    return Status::Error(Err::INVALID_PARAM, "Device is not in forced mode");
+    return Status::Error(Err::INVALID_PARAM);
   }
   if (_measurementRequested && !_measurementReady) {
     return Status::Error(
@@ -1108,8 +1156,7 @@ Status BME280::startForcedMeasurementJob() {
   Status st = _startJob(JobKind::FORCED_MEASUREMENT, firstPhase);
   if (st.inProgress()) {
     _measurementReady = false;
-    _lastMeasurementStatus = Status::Error(Err::IN_PROGRESS,
-                                           "Measurement job started");
+    _lastMeasurementStatus = Status::Error(Err::IN_PROGRESS);
   }
   return st;
 }
@@ -1120,9 +1167,10 @@ Status BME280::startApplyConfigJob() {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
-  Status st = _startJob(JobKind::APPLY_CONFIG, JobPhase::APPLY_WAIT_IDLE);
+  Status st = _startJob(JobKind::APPLY_CONFIG,
+                        JobPhase::APPLY_CTRL_MEAS_SLEEP);
   if (st.inProgress()) {
     _cancelMeasurementTrackingForStateChange();
     _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
@@ -1148,7 +1196,8 @@ Status BME280::startApplySettingsJob(const SensorSettings& settings) {
   }
 
   const SensorSettings priorSettings = sensorSettings();
-  Status st = _startJob(JobKind::APPLY_CONFIG, JobPhase::APPLY_WAIT_IDLE);
+  Status st = _startJob(JobKind::APPLY_CONFIG,
+                        JobPhase::APPLY_CTRL_MEAS_SLEEP);
   if (st.inProgress()) {
     _jobSettingsStaged = true;
     _jobPriorSettings = priorSettings;
@@ -1165,7 +1214,7 @@ Status BME280::startResyncJob() {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
 
   Status st = _startJob(JobKind::RESYNC, JobPhase::RESYNC_READ_CHIP_ID);
@@ -1193,7 +1242,7 @@ Status BME280::startSoftResetJob() {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
 
   Status st = _startJob(JobKind::SOFT_RESET, JobPhase::SOFT_RESET_WRITE);
@@ -1213,22 +1262,21 @@ Status BME280::startSoftResetJob() {
 
 Status BME280::cancelJob(CancelReason reason) {
   if (!_jobActive()) {
-    return Status::Error(Err::INVALID_PARAM, "No active job to cancel");
+    return Status::Error(Err::INVALID_PARAM);
   }
 
   Status cancellation;
   JobState terminalState = JobState::CANCELLED;
   switch (reason) {
     case CancelReason::OWNER_REQUEST:
-      cancellation = Status::Error(Err::CANCELLED, "Job cancelled by owner");
+      cancellation = Status::Error(Err::CANCELLED);
       break;
     case CancelReason::DEADLINE_EXPIRED:
-      cancellation = Status::Error(Err::DEADLINE_EXPIRED,
-                                   "Job owner deadline expired");
+      cancellation = Status::Error(Err::DEADLINE_EXPIRED);
       terminalState = JobState::TIMED_OUT;
       break;
     default:
-      return Status::Error(Err::INVALID_PARAM, "Invalid cancellation reason");
+      return Status::Error(Err::INVALID_PARAM);
   }
 
   const bool configJob = _jobKind == JobKind::INIT ||
@@ -1300,7 +1348,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
   uint8_t instructionsUsed = 0;
   for (uint8_t guard = 0; guard < 32; ++guard) {
     _jobState = JobState::RUNNING;
-    _jobStatus = Status::Error(Err::IN_PROGRESS, "Job in progress");
+    _jobStatus = Status::Error(Err::IN_PROGRESS);
 
     switch (_jobPhase) {
       case JobPhase::INIT_READ_CHIP_ID: {
@@ -1315,7 +1363,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         }
         if (!isBme280ChipId(chipId)) {
           return _failJob(
-              Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId),
+              Status::Error(Err::CHIP_ID_MISMATCH, chipId),
               instructionsUsed);
         }
         _jobPhase = JobPhase::INIT_NVM_START;
@@ -1339,13 +1387,13 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
       case JobPhase::NVM_POLL: {
         if (_jobNvmPolls >= NVM_READY_MAX_POLLS) {
           return _failJob(
-              Status::Error(Err::TIMEOUT, "NVM ready polling limit reached",
-                            NVM_READY_MAX_POLLS),
+              Status::Error(Err::TIMEOUT, NVM_READY_MAX_POLLS),
               instructionsUsed);
         }
         if (deadlineReached(nowMs, _jobDeadlineMs)) {
-          return _failJob(Status::Error(Err::TIMEOUT, "NVM ready timeout",
-                                        static_cast<int32_t>(_config.nvmReadyTimeoutMs)),
+          return _failJob(Status::Error(
+                              Err::TIMEOUT,
+                              static_cast<int32_t>(_config.nvmReadyTimeoutMs)),
                           instructionsUsed);
         }
         if (instructionsUsed >= maxInstructions) {
@@ -1363,7 +1411,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         }
         if ((status & cmd::MASK_STATUS_IM_UPDATE) != 0) {
           _jobState = JobState::WAITING;
-          _jobStatus = Status::Error(Err::IN_PROGRESS, "NVM update in progress");
+          _jobStatus = Status::Error(Err::IN_PROGRESS);
           return _jobResult(instructionsUsed);
         }
         _jobDeadlineActive = false;
@@ -1447,13 +1495,12 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           }
           if (deadlineReached(nowMs, _jobDeadlineMs) ||
               _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
-            return _failJob(Status::Error(Err::TIMEOUT,
-                                          "Measurement idle wait timeout"),
+            return _failJob(Status::Error(Err::TIMEOUT),
                             instructionsUsed);
           }
           ++_jobWaitPolls;
           _jobState = JobState::WAITING;
-          _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
+          _jobStatus = Status::Error(Err::IN_PROGRESS);
           return _jobResult(instructionsUsed);
         }
         _jobWaitPolls = 0;
@@ -1466,7 +1513,8 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
-        const uint8_t value = buildCtrlMeas(_config.osrsT, _config.osrsP,
+        const SensorSettings settings = sensorSettings();
+        const uint8_t value = buildCtrlMeas(settings.osrsT, settings.osrsP,
                                             Mode::SLEEP);
         const Status st = writeRegs(cmd::REG_CTRL_MEAS, &value, 1);
         ++instructionsUsed;
@@ -1504,8 +1552,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           }
           if (deadlineReached(nowMs, _jobDeadlineMs) ||
               _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
-            return _failJob(Status::Error(Err::TIMEOUT,
-                                          "Measurement sleep wait timeout"),
+            return _failJob(Status::Error(Err::TIMEOUT),
                             instructionsUsed);
           }
           ++_jobWaitPolls;
@@ -1513,7 +1560,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
               Status::Error(Err::BUSY,
                             static_cast<int32_t>(BusyReason::DEVICE_MEASURING)));
           _jobState = JobState::WAITING;
-          _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
+          _jobStatus = Status::Error(Err::IN_PROGRESS);
           return _jobResult(instructionsUsed);
         }
         _jobWaitPolls = 0;
@@ -1526,7 +1573,8 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
-        const uint8_t value = buildConfig(_config.standby, _config.filter);
+        const SensorSettings settings = sensorSettings();
+        const uint8_t value = buildConfig(settings.standby, settings.filter);
         const Status st = writeRegs(cmd::REG_CONFIG, &value, 1);
         ++instructionsUsed;
         _trackJobConfigWriteResult(st);
@@ -1541,7 +1589,8 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
-        const uint8_t value = buildCtrlHum(_config.osrsH);
+        const SensorSettings settings = sensorSettings();
+        const uint8_t value = buildCtrlHum(settings.osrsH);
         const Status st = writeRegs(cmd::REG_CTRL_HUM, &value, 1);
         ++instructionsUsed;
         _trackJobConfigWriteResult(st);
@@ -1556,11 +1605,27 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
-        const uint8_t value = buildCtrlMeas(_config.osrsT, _config.osrsP,
-                                            registerModeForConfig(_config.mode));
+        const SensorSettings settings = sensorSettings();
+        const uint8_t value = buildCtrlMeas(
+            settings.osrsT, settings.osrsP,
+            registerModeForConfig(settings.mode));
         const Status st = writeRegs(cmd::REG_CTRL_MEAS, &value, 1);
         ++instructionsUsed;
         _trackJobConfigWriteResult(st);
+        if (!st.ok()) {
+          return _failJob(st, instructionsUsed);
+        }
+        _jobPhase = JobPhase::APPLY_VERIFY;
+        break;
+      }
+
+      case JobPhase::APPLY_VERIFY: {
+        if (instructionsUsed >= maxInstructions) {
+          return _jobResult(instructionsUsed);
+        }
+        const SensorSettings settings = sensorSettings();
+        const Status st = _verifySettingsReadback(settings);
+        ++instructionsUsed;
         if (!st.ok()) {
           return _failJob(st, instructionsUsed);
         }
@@ -1590,14 +1655,12 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           if (deadlineReached(nowMs, _jobDeadlineMs) ||
               _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
             _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
-            return _failJob(Status::Error(Err::TIMEOUT,
-                                          "Conversion reconcile timeout"),
+            return _failJob(Status::Error(Err::TIMEOUT),
                             instructionsUsed);
           }
           ++_jobWaitPolls;
           _jobState = JobState::WAITING;
-          _jobStatus = Status::Error(Err::IN_PROGRESS,
-                                     "Existing conversion in progress");
+          _jobStatus = Status::Error(Err::IN_PROGRESS);
           _lastMeasurementStatus = _jobStatus;
           return _jobResult(instructionsUsed);
         }
@@ -1639,7 +1702,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
       case JobPhase::FORCE_WAIT_TIME:
         if (!deadlineReached(nowMs, _jobDeadlineMs)) {
           _jobState = JobState::WAITING;
-          _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement delay active");
+          _jobStatus = Status::Error(Err::IN_PROGRESS);
           _lastMeasurementStatus = _jobStatus;
           return _jobResult(instructionsUsed);
         }
@@ -1665,13 +1728,12 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           if (deadlineReached(nowMs, _jobDeadlineMs) ||
               _jobWaitPolls >= MEASURING_READY_MAX_POLLS) {
             _conversionState = ConversionState::UNKNOWN_AFTER_TRIGGER_ERROR;
-            return _failJob(Status::Error(Err::TIMEOUT,
-                                          "Measurement ready timeout"),
+            return _failJob(Status::Error(Err::TIMEOUT),
                             instructionsUsed);
           }
           ++_jobWaitPolls;
           _jobState = JobState::WAITING;
-          _jobStatus = Status::Error(Err::IN_PROGRESS, "Measurement in progress");
+          _jobStatus = Status::Error(Err::IN_PROGRESS);
           _lastMeasurementStatus = _jobStatus;
           return _jobResult(instructionsUsed);
         }
@@ -1748,7 +1810,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
             _jobDeviceIdentityMismatch = true;
           }
           return _failJob(
-              Status::Error(Err::CHIP_ID_MISMATCH, "Chip ID mismatch", chipId),
+              Status::Error(Err::CHIP_ID_MISMATCH, chipId),
               instructionsUsed);
         }
         _jobPhase = JobPhase::RESYNC_NVM_START;
@@ -1763,9 +1825,7 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
           _driverState = DriverState::READY;
         } else if (_jobKind == JobKind::APPLY_CONFIG) {
           _clearHardwareConfigDirty();
-          if (_config.mode == Mode::FORCED) {
-            _conversionState = ConversionState::IDLE;
-          }
+          _conversionState = ConversionState::IDLE;
         } else if (_jobKind == JobKind::RESYNC ||
                    _jobKind == JobKind::SOFT_RESET) {
           _commitCalibration(_jobCalibration, _jobHumidityCalibrationValid);
@@ -1797,24 +1857,23 @@ Status BME280::requestMeasurement() {
     return admission;
   }
   if (!_initialized) {
-    Status st = Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    Status st = Status::Error(Err::NOT_INITIALIZED);
     _lastMeasurementStatus = st;
     return st;
   }
   if (_configSyncState != ConfigSyncState::SYNCHRONIZED ||
       _calibrationState != CalibrationState::VALID) {
-    Status st = Status::Error(Err::RESYNC_REQUIRED,
-                              "Device state requires resynchronization");
+    Status st = Status::Error(Err::RESYNC_REQUIRED);
     _lastMeasurementStatus = st;
     return st;
   }
   if (_config.mode == Mode::SLEEP) {
-    Status st = Status::Error(Err::INVALID_PARAM, "Device is in sleep mode");
+    Status st = Status::Error(Err::INVALID_PARAM);
     _lastMeasurementStatus = st;
     return st;
   }
   if (_config.nowMs == nullptr) {
-    Status st = Status::Error(Err::INVALID_CONFIG, "nowMs required for measurement scheduling");
+    Status st = Status::Error(Err::INVALID_CONFIG);
     _lastMeasurementStatus = st;
     return st;
   }
@@ -1845,7 +1904,7 @@ Status BME280::requestMeasurement() {
       const uint32_t nowMs = _nowMs();
       _startMeasurementTracking(nowMs);
       _conversionState = ConversionState::IN_PROGRESS;
-      st = Status::Error(Err::IN_PROGRESS, "Measurement already in progress");
+      st = Status::Error(Err::IN_PROGRESS);
       _lastMeasurementStatus = st;
       return st;
     }
@@ -1865,28 +1924,27 @@ Status BME280::requestMeasurement() {
     _conversionState = ConversionState::IN_PROGRESS;
     _startMeasurementTracking(_nowMs());
 
-    st = Status::Error(Err::IN_PROGRESS, "Measurement started");
+    st = Status::Error(Err::IN_PROGRESS);
     _lastMeasurementStatus = st;
     return st;
   }
 
   _startMeasurementTracking(_nowMs());
-  Status st = Status::Error(Err::IN_PROGRESS, "Measurement scheduled");
+  Status st = Status::Error(Err::IN_PROGRESS);
   _lastMeasurementStatus = st;
   return st;
 }
 
 Status BME280::getMeasurement(Measurement& out) {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   if (!_measurementReady) {
-    return Status::Error(Err::MEASUREMENT_NOT_READY, "Measurement not ready");
+    return Status::Error(Err::MEASUREMENT_NOT_READY);
   }
   if (sampleFreshness() != SampleFreshness::FRESH) {
     _measurementReady = false;
-    return Status::Error(Err::MEASUREMENT_NOT_READY,
-                         "Unread measurement is stale");
+    return Status::Error(Err::MEASUREMENT_NOT_READY);
   }
 
   out.temperatureC = static_cast<float>(_compSample.tempC_x100) / 100.0f;
@@ -1902,10 +1960,10 @@ Status BME280::getMeasurement(Measurement& out) {
 
 Status BME280::getRawSample(RawSample& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   if (!_hasSample) {
-    return Status::Error(Err::MEASUREMENT_NOT_READY, "Measurement not ready");
+    return Status::Error(Err::MEASUREMENT_NOT_READY);
   }
 
   out = _rawSample;
@@ -1914,10 +1972,10 @@ Status BME280::getRawSample(RawSample& out) const {
 
 Status BME280::getCompensatedSample(CompensatedSample& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   if (!_hasSample) {
-    return Status::Error(Err::MEASUREMENT_NOT_READY, "Measurement not ready");
+    return Status::Error(Err::MEASUREMENT_NOT_READY);
   }
 
   out = _compSample;
@@ -1926,10 +1984,10 @@ Status BME280::getCompensatedSample(CompensatedSample& out) const {
 
 Status BME280::getSampleEnvelope(SampleEnvelope& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   if (!_hasSample) {
-    return Status::Error(Err::MEASUREMENT_NOT_READY, "Measurement not ready");
+    return Status::Error(Err::MEASUREMENT_NOT_READY);
   }
 
   out.rawSample = _rawSample;
@@ -1943,11 +2001,10 @@ Status BME280::getSampleEnvelope(SampleEnvelope& out) const {
 
 Status BME280::getCalibration(Calibration& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   if (_calibrationState != CalibrationState::VALID) {
-    return Status::Error(Err::RESYNC_REQUIRED,
-                         "Calibration must be reloaded");
+    return Status::Error(Err::RESYNC_REQUIRED);
   }
 
   out.digT1 = _digT1;
@@ -1980,8 +2037,7 @@ Status BME280::invalidateDeviceState() {
     return admission;
   }
 
-  const Status invalid = Status::Error(
-      Err::RESYNC_REQUIRED, "Device state invalidated by owner");
+  const Status invalid = Status::Error(Err::RESYNC_REQUIRED);
   _calibrationState = CalibrationState::INVALID;
   _humidityCalibrationValid = false;
   _markHardwareConfigDirty(invalid);
@@ -2001,7 +2057,7 @@ Status BME280::readCalibrationRaw(CalibrationRaw& out) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
 
   Status st = readRegs(cmd::REG_CALIB_TP_START, out.tp, sizeof(out.tp));
@@ -2018,41 +2074,17 @@ Status BME280::setMode(Mode mode) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
-  if (!isValidMode(mode)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid mode");
-  }
-  if (mode != Mode::SLEEP &&
-      !isValidMeasurementSelection(_config.osrsT, _config.osrsP, _config.osrsH)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling combination");
-  }
-
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
-                                         registerModeForConfig(mode));
-  Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-  if (!st.ok()) {
-    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
-      _markHardwareConfigDirty(st);
-    }
-    return st;
-  }
-
-  _config.mode = mode;
-  _conversionState = ConversionState::IDLE;
-  _advanceConfigGeneration();
-  _invalidateSampleCache();
-  if (mode == Mode::SLEEP) {
-    _measurementRequested = false;
-    _measurementDeadlineMs = 0;
-    _measurementStatusPolls = 0;
-  }
-  return Status::Ok();
+  SensorSettings settings = sensorSettings();
+  settings.mode = mode;
+  return _writeSettingsSynchronously(settings,
+                                     SettingsWritePlan::CTRL_MEAS_ONLY);
 }
 
 Status BME280::getMode(Mode& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   out = _config.mode;
   return Status::Ok();
@@ -2064,28 +2096,12 @@ Status BME280::setOversamplingT(Oversampling osrs) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
-  if (!isValidOversampling(osrs)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling");
-  }
-  if (!isValidMeasurementSelection(osrs, _config.osrsP, _config.osrsH)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling combination");
-  }
-
-  const uint8_t ctrlMeas = buildCtrlMeas(osrs, _config.osrsP,
-                                         registerModeForConfig(_config.mode));
-  Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-  if (!st.ok()) {
-    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
-      _markHardwareConfigDirty(st);
-    }
-    return st;
-  }
-  _config.osrsT = osrs;
-  _advanceConfigGeneration();
-  _invalidateSampleCache();
-  return Status::Ok();
+  SensorSettings settings = sensorSettings();
+  settings.osrsT = osrs;
+  return _writeSettingsSynchronously(settings,
+                                     SettingsWritePlan::CTRL_MEAS_ONLY);
 }
 
 Status BME280::setOversamplingP(Oversampling osrs) {
@@ -2094,28 +2110,12 @@ Status BME280::setOversamplingP(Oversampling osrs) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
-  if (!isValidOversampling(osrs)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling");
-  }
-  if (!isValidMeasurementSelection(_config.osrsT, osrs, _config.osrsH)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling combination");
-  }
-
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, osrs,
-                                         registerModeForConfig(_config.mode));
-  Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-  if (!st.ok()) {
-    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
-      _markHardwareConfigDirty(st);
-    }
-    return st;
-  }
-  _config.osrsP = osrs;
-  _advanceConfigGeneration();
-  _invalidateSampleCache();
-  return Status::Ok();
+  SensorSettings settings = sensorSettings();
+  settings.osrsP = osrs;
+  return _writeSettingsSynchronously(settings,
+                                     SettingsWritePlan::CTRL_MEAS_ONLY);
 }
 
 Status BME280::setOversamplingH(Oversampling osrs) {
@@ -2124,43 +2124,18 @@ Status BME280::setOversamplingH(Oversampling osrs) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
-  if (!isValidOversampling(osrs)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling");
-  }
-  if (!isValidMeasurementSelection(_config.osrsT, _config.osrsP, osrs)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid oversampling combination");
+  SensorSettings settings = sensorSettings();
+  settings.osrsH = osrs;
+  const Status validation = validateSettings(settings);
+  if (!validation.ok()) {
+    return validation;
   }
   if (osrs != Oversampling::SKIP && !_humidityCalibrationValid) {
-    return Status::Error(Err::CALIBRATION_INVALID,
-                         "Humidity calibration block invalid");
+    return Status::Error(Err::CALIBRATION_INVALID);
   }
-
-  const uint8_t ctrlHum = buildCtrlHum(osrs);
-  Status st = writeRegs(cmd::REG_CTRL_HUM, &ctrlHum, 1);
-  if (!st.ok()) {
-    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
-      _markHardwareConfigDirty(st);
-    }
-    return st;
-  }
-
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
-                                         registerModeForConfig(_config.mode));
-  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-  if (!st.ok()) {
-    // ctrl_hum already reached the device. Even a definite address NACK on
-    // this second transaction leaves the cached setting out of sync with the
-    // register image and requires a full verified resynchronization.
-    _markHardwareConfigDirty(st);
-    return st;
-  }
-
-  _config.osrsH = osrs;
-  _advanceConfigGeneration();
-  _invalidateSampleCache();
-  return Status::Ok();
+  return _writeSettingsSynchronously(settings, SettingsWritePlan::CTRL_HUM);
 }
 
 Status BME280::setFilter(Filter filter) {
@@ -2169,56 +2144,11 @@ Status BME280::setFilter(Filter filter) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
-  if (!isValidFilter(filter)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid filter");
-  }
-
-  const uint8_t config = buildConfig(_config.standby, filter);
-  const uint8_t ctrlMeasSleep = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP);
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
-                                         registerModeForConfig(_config.mode));
-
-  Status st = _ensureConfigWriteReady();
-  if (!st.ok()) {
-    return st;
-  }
-
-  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    return st;
-  }
-
-  st = _ensureConfigWriteReady();
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-    if (!restore.ok()) {
-      _markHardwareConfigDirty(restore);
-    }
-    return st;
-  }
-
-  st = writeRegs(cmd::REG_CONFIG, &config, 1);
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    // Best-effort restore: always return the original config-write error.
-    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-    (void)restore;
-    return st;
-  }
-  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    return st;
-  }
-
-  _config.filter = filter;
-  _advanceConfigGeneration();
-  _invalidateSampleCache();
-  return Status::Ok();
+  SensorSettings settings = sensorSettings();
+  settings.filter = filter;
+  return _writeSettingsSynchronously(settings, SettingsWritePlan::CONFIG);
 }
 
 Status BME280::setStandby(Standby standby) {
@@ -2227,61 +2157,16 @@ Status BME280::setStandby(Standby standby) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
-  if (!isValidStandby(standby)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid standby");
-  }
-
-  const uint8_t config = buildConfig(standby, _config.filter);
-  const uint8_t ctrlMeasSleep = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP);
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
-                                         registerModeForConfig(_config.mode));
-
-  Status st = _ensureConfigWriteReady();
-  if (!st.ok()) {
-    return st;
-  }
-
-  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    return st;
-  }
-
-  st = _ensureConfigWriteReady();
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-    if (!restore.ok()) {
-      _markHardwareConfigDirty(restore);
-    }
-    return st;
-  }
-
-  st = writeRegs(cmd::REG_CONFIG, &config, 1);
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    // Best-effort restore: always return the original config-write error.
-    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-    (void)restore;
-    return st;
-  }
-  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    return st;
-  }
-
-  _config.standby = standby;
-  _advanceConfigGeneration();
-  _invalidateSampleCache();
-  return Status::Ok();
+  SensorSettings settings = sensorSettings();
+  settings.standby = standby;
+  return _writeSettingsSynchronously(settings, SettingsWritePlan::CONFIG);
 }
 
 Status BME280::getOversamplingT(Oversampling& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   out = _config.osrsT;
   return Status::Ok();
@@ -2289,7 +2174,7 @@ Status BME280::getOversamplingT(Oversampling& out) const {
 
 Status BME280::getOversamplingP(Oversampling& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   out = _config.osrsP;
   return Status::Ok();
@@ -2297,7 +2182,7 @@ Status BME280::getOversamplingP(Oversampling& out) const {
 
 Status BME280::getOversamplingH(Oversampling& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   out = _config.osrsH;
   return Status::Ok();
@@ -2305,7 +2190,7 @@ Status BME280::getOversamplingH(Oversampling& out) const {
 
 Status BME280::getFilter(Filter& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   out = _config.filter;
   return Status::Ok();
@@ -2313,7 +2198,7 @@ Status BME280::getFilter(Filter& out) const {
 
 Status BME280::getStandby(Standby& out) const {
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   out = _config.standby;
   return Status::Ok();
@@ -2325,7 +2210,7 @@ Status BME280::softReset() {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
 
   Status result = [&]() -> Status {
@@ -2382,7 +2267,7 @@ Status BME280::readChipId(uint8_t& id) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   return readRegister(cmd::REG_CHIP_ID, id);
 }
@@ -2393,7 +2278,7 @@ Status BME280::readStatus(uint8_t& status) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   return readRegister(cmd::REG_STATUS, status);
 }
@@ -2404,7 +2289,7 @@ Status BME280::readCtrlHum(uint8_t& value) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   return readRegister(cmd::REG_CTRL_HUM, value);
 }
@@ -2415,7 +2300,7 @@ Status BME280::readCtrlMeas(uint8_t& value) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   return readRegister(cmd::REG_CTRL_MEAS, value);
 }
@@ -2426,7 +2311,7 @@ Status BME280::readConfig(uint8_t& value) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   return readRegister(cmd::REG_CONFIG, value);
 }
@@ -2437,7 +2322,7 @@ Status BME280::isMeasuring(bool& measuring) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
 
   uint8_t status = 0;
@@ -2469,10 +2354,10 @@ uint32_t BME280::estimateNormalCycleMs() const {
 Status BME280::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
                                 uint8_t* rxBuf, size_t rxLen) {
   if (txBuf == nullptr || txLen == 0 || (rxLen > 0 && rxBuf == nullptr)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+    return Status::Error(Err::INVALID_PARAM);
   }
   if (_config.i2cWriteRead == nullptr) {
-    return Status::Error(Err::INVALID_CONFIG, "I2C write-read not set");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   const TransportResult result = _config.i2cWriteRead(
       _config.i2cAddress, txBuf, txLen, rxBuf, rxLen,
@@ -2482,10 +2367,10 @@ Status BME280::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
 
 Status BME280::_i2cWriteRaw(const uint8_t* buf, size_t len) {
   if (buf == nullptr || len == 0) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+    return Status::Error(Err::INVALID_PARAM);
   }
   if (_config.i2cWrite == nullptr) {
-    return Status::Error(Err::INVALID_CONFIG, "I2C write not set");
+    return Status::Error(Err::INVALID_CONFIG);
   }
   const TransportResult result = _config.i2cWrite(
       _config.i2cAddress, buf, len, _config.i2cTimeoutMs, _config.i2cUser);
@@ -2495,7 +2380,7 @@ Status BME280::_i2cWriteRaw(const uint8_t* buf, size_t len) {
 Status BME280::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
                                     uint8_t* rxBuf, size_t rxLen) {
   if (txBuf == nullptr || txLen == 0 || (rxLen > 0 && rxBuf == nullptr)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+    return Status::Error(Err::INVALID_PARAM);
   }
   Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
@@ -2506,7 +2391,7 @@ Status BME280::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
 
 Status BME280::_i2cWriteTracked(const uint8_t* buf, size_t len) {
   if (buf == nullptr || len == 0) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+    return Status::Error(Err::INVALID_PARAM);
   }
   Status st = _i2cWriteRaw(buf, len);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
@@ -2517,7 +2402,7 @@ Status BME280::_i2cWriteTracked(const uint8_t* buf, size_t len) {
 
 Status BME280::readRegs(uint8_t startReg, uint8_t* buf, size_t len) {
   if (buf == nullptr || len == 0) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid read buffer");
+    return Status::Error(Err::INVALID_PARAM);
   }
 
   uint8_t reg = startReg;
@@ -2526,17 +2411,24 @@ Status BME280::readRegs(uint8_t startReg, uint8_t* buf, size_t len) {
 
 Status BME280::writeRegs(uint8_t startReg, const uint8_t* buf, size_t len) {
   if (buf == nullptr || len == 0) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid write buffer");
+    return Status::Error(Err::INVALID_PARAM);
   }
   if (len > MAX_WRITE_LEN) {
-    return Status::Error(Err::INVALID_PARAM, "Write length too large");
+    return Status::Error(Err::INVALID_PARAM);
+  }
+  if (len > (static_cast<size_t>(UINT8_MAX) - startReg + 1U)) {
+    return Status::Error(Err::INVALID_PARAM);
   }
 
-  uint8_t payload[MAX_WRITE_LEN + 1] = {};
-  payload[0] = startReg;
-  std::memcpy(&payload[1], buf, len);
+  uint8_t payload[2U * MAX_WRITE_LEN] = {};
+  // BME280 writes use repeated register-address/data pairs; addresses do not
+  // auto-increment across one transport write callback.
+  for (size_t i = 0; i < len; ++i) {
+    payload[2U * i] = static_cast<uint8_t>(startReg + i);
+    payload[(2U * i) + 1U] = buf[i];
+  }
 
-  return _i2cWriteTracked(payload, len + 1);
+  return _i2cWriteTracked(payload, 2U * len);
 }
 
 Status BME280::readRegisters(uint8_t startReg, uint8_t* buf, size_t len) {
@@ -2545,7 +2437,7 @@ Status BME280::readRegisters(uint8_t startReg, uint8_t* buf, size_t len) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   return readRegs(startReg, buf, len);
 }
@@ -2556,7 +2448,7 @@ Status BME280::writeRegisters(uint8_t startReg, const uint8_t* buf, size_t len) 
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   const bool touchesConfig = touchesDiagnosticConfigRegister(startReg, len);
   const Status st = writeRegs(startReg, buf, len);
@@ -2576,7 +2468,7 @@ Status BME280::readRegister(uint8_t reg, uint8_t& value) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   return readRegs(reg, &value, 1);
 }
@@ -2587,7 +2479,7 @@ Status BME280::writeRegister(uint8_t reg, uint8_t value) {
     return admission;
   }
   if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+    return Status::Error(Err::NOT_INITIALIZED);
   }
   return writeRegisters(reg, &value, 1);
 }
@@ -2712,56 +2604,128 @@ Status BME280::_ensureConfigWriteReady() {
 }
 
 Status BME280::_applyConfig() {
-  const uint8_t ctrlHum = buildCtrlHum(_config.osrsH);
-  const uint8_t ctrlMeasSleep = buildCtrlMeas(_config.osrsT, _config.osrsP, Mode::SLEEP);
-  const uint8_t ctrlMeas = buildCtrlMeas(_config.osrsT, _config.osrsP,
-                                         registerModeForConfig(_config.mode));
-  const uint8_t config = buildConfig(_config.standby, _config.filter);
+  return _writeSettingsSynchronously(sensorSettings(),
+                                     SettingsWritePlan::FULL);
+}
 
-  Status st = _ensureConfigWriteReady();
+Status BME280::_verifySettingsReadback(const SensorSettings& settings) {
+  uint8_t values[4] = {};
+  const Status st = readRegs(cmd::REG_CTRL_HUM, values, sizeof(values));
   if (!st.ok()) {
     return st;
   }
 
-  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
+  const uint8_t expectedCtrlHum =
+      static_cast<uint8_t>(buildCtrlHum(settings.osrsH) & CTRL_HUM_OWNED_MASK);
+  const uint8_t actualCtrlHum =
+      static_cast<uint8_t>(values[0] & CTRL_HUM_OWNED_MASK);
+  if (actualCtrlHum != expectedCtrlHum) {
+    return Status::Error(
+        Err::RESYNC_REQUIRED,
+        packSettingsMismatchDetail(cmd::REG_CTRL_HUM, expectedCtrlHum,
+                                   actualCtrlHum));
+  }
+
+  const uint8_t expectedCtrlMeas = static_cast<uint8_t>(
+      buildCtrlMeas(settings.osrsT, settings.osrsP,
+                    registerModeForConfig(settings.mode)) &
+      CTRL_MEAS_OWNED_MASK);
+  const uint8_t actualCtrlMeas =
+      static_cast<uint8_t>(values[2] & CTRL_MEAS_OWNED_MASK);
+  if (actualCtrlMeas != expectedCtrlMeas) {
+    return Status::Error(
+        Err::RESYNC_REQUIRED,
+        packSettingsMismatchDetail(cmd::REG_CTRL_MEAS, expectedCtrlMeas,
+                                   actualCtrlMeas));
+  }
+
+  const uint8_t expectedConfig = static_cast<uint8_t>(
+      buildConfig(settings.standby, settings.filter) & CONFIG_OWNED_MASK);
+  const uint8_t actualConfig =
+      static_cast<uint8_t>(values[3] & CONFIG_OWNED_MASK);
+  if (actualConfig != expectedConfig) {
+    return Status::Error(
+        Err::RESYNC_REQUIRED,
+        packSettingsMismatchDetail(cmd::REG_CONFIG, expectedConfig,
+                                   actualConfig));
+  }
+
+  return Status::Ok();
+}
+
+Status BME280::_writeSettingsSynchronously(const SensorSettings& settings,
+                                           SettingsWritePlan plan) {
+  const Status validation = validateSettings(settings);
+  if (!validation.ok()) {
+    return validation;
+  }
+
+  const uint8_t ctrlMeasSleep =
+      buildCtrlMeas(settings.osrsT, settings.osrsP, Mode::SLEEP);
+  const uint8_t ctrlMeasFinal =
+      buildCtrlMeas(settings.osrsT, settings.osrsP,
+                    registerModeForConfig(settings.mode));
+
+  Status st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasSleep, 1);
   if (!st.ok()) {
-    _markHardwareConfigDirty(st);
+    if (mayHaveReachedDeviceAfterDiagnosticWrite(st)) {
+      _markHardwareConfigDirty(st);
+    }
     return st;
   }
+
+  _cancelMeasurementTrackingForStateChange();
   _configSyncState = ConfigSyncState::UPDATE_IN_PROGRESS;
 
   st = _ensureConfigWriteReady();
   if (!st.ok()) {
     _markHardwareConfigDirty(st);
-    const Status restore = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-    if (!restore.ok()) {
-      _markHardwareConfigDirty(restore);
+    return st;
+  }
+
+  const bool writeConfig = plan == SettingsWritePlan::CONFIG ||
+                           plan == SettingsWritePlan::FULL;
+  const bool writeCtrlHum = plan == SettingsWritePlan::CTRL_HUM ||
+                            plan == SettingsWritePlan::FULL;
+  if (writeConfig) {
+    const uint8_t value = buildConfig(settings.standby, settings.filter);
+    st = writeRegs(cmd::REG_CONFIG, &value, 1);
+    if (!st.ok()) {
+      _markHardwareConfigDirty(st);
+      return st;
     }
-    return st;
   }
 
-  st = writeRegs(cmd::REG_CONFIG, &config, 1);
+  if (writeCtrlHum) {
+    const uint8_t value = buildCtrlHum(settings.osrsH);
+    st = writeRegs(cmd::REG_CTRL_HUM, &value, 1);
+    if (!st.ok()) {
+      _markHardwareConfigDirty(st);
+      return st;
+    }
+  }
+
+  if (writeCtrlHum || ctrlMeasFinal != ctrlMeasSleep) {
+    st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeasFinal, 1);
+    if (!st.ok()) {
+      _markHardwareConfigDirty(st);
+      return st;
+    }
+  }
+
+  st = _verifySettingsReadback(settings);
   if (!st.ok()) {
+    if (st.code == Err::RESYNC_REQUIRED && _initialized) {
+      st = _recordFailure(st);
+    }
     _markHardwareConfigDirty(st);
     return st;
   }
 
-  st = writeRegs(cmd::REG_CTRL_HUM, &ctrlHum, 1);
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    return st;
-  }
-
-  st = writeRegs(cmd::REG_CTRL_MEAS, &ctrlMeas, 1);
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    return st;
-  }
-
+  _setSensorSettings(settings);
   _clearHardwareConfigDirty();
-  if (_config.mode == Mode::FORCED) {
-    _conversionState = ConversionState::IDLE;
-  }
+  _conversionState = ConversionState::IDLE;
+  _invalidateSampleCache();
   return Status::Ok();
 }
 
@@ -2779,7 +2743,7 @@ Status BME280::_waitForNvmReady(bool tracked) {
   }
 
   if (deadlineReached(_nowMs(), deadline)) {
-    return Status::Error(Err::TIMEOUT, "NVM ready timeout",
+    return Status::Error(Err::TIMEOUT,
                          static_cast<int32_t>(_config.nvmReadyTimeoutMs));
   }
 
@@ -2810,8 +2774,7 @@ Status BME280::_readCalibrationH() {
       humidityCalibrationBlockValid(calibH, sizeof(calibH));
   if (_config.osrsH != Oversampling::SKIP &&
       !_jobHumidityCalibrationValid) {
-    return Status::Error(Err::CALIBRATION_INVALID,
-                         "Humidity calibration block erased");
+    return Status::Error(Err::CALIBRATION_INVALID);
   }
 
   parseCalibrationH(calibH, _jobCalibration);
@@ -2851,8 +2814,7 @@ Status BME280::_readCalibrationCandidate(
   if (_config.osrsH != Oversampling::SKIP &&
       !candidateHumidityCalibrationValid) {
     calibrationEvidenceChanged = true;
-    return Status::Error(Err::CALIBRATION_INVALID,
-                         "Humidity calibration block erased");
+    return Status::Error(Err::CALIBRATION_INVALID);
   }
 
   calibrationEvidenceChanged = calibrationEvidenceChanged ||
@@ -2865,10 +2827,10 @@ Status BME280::_readCalibrationCandidate(
 
 Status BME280::_validateCalibrationValues(uint16_t digT1, uint16_t digP1) const {
   if (digT1 == 0 || digT1 == 0xFFFF) {
-    return Status::Error(Err::CALIBRATION_INVALID, "Invalid temperature calibration");
+    return Status::Error(Err::CALIBRATION_INVALID);
   }
   if (digP1 == 0 || digP1 == 0xFFFF) {
-    return Status::Error(Err::CALIBRATION_INVALID, "Invalid pressure calibration");
+    return Status::Error(Err::CALIBRATION_INVALID);
   }
 
   return Status::Ok();
@@ -2956,12 +2918,12 @@ Status BME280::_readRawData(RawSample& out) {
                    (static_cast<int32_t>(data[5]) >> 4);
   candidate.adcH = (static_cast<int32_t>(data[6]) << 8) |
                    static_cast<int32_t>(data[7]);
-  candidate.pressureValid = (_config.osrsP != Oversampling::SKIP) &&
-                            (candidate.adcP != cmd::RAW_PRESSURE_SKIPPED);
-  candidate.temperatureValid = (_config.osrsT != Oversampling::SKIP) &&
-                               (candidate.adcT != cmd::RAW_TEMPERATURE_SKIPPED);
-  candidate.humidityValid = (_config.osrsH != Oversampling::SKIP) &&
-                            (candidate.adcH != cmd::RAW_HUMIDITY_SKIPPED);
+  // The all-midscale encodings are documented as "skipped" output only when
+  // the corresponding channel is disabled. They remain valid ADC results for
+  // an enabled channel; validity therefore follows the configured selection.
+  candidate.pressureValid = _config.osrsP != Oversampling::SKIP;
+  candidate.temperatureValid = _config.osrsT != Oversampling::SKIP;
+  candidate.humidityValid = _config.osrsH != Oversampling::SKIP;
 
   out = candidate;
   return Status::Ok();
@@ -2977,7 +2939,7 @@ Status BME280::_compensate(const RawSample& raw,
 
   // Temperature compensation is required for pressure and humidity.
   if (!raw.temperatureValid) {
-    return Status::Error(Err::COMPENSATION_ERROR, "Temperature sample skipped");
+    return Status::Error(Err::COMPENSATION_ERROR);
   }
 
   // --- Temperature (Bosch int32 reference) ---
@@ -2993,12 +2955,12 @@ Status BME280::_compensate(const RawSample& raw,
   const int64_t tFine64 = tVar1 + tVar2;
   if (tFine64 < static_cast<int64_t>(std::numeric_limits<int32_t>::min()) ||
       tFine64 > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
-    return Status::Error(Err::COMPENSATION_ERROR, "Temperature compensation overflow");
+    return Status::Error(Err::COMPENSATION_ERROR);
   }
   const int64_t tempC_x100 = (tFine64 * 5 + 128) >> 8;
   if (tempC_x100 < static_cast<int64_t>(std::numeric_limits<int32_t>::min()) ||
       tempC_x100 > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
-    return Status::Error(Err::COMPENSATION_ERROR, "Temperature output overflow");
+    return Status::Error(Err::COMPENSATION_ERROR);
   }
 
   candidateTFine = static_cast<int32_t>(tFine64);
@@ -3011,7 +2973,7 @@ Status BME280::_compensate(const RawSample& raw,
     candidate.pressureValid = false;
   } else {
     if (!raw.pressureValid) {
-      return Status::Error(Err::COMPENSATION_ERROR, "Pressure sample skipped");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     const int32_t adcP = raw.adcP;
 
@@ -3027,13 +2989,11 @@ Status BME280::_compensate(const RawSample& raw,
         !checkedAddI64(pVar2, term, pVar2) ||
         !checkedMulI64(static_cast<int64_t>(_digP4), 34359738368LL, term) ||
         !checkedAddI64(pVar2, term, pVar2)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Pressure compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
 
     if (!checkedMulI64(pSquared, static_cast<int64_t>(_digP3), term)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Pressure compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     term >>= 8;
     if (!checkedMulI64(pVar1, static_cast<int64_t>(_digP2), sum) ||
@@ -3041,12 +3001,11 @@ Status BME280::_compensate(const RawSample& raw,
         !checkedAddI64(term, sum, pVar1) ||
         !checkedAddI64(140737488355328LL, pVar1, sum) ||
         !checkedMulI64(sum, static_cast<int64_t>(_digP1), pVar1)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Pressure compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     pVar1 >>= 33;
     if (pVar1 == 0) {
-      return Status::Error(Err::COMPENSATION_ERROR, "Pressure div by zero");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
 
     int64_t p = 1048576 - static_cast<int64_t>(adcP);
@@ -3054,33 +3013,28 @@ Status BME280::_compensate(const RawSample& raw,
         !checkedSubI64(p, pVar2, p) ||
         !checkedMulI64(p, 3125, p) ||
         (p == std::numeric_limits<int64_t>::min() && pVar1 == -1)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Pressure compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     p /= pVar1;
 
     const int64_t pressureScaled = p >> 13;
     if (!checkedMulI64(static_cast<int64_t>(_digP9), pressureScaled, pVar1) ||
         !checkedMulI64(pVar1, pressureScaled, pVar1)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Pressure compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     pVar1 >>= 25;
     if (!checkedMulI64(static_cast<int64_t>(_digP8), p, pVar2)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Pressure compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     pVar2 >>= 19;
     if (!checkedAddI64(p, pVar1, sum) ||
         !checkedAddI64(sum, pVar2, sum) ||
         !checkedMulI64(static_cast<int64_t>(_digP7), 16, term)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Pressure compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     sum >>= 8;
     if (!checkedAddI64(sum, term, p)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Pressure compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     int64_t pressurePa = p >> 8;
     if (pressurePa < 0) {
@@ -3098,7 +3052,7 @@ Status BME280::_compensate(const RawSample& raw,
     candidate.humidityValid = false;
   } else {
     if (!raw.humidityValid) {
-      return Status::Error(Err::COMPENSATION_ERROR, "Humidity sample skipped");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     const int32_t adcH = raw.adcH;
 
@@ -3115,47 +3069,39 @@ Status BME280::_compensate(const RawSample& raw,
         !checkedMulI64(static_cast<int64_t>(_digH5), h, hIntermediate) ||
         !checkedSubI64(hTerm1, hIntermediate, hTerm1) ||
         !checkedAddI64(hTerm1, 16384, hTerm1)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Humidity compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     if (!checkedMulI64(h, static_cast<int64_t>(_digH6), hTerm2) ||
         !checkedMulI64(h, static_cast<int64_t>(_digH3), hFactor)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Humidity compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     hTerm2 >>= 10;
     hFactor >>= 11;
     if (!checkedAddI64(hFactor, 32768, hFactor) ||
         !checkedMulI64(hTerm2, hFactor, hTerm2)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Humidity compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     hTerm2 >>= 10;
     if (!checkedAddI64(hTerm2, 2097152, hTerm2) ||
         !checkedMulI64(hTerm2, static_cast<int64_t>(_digH2), hTerm2) ||
         !checkedAddI64(hTerm2, 8192, hTerm2)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Humidity compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     hTerm2 >>= 14;
     if (!checkedMulI64(hTerm1 >> 15, hTerm2, h)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Humidity compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     hCorrection = h >> 15;
     if (!checkedMulI64(hCorrection, hCorrection, hCorrection)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Humidity compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     hCorrection >>= 7;
     if (!checkedMulI64(hCorrection, static_cast<int64_t>(_digH1), hCorrection)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Humidity compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     hCorrection >>= 4;
     if (!checkedSubI64(h, hCorrection, h)) {
-      return Status::Error(Err::COMPENSATION_ERROR,
-                           "Humidity compensation overflow");
+      return Status::Error(Err::COMPENSATION_ERROR);
     }
     if (h < 0) {
       h = 0;

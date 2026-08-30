@@ -5,6 +5,10 @@
 #include <cstdint>
 #include <cstddef>
 
+#ifndef I2C_BUFFER_LENGTH
+#define I2C_BUFFER_LENGTH 128
+#endif
+
 class TwoWire {
 public:
   void begin(int sda = -1, int scl = -1) { (void)sda; (void)scl; }
@@ -18,8 +22,9 @@ public:
   }
   size_t write(const uint8_t* data, size_t len) {
     (void)data;
-    constexpr size_t CAPACITY = 64;
-    const size_t available = CAPACITY - _txLen;
+    const size_t available = _txLen < I2C_BUFFER_LENGTH
+        ? I2C_BUFFER_LENGTH - _txLen
+        : 0;
     const size_t accepted = (len < available) ? len : available;
     _txLen += accepted;
     return accepted;

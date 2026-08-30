@@ -1,7 +1,10 @@
+# ESP-IDF's special main component automatically depends on every build
+# component, including the root component regardless of its copied/renamed
+# directory.
 idf_component_register(
   SRCS "main.cpp" "IdfI2cTransport.cpp"
   INCLUDE_DIRS "." "../../../.."
-  REQUIRES BME280 esp_driver_i2c esp_driver_gpio esp_timer freertos
+  REQUIRES esp_driver_i2c esp_driver_gpio esp_timer freertos
 )
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)
