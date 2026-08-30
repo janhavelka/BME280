@@ -14,11 +14,6 @@ for the release scope, not electrical or calibrated hardware qualification.
 See `docs/HARDWARE_VALIDATION.md` for provenance, totals, and evidence
 boundaries.
 
-Release status: `2.1.0` is the current backward-compatible feature release. It
-adds complete typed-settings diagnostics, staged-job CLI coverage, stricter
-transport and sample-state handling, expanded tests, and reproducible HIL
-evidence while retaining the `2.x` public transport contract.
-
 ## Features
 
 - **Injected I2C transport** - no Wire dependency in library code
@@ -587,7 +582,10 @@ Not part of the library. These simulate project-level glue and keep examples sel
 13. Synchronous reset/resync NVM readiness checks perform one status read and return visible `BUSY`, `TIMEOUT`, or the original transport error. Bounded repeated NVM polling belongs to staged jobs advanced by `pollJob()`.
 14. Health timestamp values are meaningful only when `lastOkTimeValid()` / `lastErrorTimeValid()` (or the snapshot flags) are true.
 
-## Migration From v1.7.x
+## Migration From 1.x to 2.x
+
+These are the breaking changes introduced at the `2.0.0` boundary; they still
+apply when upgrading from any `1.7.x` release.
 
 - Transport callbacks now return terminal-only `TransportResult`, not driver
   `Status`. Return exact physical write/read counts; perform one physical

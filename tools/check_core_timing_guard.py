@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
+"""Enforce that the core driver stays framework-neutral.
+
+`src/` and `include/` must not call platform timing APIs and must not include
+Arduino, ESP-IDF, or FreeRTOS headers. Timing comes from `Config::nowMs` and
+explicit `tick(nowMs)` / `pollJob(nowMs)` arguments; transport comes from the
+injected callbacks.
+"""
 from __future__ import annotations
 
 import pathlib
 import re
 import sys
-from typing import Dict
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCAN_DIRS = ("src", "include")
@@ -13,20 +19,20 @@ VALID_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp"}
 FORBIDDEN_CALLS = {
     "millis": re.compile(r"\bmillis\s*\("),
     "micros": re.compile(r"\bmicros\s*\("),
+    "delay": re.compile(r"\bdelay\s*\("),
     "delayMicroseconds": re.compile(r"\bdelayMicroseconds\s*\("),
     "yield": re.compile(r"\byield\s*\("),
+    "vTaskDelay": re.compile(r"\bvTaskDelay\s*\("),
+    "esp_timer_get_time": re.compile(r"\besp_timer_get_time\s*\("),
 }
 
 FORBIDDEN_INCLUDE_RE = re.compile(
-    r'^\s*#\s*include\s*[<\"](?:Arduino\.h|Wire\.h|driver/[^>\"]+|esp_[^>\"]+|freertos/[^>\"]+)[>\"]',
+    r'^\s*#\s*include\s*[<"](?:Arduino\.h|Wire\.h|driver/[^>"]+|esp_[^>"]+|freertos/[^>"]+)[>"]',
     re.MULTILINE,
 )
 BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
-
-ALLOWED_CALL_COUNTS: Dict[str, Dict[str, int]] = {}
-ALLOWED_INCLUDE_COUNTS: Dict[str, int] = {}
 
 
 def strip_non_code(text: str) -> str:
@@ -41,72 +47,27 @@ def collect_sources() -> list[pathlib.Path]:
         root = ROOT / dirname
         if not root.exists():
             continue
-        for path in root.rglob("*"):
+        for path in sorted(root.rglob("*")):
             if path.is_file() and path.suffix.lower() in VALID_SUFFIXES:
                 files.append(path)
     return files
 
 
 def main() -> int:
-    observed_calls: Dict[str, Dict[str, int]] = {}
-    observed_includes: Dict[str, int] = {}
+    errors: list[str] = []
 
     for path in collect_sources():
         rel = path.relative_to(ROOT).as_posix()
         raw = path.read_text(encoding="utf-8", errors="replace")
         code = strip_non_code(raw)
 
-        call_counts: Dict[str, int] = {}
         for call_name, pattern in FORBIDDEN_CALLS.items():
-            count = len(pattern.findall(code))
-            if count > 0:
-                call_counts[call_name] = count
-        if call_counts:
-            observed_calls[rel] = call_counts
+            hits = len(pattern.findall(code))
+            if hits:
+                errors.append(f"platform timing call in {rel}: {call_name} x{hits}")
 
-        include_count = len(FORBIDDEN_INCLUDE_RE.findall(raw))
-        if include_count > 0:
-            observed_includes[rel] = include_count
-
-    errors: list[str] = []
-
-    for rel, counts in observed_calls.items():
-        if rel not in ALLOWED_CALL_COUNTS:
-            errors.append(f"forbidden timing calls in unexpected file: {rel} -> {counts}")
-            continue
-        expected = ALLOWED_CALL_COUNTS[rel]
-        for call_name, count in counts.items():
-            exp = expected.get(call_name, 0)
-            if count != exp:
-                errors.append(
-                    f"timing call count mismatch in {rel}: {call_name} observed={count}, expected={exp}"
-                )
-
-    for rel, expected in ALLOWED_CALL_COUNTS.items():
-        observed = observed_calls.get(rel, {})
-        for call_name, exp in expected.items():
-            obs = observed.get(call_name, 0)
-            if obs != exp:
-                errors.append(
-                    f"timing call count mismatch in {rel}: {call_name} observed={obs}, expected={exp}"
-                )
-        unexpected_calls = set(observed.keys()) - set(expected.keys())
-        if unexpected_calls:
-            errors.append(f"unexpected timing call types in {rel}: {sorted(unexpected_calls)}")
-
-    for rel, count in observed_includes.items():
-        exp = ALLOWED_INCLUDE_COUNTS.get(rel, 0)
-        if count != exp:
-            errors.append(
-                f"Arduino include count mismatch in {rel}: observed={count}, expected={exp}"
-            )
-
-    for rel, exp in ALLOWED_INCLUDE_COUNTS.items():
-        obs = observed_includes.get(rel, 0)
-        if obs != exp:
-            errors.append(
-                f"Arduino include count mismatch in {rel}: observed={obs}, expected={exp}"
-            )
+        for match in FORBIDDEN_INCLUDE_RE.findall(raw):
+            errors.append(f"framework include in {rel}: {match.strip()}")
 
     if errors:
         print("Core timing guard FAILED:")

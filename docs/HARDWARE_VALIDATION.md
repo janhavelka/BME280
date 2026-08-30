@@ -1,10 +1,7 @@
 # BME280 Hardware Validation
 
-Last updated: 2026-08-05
-
 This is the single maintained hardware-in-the-loop (HIL) procedure, evidence
-schema, and result ledger for the library. It replaces the former HIL runbook,
-target template, validation matrix, and per-board summary.
+schema, and result ledger for the library.
 
 Host tests, builds, and serial parsing do not prove sensor accuracy, electrical
 margin, wiring, pull-ups, humidity handling, shared-bus behavior, protected
@@ -18,16 +15,14 @@ campaign on an ESP32-S2 at address `0x76`. Run `i2c_20260804_155442` recorded
 3,642.719 seconds (60m42.719s) of accepted active soak with no serial
 interruption. Its 7,115 classified rows contained no `FAIL` or `TIMEOUT`; final
 cleanup proved sleep mode, clean hardware configuration, idle status bits, and
-zero consecutive failures. The full manifest-backed evidence package is
-retained locally at `../hil_logs/i2c_20260804_155442/`.
+zero consecutive failures. Its manifest-backed package was verified at
+generation time; per the retention policy in `README.md`, only the raw
+transcript `../hil_logs/i2c_20260804_155442/serial_transcript.txt` is retained.
 
-After the long run, a read-only audit found only help/contract-check gaps in the
-Arduino frontend; the library core and hardware-facing behavior were unchanged.
-The post-correction Arduino snapshot was rebuilt, reflashed, and passed the
-complete fixed gate as run `i2c_20260804_171428`: 271 rows, zero `FAIL`, zero
-`TIMEOUT`, zero serial exceptions, exact strict-usage/help evidence, and all
-five final-cleanup rows passing. Its complete local evidence package is also
-retained.
+A follow-up run `i2c_20260804_171428` re-ran the complete gate on the rebuilt
+and reflashed Arduino snapshot: 271 rows, zero `FAIL`, zero `TIMEOUT`, zero
+serial exceptions, exact strict-usage/help evidence, and all five final-cleanup
+rows passing. Its raw transcript is retained on the same terms.
 
 The firmware reported library version `2.0.0`, source commit
 `f87b80aeb97fb6a775d063ad3e97638caf315925`, and a dirty working tree. Therefore
@@ -49,12 +44,10 @@ injection.
 
 A separate clean-source ESP32-S2/Arduino run against commit
 `dc5df8e6735bd21f52dea3e5ae7dcf54ec2b498d` is retained at
-`../hil_logs/i2c_20260803_144215/serial_transcript.txt`. Earlier development
-snapshots are not current evidence: one later soak was interrupted after about
-46m44s when the operator unintentionally disconnected COM10 board power. Four
-superseded/interrupted development transcripts were removed; the retained set
-contains only the clean-source campaign, the expanded long campaign, and its
-post-correction flashed gate.
+`../hil_logs/i2c_20260803_144215/serial_transcript.txt`. The retained set is
+exactly three runs: the clean-source campaign, the expanded long campaign, and
+its post-correction flashed gate. Superseded and interrupted development
+snapshots are not current evidence and are not retained.
 
 | Target or condition | Current status | Evidence boundary |
 | --- | --- | --- |
@@ -73,8 +66,10 @@ comparisons are not release requirements and are not claimed by this ledger.
   `f87b80aeb97fb6a775d063ad3e97638caf315925`, library version `2.0.0`, dirty
   working tree, and firmware build time `2026-08-04 15:48:37`. Host provenance
   did not change during the run.
-- Evidence: complete local package at `../hil_logs/i2c_20260804_155442/`.
-  The raw transcript is 5,231,872 bytes and 118,318 newline-delimited lines,
+- Evidence: retained raw transcript at
+  `../hil_logs/i2c_20260804_155442/serial_transcript.txt`; the derived package
+  was verified at generation time and then discarded per the retention policy.
+  The transcript is 5,231,872 bytes and 118,318 newline-delimited lines,
   SHA-256
   `b3a196590b81fed1b7331edef1118a2dbfd4cd95c44d33932110f082712dfd8c`;
   all ten manifest artifact hashes were independently rechecked after
@@ -117,10 +112,13 @@ comparisons are not release requirements and are not claimed by this ledger.
 - The tightened `mode normal extra` row returned exact `Usage: mode` output;
   `help` listed every accepted standby alias with its required `ms` suffix.
   Final `normal off`, `recover`, `cfg`, `status`, and `drv` rows all passed.
-- Complete local package: `../hil_logs/i2c_20260804_171428/`. Its 104,316-byte,
-  2,755-line transcript has SHA-256
+- Evidence: retained raw transcript at
+  `../hil_logs/i2c_20260804_171428/serial_transcript.txt`, 104,316 bytes and
+  2,755 lines, SHA-256
   `f5ffdb707ee4c46fcbf1fd5ef136addc6a8fd306929f7cbf4de62860841ae192`.
-  All ten artifact hashes and the final runner-script hash match its manifest.
+  At generation time all ten artifact hashes and the runner-script hash matched
+  its manifest; the derived package was then discarded per the retention
+  policy.
 
 ### Retained ESP32-S2 Run: `i2c_20260803_144215`
 

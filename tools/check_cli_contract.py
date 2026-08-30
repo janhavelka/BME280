@@ -17,7 +17,9 @@ REQUIRED_COMMON = [
     "HealthView.h",
 ]
 
-MANDATORY_COMMANDS = [
+# Every command the Arduino CLI must expose, and for which a visible
+# dispatch handler must exist in main.cpp.
+COMMANDS = [
     "help",
     "version",
     "scan",
@@ -63,52 +65,6 @@ MANDATORY_COMMANDS = [
     "verbose",
 ]
 
-HANDLED_COMMANDS = [
-    "version",
-    "scan",
-    "addr",
-    "begin",
-    "end",
-    "probe",
-    "recover",
-    "job",
-    "drv",
-    "state",
-    "read",
-    "raw",
-    "comp",
-    "data",
-    "measuring",
-    "timing",
-    "status",
-    "id",
-    "chipid",
-    "force",
-    "normal",
-    "mode",
-    "osrs",
-    "filter",
-    "standby",
-    "cfg",
-    "settings",
-    "calib",
-    "reset",
-    "reg",
-    "dump",
-    "rregs",
-    "wreg",
-    "invalidate",
-    "freshness",
-    "xfer_reset",
-    "xfer_stats",
-    "xfer_assert",
-    "selftest",
-    "stress",
-    "stress_mix",
-    "verbose",
-]
-
-
 def fail(msg: str) -> None:
     print(f"CLI contract FAILED: {msg}")
     raise SystemExit(1)
@@ -119,11 +75,6 @@ def ensure_exists(path: pathlib.Path, label: str) -> None:
         fail(f"missing {label}: {path.as_posix()}")
 
 
-def ensure_missing(path: pathlib.Path, label: str) -> None:
-    if path.exists():
-        fail(f"forbidden {label} still present: {path.as_posix()}")
-
-
 def main() -> int:
     common_dir = ROOT / "examples" / "common"
     bringup_main = ROOT / "examples" / "01_basic_bringup_cli" / "main.cpp"
@@ -131,28 +82,15 @@ def main() -> int:
     ensure_exists(common_dir, "common example directory")
     ensure_exists(bringup_main, "bringup CLI example")
 
-    ensure_missing(ROOT / "examples" / "00_smoke_boot", "deprecated example 00_smoke_boot")
-    ensure_missing(
-        ROOT / "examples" / "03_feature_walkthrough",
-        "deprecated example 03_feature_walkthrough",
-    )
-
     for name in REQUIRED_COMMON:
         ensure_exists(common_dir / name, f"common helper {name}")
 
     text = bringup_main.read_text(encoding="utf-8", errors="replace")
 
-    for cmd in MANDATORY_COMMANDS:
-        if re.search(rf"\b{re.escape(cmd)}\b", text) is None:
-            fail(f"mandatory command '{cmd}' missing in {bringup_main.as_posix()}")
-
-    for cmd in HANDLED_COMMANDS:
-        pattern = rf'cmd(?:\s*==\s*"{re.escape(cmd)}"|\.startsWith\("{re.escape(cmd)}(?: |")|\s*==\s*"{re.escape(cmd)}")'
+    for cmd in COMMANDS:
+        pattern = rf'cmd(?:\s*==\s*"{re.escape(cmd)}"|\.startsWith\("{re.escape(cmd)}(?: |"))'
         if re.search(pattern, text) is None:
             fail(f"mandatory command '{cmd}' has no visible handler")
-
-    if re.search(r"\bcfg\b", text) is None and re.search(r"\bsettings\b", text) is None:
-        fail("either 'cfg' or 'settings' command must be present")
 
     for token in (
         "startResyncJob",

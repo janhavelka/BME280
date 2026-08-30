@@ -1,4 +1,4 @@
-﻿# BME280 Register and Timing Reference
+# BME280 Register and Timing Reference
 
 Source: `BME280_datasheet.pdf`, Bosch Sensortec BME280 datasheet, revision
 1.24, February 2024.

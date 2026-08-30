@@ -40,27 +40,15 @@ Thank you for considering contributing to this project!
   validation unless the exact command and artifact evidence exists
 - Ensure CI passes
 
-Baseline local gate for release-facing changes:
+### Validation gate
 
-```text
-python tools/check_core_timing_guard.py
-python tools/test_run_i2c_hil_parser.py
-python tools/check_hil_contract.py
-python tools/check_cli_contract.py
-python tools/check_idf_example_contract.py
-python scripts/generate_version.py check
-python tools/check_release_metadata.py
-doxygen Doxyfile
-git diff --check
-```
+The canonical command list lives in one place: the **Validation** section of
+[README.md](README.md). Run it in full for release-facing changes; it is the
+same set CI enforces. Do not copy the list into other documents - link to it, so
+there is only one thing to keep in step with CI.
 
-On Windows, run PlatformIO only through the repository wrapper:
-
-```powershell
-.\scripts\pio.cmd test -e native
-.\scripts\pio.cmd run -e esp32s2dev
-.\scripts\pio.cmd run -e esp32s3dev
-```
+On Windows, run PlatformIO only through the repository wrapper
+(`.\scripts\pio.cmd`), never a separately installed Core.
 
 ### What We Accept
 

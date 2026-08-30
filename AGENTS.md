@@ -1,23 +1,24 @@
-﻿# AGENTS.md - BME280 Production Embedded Guidelines
+# AGENTS.md - BME280 Production Embedded Guidelines
 
-## Role and Target
-You are a professional embedded software engineer building a production-grade BME280 environmental sensor library.
+## Scope and Target
+
+This repository is a production-grade BME280 environmental sensor library.
 
 - Target: ESP32-S2 / ESP32-S3, Arduino and ESP-IDF consumers, PlatformIO/ESP-IDF.
 - Goals: deterministic behavior, long-term stability, clean API contracts, portability, no surprises in the field.
-- These rules are binding.
+- The rules in this file are binding for any change to this repository.
 
 ---
 
-## PlatformIO
+## Working in this repository
 
 Before editing, fetch remotes and fast-forward the newest intended working
 branch to its upstream. Stop and report dirty, divergent, or conflicted state;
 never overwrite work to force a sync.
 
-On Windows, use `.\scripts\pio.cmd <arguments>`; it selects the current user's
-VS Code-managed installation. Never install another PlatformIO Core; if the
-wrapper cannot find it, stop and report the missing installation.
+On Windows, invoke PlatformIO as `.\scripts\pio.cmd <arguments>`; it selects the
+current user's VS Code-managed installation. Never install another PlatformIO
+Core; if the wrapper cannot find it, stop and report the missing installation.
 
 ---
 
@@ -25,21 +26,28 @@ wrapper cannot find it, stop and report the missing installation.
 
 ```
 include/BME280/         - Public API headers only (Doxygen)
-  CommandTable.h        - Register addresses and bit masks
-  Status.h
-  Config.h
-  BME280.h
-  Version.h             - Auto-generated (do not edit)
-src/                    - Implementation (.cpp)
+  BME280.h              - Driver class, staged jobs, sample/health accessors
+  CommandTable.h        - Register addresses, bit masks, and bit positions
+  Config.h              - Transport callbacks, SensorSettings, free helpers
+  Status.h              - Err enum and Status
+  Version.h             - Auto-generated from library.json (do not edit)
+src/BME280.cpp          - The entire implementation
 examples/
-  01_*/
-  common/               - Example-only helpers (Log.h, BoardConfig.h, I2cTransport.h,
-                          I2cScanner.h, CliStyle.h, HealthView.h)
-platformio.ini
+  01_basic_bringup_cli/ - Arduino bring-up/diagnostic CLI
+  idf/basic/            - Native ESP-IDF example with the same CLI contract
+  common/               - Example-only helpers (BoardConfig.h, BuildConfig.h,
+                          CliStyle.h, HealthView.h, I2cScanner.h,
+                          I2cTransport.h, Log.h)
+test/                   - Native Unity suite plus Arduino/Wire stubs
+tools/                  - Contract checkers and the I2C HIL runner
+scripts/                - generate_version.py, pio.cmd
+docs/                   - Datasheet, register reference, port/validation guides
+.github/workflows/      - CI
+CMakeLists.txt          - ESP-IDF component build
+Doxyfile
+idf_component.yml
 library.json
-README.md
-CHANGELOG.md
-AGENTS.md
+platformio.ini
 ```
 
 Rules:
@@ -140,7 +148,6 @@ struct Status {
 - Multi-register configuration writes that may partially reach hardware must set dirty hardware-config diagnostics and preserve the original error.
 - Samples must not be misleading across config changes; use invalidation or config-generation tagging.
 - Documentation must not claim hardware or ESP-IDF validation unless it was actually run.
-- Hardening phases use scoped review roles: datasheet, core contracts, fault injection, compensation, IDF/CI, docs/hardware, and integration review. Each role must inspect actual repository files before recommendations are accepted.
 
 ---
 
@@ -162,39 +169,46 @@ struct Status {
 
 ---
 
-## Driver Architecture: Managed Synchronous Driver
+## Driver Architecture
 
-The driver follows a **managed synchronous** model with health tracking:
+The driver exposes two ways to reach the hardware over one shared admission
+rule: a **synchronous** API for simple callers, and a **staged job** API for
+callers that must bound how much bus time a single call consumes.
 
-- All public I2C operations are **blocking** (no async state machine needed - BME280 has no EEPROM writes).
-- `tick()` may be used for normal-mode polling or measurement-ready checks.
-- Health is tracked via **tracked transport wrappers** -- public API never calls `_updateHealth()` directly.
-- Recovery is **manual** via `recover()` - the application controls retry strategy.
+- Synchronous calls (`begin`, `recover`, `softReset`, the `set*`/`read*`
+  helpers) block only for the injected transport timeout. They never loop on a
+  chip-ready condition: if the chip is not ready they return `BUSY` or
+  `TIMEOUT` and let the caller decide.
+- Staged jobs (`startInitJob`, `startForcedMeasurementJob`,
+  `startApplyConfigJob`, `startApplySettingsJob`, `startResyncJob`,
+  `startSoftResetJob`) are advanced by `pollJob(nowMs, maxCallbacks)`. Each poll
+  issues at most `maxCallbacks` transport callbacks; waiting is expressed as
+  deadlines, never as sleeps.
+- `requestMeasurement()` + `tick(nowMs)` is the scheduling path for a single
+  capture; it uses the caller's monotonic timebase.
+- A running staged job exclusively owns hardware access. Every hardware-facing
+  API goes through the same admission check and returns `BUSY` with a
+  `BusyReason` detail rather than interleaving.
+- Recovery is always caller-driven: `recover()`, `startResyncJob()`, or
+  `startSoftResetJob()`. The driver never self-heals in the background.
 
-### DriverState (4 states only)
+### DriverState
 
-```cpp
-enum class DriverState : uint8_t {
-  UNINIT,    // begin() not called or end() called
-  READY,     // Operational, consecutiveFailures == 0
-  DEGRADED,  // 1 <= consecutiveFailures < offlineThreshold
-  OFFLINE    // consecutiveFailures >= offlineThreshold
-};
-```
+`DriverState` is an observational health classification, not a gate:
+`UNINIT`, `READY`, `DEGRADED`, `OFFLINE`. `OFFLINE` is diagnostic only and does
+not block an explicit owner-directed operation. The authoritative definitions
+and transitions live in `include/BME280/BME280.h`; do not duplicate the enum
+here.
 
-State transitions:
-- `begin()` success -> READY
-- Any I2C failure in READY -> DEGRADED
-- Success in DEGRADED/OFFLINE -> READY
-- Failures reach `offlineThreshold` -> OFFLINE
-- `end()` -> UNINIT
+Device-state correctness is tracked separately from health by `ConfigSyncState`
+and `CalibrationState`. Only those two block a measurement (`RESYNC_REQUIRED`).
 
 ### Transport Wrapper Architecture
 
 All I2C goes through layered wrappers:
 
 ```
-Public API (readMeasurement, setMode, etc.)
+Public API (getMeasurement, setMode, readRegisters, ...)
     |
 Register helpers (readRegs, writeRegs)
     |
@@ -206,26 +220,33 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 ```
 
 **Rules:**
-- Public API methods NEVER call `_updateHealth()` directly
-- `readRegs()`/`writeRegs()` use TRACKED wrappers -> health updated automatically
-- `probe()` uses RAW wrappers -> no health tracking (diagnostic only)
-- `recover()` tracks probe failures (driver is initialized, so failures count)
+- Public API methods never call `_updateHealth()` directly.
+- `readRegs()`/`writeRegs()` use the tracked wrappers, so health updates happen
+  automatically.
+- `probe()` and the pre-`begin()` steps of initialization use the raw wrappers,
+  so they do not perturb health counters.
+- `_recordFailure()` is the one deliberate exception: it records *semantic*
+  failures (identity, calibration, NVM, config readiness) that a successful
+  transfer would otherwise hide.
 
 ### Health Tracking Rules
 
-- `_updateHealth()` called ONLY inside tracked transport wrappers.
-- State transitions guarded by `_initialized` (no DEGRADED/OFFLINE before `begin()` succeeds).
-- NOT called for config/param validation errors (INVALID_CONFIG, INVALID_PARAM).
-- NOT called for precondition errors (NOT_INITIALIZED).
-- `probe()` uses raw I2C and does NOT update health (diagnostic only).
+- `_updateHealth()` is called only inside the tracked transport wrappers.
+- State transitions are guarded by `_initialized`; there is no DEGRADED/OFFLINE
+  before `begin()` succeeds.
+- Not called for config/param validation errors (`INVALID_CONFIG`,
+  `INVALID_PARAM`) or precondition errors (`NOT_INITIALIZED`).
 
 ### Health Tracking Fields
 
-- `_lastOkMs` - timestamp of last successful I2C operation
-- `_lastErrorMs` - timestamp of last failed I2C operation
-- `_lastError` - most recent error Status
-- `_consecutiveFailures` - failures since last success (resets on success)
-- `_totalFailures` / `_totalSuccess` - lifetime counters (wrap at max)
+- `_lastOkMs` / `_lastErrorMs` - timestamps of the last tracked success/failure.
+  Each has a `*TimeValid` companion flag because `Config::nowMs` is optional.
+- `_lastError` - most recent tracked error `Status`.
+- `_consecutiveFailures` - failures since the last tracked success; saturates at
+  `UINT8_MAX`.
+- `_totalFailures` / `_totalSuccess` - per-health-session counters. They
+  **saturate** at `UINT32_MAX` and never wrap; `begin()` starts a new session by
+  resetting both.
 
 ---
 
@@ -243,8 +264,10 @@ Release steps:
 2. Regenerate and check `include/BME280/Version.h`.
 3. Update `idf_component.yml` and `Doxyfile` to the same version.
 4. Update `CHANGELOG.md` (Added/Changed/Fixed/Removed).
-5. Update `README.md` and Doxygen-facing comments if API, examples, validation, or release checks changed.
-6. Run local validation, commit as `Release vX.Y.Z`, push, wait for CI, then tag the exact release commit.
+5. Update `SECURITY.md` supported versions on every MAJOR or MINOR release.
+6. Update `README.md` and Doxygen-facing comments if API, examples, validation, or release checks changed.
+7. Run the validation gate in `CONTRIBUTING.md`, commit as `Release vX.Y.Z`, push,
+   wait for CI, then tag the exact release commit.
 
 ---
 

@@ -25,6 +25,13 @@ BASE_REQUIRED_PATHS = {
     "examples/idf/basic/CMakeLists.txt",
     "examples/idf/basic/main/CMakeLists.txt",
     "examples/01_basic_bringup_cli/main.cpp",
+    "examples/common/BoardConfig.h",
+    "examples/common/BuildConfig.h",
+    "examples/common/CliStyle.h",
+    "examples/common/HealthView.h",
+    "examples/common/I2cScanner.h",
+    "examples/common/I2cTransport.h",
+    "examples/common/Log.h",
     "docs/README.md",
     "docs/IDF_PORT.md",
     "docs/PRODUCTION_SHARED_BUS_GUIDE.md",
@@ -87,7 +94,9 @@ def expected_package(version: str) -> pathlib.Path:
 
 
 def normalize(name: str) -> str:
-    return name.replace("\\", "/").lstrip("./")
+    # removeprefix, not lstrip: lstrip("./") strips a character set and would
+    # turn ".pio/build" into "pio/build", making FORBIDDEN_PARTS unmatchable.
+    return name.replace("\\", "/").removeprefix("./")
 
 
 def strip_package_root(name: str) -> str:

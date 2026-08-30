@@ -19,11 +19,6 @@ under `include/BME280/`; release history lives in `../CHANGELOG.md`.
   evidence. Verify critical values against the PDF when changing protocol,
   compensation, timing, or electrical contracts.
 
-Completed hardening and product-fit audits are not maintained as parallel user
-manuals. Their durable results are represented by the current code, public API
-comments, `../README.md`, and `../CHANGELOG.md`; Git history retains the original
-review records.
-
 ## Generated and Local Artifacts
 
 These paths are generated or local and are not release evidence by default:

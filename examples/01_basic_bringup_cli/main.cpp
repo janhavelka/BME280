@@ -2622,23 +2622,26 @@ void setup() {
 
   if (!board::initI2c()) {
     LOGE("Failed to initialize I2C");
-    return;
+  } else {
+    LOGI("I2C initialized (SDA=%d, SCL=%d)", board::I2C_SDA, board::I2C_SCL);
+    LOGI("BME280 diagnostic address 0x%02X", activeAddress);
+
+    i2c_scanner::scan(Wire);
+
+    BME280::Config cfg = makeDefaultConfig();
+    BME280::Status st = device.begin(cfg);
+    if (!st.ok()) {
+      LOGE("Failed to initialize device");
+      printStatus(st);
+    } else {
+      LOGI("Device initialized successfully");
+      printDriverHealth();
+    }
   }
-  LOGI("I2C initialized (SDA=%d, SCL=%d)", board::I2C_SDA, board::I2C_SCL);
-  LOGI("BME280 diagnostic address 0x%02X", activeAddress);
 
-  i2c_scanner::scan(Wire);
-
-  BME280::Config cfg = makeDefaultConfig();
-  BME280::Status st = device.begin(cfg);
-  if (!st.ok()) {
-    LOGE("Failed to initialize device");
-    printStatus(st);
-    return;
-  }
-
-  LOGI("Device initialized successfully");
-  printDriverHealth();
+  // The CLI must come up even when bring-up failed: `scan`, `addr` and `begin`
+  // are the recovery path, and they are undiscoverable without the banner and
+  // prompt. This matches the ESP-IDF example's app_main().
   printHelp();
   cli::printPrompt();
 }

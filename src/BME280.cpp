@@ -274,11 +274,13 @@ static uint8_t buildConfig(Standby standby, Filter filter) {
                               (filterToReg(filter) << cmd::BIT_CONFIG_FILTER));
 }
 
-static int16_t signExtend12(int16_t value) {
-  if (value & 0x0800) {
-    value |= 0xF000;
-  }
-  return value;
+/// Sign-extend a 12-bit two's-complement field (dig_H4 / dig_H5) to int16_t.
+/// Stays inside the value range of each type, so no implementation-defined
+/// narrowing is involved.
+static int16_t signExtend12(uint16_t value) {
+  const uint16_t magnitude = static_cast<uint16_t>(value & 0x0FFFu);
+  const int16_t widened = static_cast<int16_t>(magnitude);
+  return (magnitude & 0x0800u) ? static_cast<int16_t>(widened - 4096) : widened;
 }
 
 static Status mapTransportResult(const TransportResult& result,
@@ -342,10 +344,12 @@ static void parseCalibrationTp(const uint8_t* data, Calibration& out) {
 static void parseCalibrationH(const uint8_t* data, Calibration& out) {
   out.digH2 = static_cast<int16_t>((data[1] << 8) | data[0]);
   out.digH3 = data[2];
-  const int16_t h4 =
-      static_cast<int16_t>((data[3] << 4) | (data[4] & 0x0F));
-  const int16_t h5 =
-      static_cast<int16_t>((data[5] << 4) | (data[4] >> 4));
+  // dig_H4 = 0xE4[7:0] : 0xE5[3:0]; dig_H5 = 0xE6[7:0] : 0xE5[7:4].
+  // Both are 12-bit signed values sharing the 0xE5 nibble register.
+  const uint16_t h4 =
+      static_cast<uint16_t>((data[3] << 4) | (data[4] & 0x0F));
+  const uint16_t h5 =
+      static_cast<uint16_t>((data[5] << 4) | (data[4] >> 4));
   out.digH4 = signExtend12(h4);
   out.digH5 = signExtend12(h5);
   out.digH6 = static_cast<int8_t>(data[6]);

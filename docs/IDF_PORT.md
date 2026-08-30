@@ -1,9 +1,6 @@
 # BME280 ESP-IDF Port
 
-Last updated: 2026-08-04
-
-This document is the maintained ESP-IDF note for the BME280 library. It replaces
-the older separate implementation report.
+This document is the maintained ESP-IDF note for the BME280 library.
 
 ## Scope
 
@@ -192,7 +189,7 @@ milli-percent without heap, float, I2C, or platform dependencies.
 Current example mapping:
 
 | ESP-IDF result | Adapter result | Core status |
-| --- | --- |
+| --- | --- | --- |
 | `ESP_OK` | `TransportErr::OK` with exact counts | `Err::OK` |
 | `ESP_ERR_TIMEOUT` | `TransportErr::TIMEOUT` | `Err::I2C_TIMEOUT` |
 | `ESP_ERR_INVALID_ARG` | `TransportErr::OTHER` | `Err::I2C_ERROR` |
@@ -201,21 +198,11 @@ Current example mapping:
 
 ## Build Checks
 
-Run these from the repository root:
-
-```text
-python tools/check_core_timing_guard.py
-python tools/check_cli_contract.py
-python tools/check_idf_example_contract.py
-```
-
-On Windows, invoke PlatformIO only through the repository wrapper:
-
-```powershell
-.\scripts\pio.cmd test -e native
-.\scripts\pio.cmd run -e esp32s3dev
-.\scripts\pio.cmd run -e esp32s2dev
-```
+The full repository validation gate is the **Validation** section of
+`README.md`; run it from the repository root. The checks that specifically
+cover this port are `tools/check_idf_example_contract.py` (IDF example
+structure and CLI parity) and `tools/check_cli_contract.py` (Arduino/IDF
+command parity).
 
 When `idf.py` is installed, also run:
 

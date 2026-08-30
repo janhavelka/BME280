@@ -3623,6 +3623,12 @@ def reconnect_serial_in_place(
         requires_opt_in="--reconnect-attempts",
     )
 
+    if max_attempts <= 0:
+        # No reconnect budget: leave the port exactly as it was. Closing it here
+        # would strand the caller with a dead handle and make the mandatory
+        # final cleanup unobtainable.
+        return ReconnectOutcome(False, 0, 0.0, rows, last_reason)
+
     try:
         ser.close()
     except Exception:
