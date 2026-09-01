@@ -180,7 +180,8 @@ def main() -> int:
     ):
         fail("IDF main component must not hard-code the root component name")
     for token in (
-        "get_filename_component(BME280_COMPONENT_NAME",
+        'get_filename_component(BME280_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)',
+        'get_filename_component(BME280_COMPONENT_NAME "${BME280_ROOT_DIR}" NAME)',
         "REQUIRES ${BME280_COMPONENT_NAME} esp_driver_i2c esp_driver_gpio esp_timer freertos",
     ):
         if token not in idf_cmake:

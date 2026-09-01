@@ -3,7 +3,10 @@
 # the name instead of hard-coding it, otherwise the build only works when the
 # checkout happens to be called "BME280" (a clone into another directory name,
 # or an extracted release tarball, would fail to resolve the dependency).
-get_filename_component(BME280_COMPONENT_NAME "${CMAKE_CURRENT_LIST_DIR}/../../../.." NAME)
+# NAME alone would yield "..", because get_filename_component does not
+# normalize the path; resolve to an absolute path first.
+get_filename_component(BME280_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+get_filename_component(BME280_COMPONENT_NAME "${BME280_ROOT_DIR}" NAME)
 
 idf_component_register(
   SRCS "main.cpp" "IdfI2cTransport.cpp"
