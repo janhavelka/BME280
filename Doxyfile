@@ -31,7 +31,7 @@ REFERENCED_BY_RELATION = YES
 REFERENCES_RELATION    = YES
 STRIP_CODE_COMMENTS    = NO
 
-INPUT                  = README.md include docs/README.md docs/IDF_PORT.md docs/BME280_Register_Reference.md docs/PRODUCTION_SHARED_BUS_GUIDE.md docs/HARDWARE_VALIDATION.md
+INPUT                  = README.md include docs/IDF_PORT.md docs/BME280_Register_Reference.md docs/PRODUCTION_SHARED_BUS_GUIDE.md docs/HARDWARE_VALIDATION.md
 FILE_PATTERNS          = *.h *.md
 RECURSIVE              = YES
 EXCLUDE_PATTERNS       = */.pio/* */.git/* */test/* */docs/doxygen/* */hil_logs/* */BME280-*.tar.gz

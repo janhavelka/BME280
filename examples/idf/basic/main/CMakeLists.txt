@@ -1,10 +1,14 @@
-# ESP-IDF's special main component automatically depends on every build
-# component, including the root component regardless of its copied/renamed
-# directory.
+# The library is discovered through EXTRA_COMPONENT_DIRS pointing at the
+# repository root, so ESP-IDF names the component after that directory. Derive
+# the name instead of hard-coding it, otherwise the build only works when the
+# checkout happens to be called "BME280" (a clone into another directory name,
+# or an extracted release tarball, would fail to resolve the dependency).
+get_filename_component(BME280_COMPONENT_NAME "${CMAKE_CURRENT_LIST_DIR}/../../../.." NAME)
+
 idf_component_register(
   SRCS "main.cpp" "IdfI2cTransport.cpp"
   INCLUDE_DIRS "." "../../../.."
-  REQUIRES esp_driver_i2c esp_driver_gpio esp_timer freertos
+  REQUIRES ${BME280_COMPONENT_NAME} esp_driver_i2c esp_driver_gpio esp_timer freertos
 )
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)

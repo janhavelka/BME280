@@ -170,18 +170,21 @@ def main() -> int:
         if token not in idf_cmake:
             fail(f"IDF example CMake missing firmware provenance contract: {token}")
 
+    # The root component's name is the checkout directory's name, so the main
+    # component must derive it rather than hard-coding "BME280"; hard-coding
+    # breaks any clone or extracted tarball with a different directory name.
     if re.search(
-        r"\b(?:PRIV_REQUIRES|REQUIRES)\b[^)]*\bBME280\b",
+        r"(?:PRIV_REQUIRES|REQUIRES)[^)]*BME280(?!_COMPONENT_NAME)",
         idf_cmake,
         re.DOTALL,
     ):
         fail("IDF main component must not hard-code the root component name")
     for token in (
-        "REQUIRES esp_driver_i2c esp_driver_gpio esp_timer freertos",
-        "special main component automatically depends",
+        "get_filename_component(BME280_COMPONENT_NAME",
+        "REQUIRES ${BME280_COMPONENT_NAME} esp_driver_i2c esp_driver_gpio esp_timer freertos",
     ):
         if token not in idf_cmake:
-            fail(f"IDF main-component dependency assumption missing: {token}")
+            fail(f"IDF main-component dependency contract missing: {token}")
 
     arduino_help = help_items(arduino)
     idf_help = help_items(idf)
