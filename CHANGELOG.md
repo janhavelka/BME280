@@ -47,7 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Included Bosch's +25% normal-mode standby tolerance in the private sample
   freshness budget.
 - Removed the ESP-IDF example's dependency on the repository checkout
-  directory name and tightened package/example configuration contracts.
+  directory name and tightened package/example configuration contracts. The
+  example's `main` component now derives the root component's name from the
+  resolved repository path, so the ESP-IDF build works from a clone or an
+  extracted release archive under any directory name.
+- Restored a passing Doxygen run by keeping only one input file named
+  `README.md`, which older Doxygen otherwise rejects as a duplicate
+  `\mainpage` under `WARN_AS_ERROR`.
 
 ### Removed
 
