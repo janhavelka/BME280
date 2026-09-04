@@ -306,7 +306,11 @@ stale-but-readable samples after errors or uncertain hardware configuration.
 
 ### Configuration
 
-- `Status validateSettings(const SensorSettings& settings)` - Pure, zero-I2C validation of enum values and channel dependencies
+- `Status validateSettings(const SensorSettings& settings)` - Pure, zero-I2C validation of enum values and channel dependencies.
+  On failure the status is `INVALID_PARAM` and `Status::detail` carries a
+  `SettingsValidationReason` naming the first offending field in declaration
+  order (`OSRS_T`, `OSRS_P`, `OSRS_H`, `FILTER`, `STANDBY`, `MODE`,
+  `SELECTION`). `begin()` and the apply paths propagate the same detail.
 - `Status setMode(Mode mode)` - Select `SLEEP`, `FORCED`, or `NORMAL`
 - `Status setOversamplingT/P/H(Oversampling osrs)` - Configure temperature, pressure, or humidity oversampling
 - `Status setFilter(Filter filter)` - Configure the IIR filter coefficient through a safe sleep/config/restore sequence
@@ -477,6 +481,12 @@ memory, so the next sample seeds the filter again.
 - `Status readRegister(uint8_t reg, uint8_t& value)` - Read a single tracked register
 - `Status writeRegister(uint8_t reg, uint8_t value)` - Write a single tracked register
 
+A multi-register write is encoded as repeated register-address/value pairs,
+because the BME280 write protocol does not auto-increment the register pointer
+(datasheet section 6; reads do auto-increment). `writeRegisters(0xF2, buf, 3)`
+therefore transmits `F2 v0 F3 v1 F4 v2`, not `F2 v0 v1 v2`, and the register
+range must not wrap past `0xFF`.
+
 Raw writes are diagnostic tools. Writes that overlap `ctrl_hum` (`0xF2`),
 `ctrl_meas` (`0xF4`), `config` (`0xF5`), or `reset` (`0xE0`) are health-tracked
 and mark `hardwareConfigDirty()` on success because they bypass the typed config
@@ -539,6 +549,13 @@ estimateMeasurementTimeUs = t_meas_us
 estimateMeasurementTimeMs = ceil((t_meas_us + 1000 safety margin) / 1000)
 estimateNormalCycleMs = estimateMeasurementTimeMs + getStandbyTimeMs()
 ```
+
+The public timing accessors above report the configured nominal standby. The
+driver's internal normal-mode freshness budget uses a larger figure: the
+datasheet specifies standby time accuracy as typ +/-5% and max +/-25%, so the
+budget reserves the worst-case standby (for example 1250 ms for `MS_1000` and
+79 ms for `MS_62_5`). Every other term in that budget is already the Bosch
+maximum, so standby was the only untoleranced quantity.
 
 ## Examples
 
@@ -686,8 +703,6 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - `docs/PRODUCTION_SHARED_BUS_GUIDE.md` - production shared-bus integration guidance
 - `docs/HARDWARE_VALIDATION.md` - consolidated HIL procedure, evidence schema,
   current status, and qualification boundary
-- `docs/CODE_AUDIT_RESOLUTION.md` - verified finding dispositions and changes
-  from the August 2026 code audit
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
 The `2.1.0` changelog entry records the typed-settings and staged-job expansion,

@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added deterministic settings-validation reason codes and post-apply register
   verification, including a distinct staged verification phase and mismatch
   evidence in `Status::detail`.
-- Added a finding-by-finding resolution report for the August 2026 code audit.
+- Consolidated the code audit, its finding-by-finding resolution, and the
+  follow-up verification into a single `docs/CODE_AUDIT.md` engineering record.
 
 ### Changed
 
