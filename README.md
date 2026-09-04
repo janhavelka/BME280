@@ -339,6 +339,14 @@ effect, the desired settings remain the explicit resync target and
 apply/resync succeeds. The last-good sample remains readable only with its
 existing freshness/generation provenance.
 
+The staged path is a whole-tuple apply: it always writes `config` (`0xF5`),
+`ctrl_hum` (`0xF2`) and `ctrl_meas` (`0xF4`), so it resets the BME280 IIR filter
+history even for a mode-only change. The synchronous single-field setters are
+selective because they change one field: `setMode()` and `setOversamplingT/P()`
+write only `ctrl_meas`, `setOversamplingH()` writes `ctrl_hum` then `ctrl_meas`,
+and only `setFilter()`/`setStandby()` touch `config`. Use a setter when filter
+memory must be preserved.
+
 Every typed settings change first queues `ctrl_meas` sleep, then confirms that
 `status.measuring` is clear before writing any sleep-only register. Humidity
 oversampling follows the Bosch latch rule: `setOversamplingH()` then writes
@@ -346,9 +354,13 @@ oversampling follows the Bosch latch rule: `setOversamplingH()` then writes
 then restore normal mode when required. If the post-sleep status check remains
 busy, later writes are skipped and `hardwareConfigDirty()` is set because
 hardware mode may no longer match the cache. A final `0xF2..0xF5` readback must
-match all driver-owned settings bits before the cache is committed. Successful
-typed configuration changes invalidate cached samples so callers cannot read a
-sample captured under old settings.
+match all driver-owned settings bits before the cache is committed. A mismatch
+returns `RESYNC_REQUIRED` without committing the cache, and packs the evidence
+into `Status::detail` as `0x00RREEAA` - register address in bits 16-23 (`0xF2`
+ctrl_hum, `0xF4` ctrl_meas, `0xF5` config), expected driver-owned bits in 8-15,
+actual driver-owned bits in 0-7. The same status is retained in
+`hardwareConfigDirtyError()`. Successful typed configuration changes invalidate
+cached samples so callers cannot read a sample captured under old settings.
 
 If a multi-register configuration sequence touches hardware and then fails, the
 driver sets `hardwareConfigDirty()` and preserves the original error in

@@ -122,6 +122,9 @@ to `startApplySettingsJob()` rather than inferring one from a diff.
 
 ## O3. Deferred to 3.x
 
+Tracked durably in [`MIGRATION_3X.md`](MIGRATION_3X.md), which survives this
+document.
+
 Breaking changes, deliberately not made in a 2.x correctness pass. **Three of
 the seven aliases in finding 10 are load-bearing** and cannot be removed with a
 header edit alone:
