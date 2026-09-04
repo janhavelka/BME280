@@ -30,6 +30,8 @@ struct FakeBus {
   uint32_t imUpdateStatusReadsRemaining = 0;
   bool calibrationReadWhileImUpdate = false;
   bool calibrationReadWhileNormal = false;
+  uint32_t softResetImUpdateReads = 0;
+  uint32_t softResetCount = 0;
   bool settingsReadbackOverrideEnabled = false;
   uint8_t settingsReadbackOverrideReg = cmd::REG_CTRL_HUM;
   uint8_t settingsReadbackOverrideValue = 0;
@@ -130,6 +132,17 @@ TransportResult fakeWrite(uint8_t addr, const uint8_t* data, size_t len,
     const uint8_t reg = data[i];
     const uint8_t value = data[i + 1U];
     bus->reg[reg] = value;
+    if (reg == cmd::REG_RESET && value == cmd::RESET_VALUE) {
+      // A soft reset runs the complete power-on-reset procedure, so the
+      // control registers return to their reset value. Modelling this keeps
+      // the reset paths honest: without it the fake is a device that never
+      // actually resets.
+      bus->reg[cmd::REG_CTRL_HUM] = 0x00;
+      bus->reg[cmd::REG_CTRL_MEAS] = 0x00;
+      bus->reg[cmd::REG_CONFIG] = 0x00;
+      bus->imUpdateStatusReadsRemaining += bus->softResetImUpdateReads;
+      bus->softResetCount++;
+    }
     bus->lastWriteReg = reg;
     bus->lastWriteValue = value;
     if (bus->writeLogLen < sizeof(bus->writeRegLog)) {
@@ -3198,7 +3211,7 @@ void test_config_change_failure_at_config_step_marks_dirty_after_restore() {
   TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.lastWriteReg);
 }
 
-void test_humidity_ctrl_hum_failure_marks_dirty_and_preserves_error() {
+void test_humidity_quiesce_write_failure_marks_dirty_and_preserves_error() {
   FakeBus bus;
   BME280::BME280 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
@@ -3210,6 +3223,74 @@ void test_humidity_ctrl_hum_failure_marks_dirty_and_preserves_error() {
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
   TEST_ASSERT_EQUAL_INT32(-43, dev.hardwareConfigDirtyError().detail);
+}
+
+void test_humidity_ctrl_hum_write_failure_marks_dirty_and_preserves_error() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  // setOversamplingH writes ctrl_meas=SLEEP (quiesce), then ctrl_hum, then the
+  // final ctrl_meas. Write #2 is the ctrl_hum write this test targets; the
+  // datasheet (3.3.1) singles it out as the one write the device may drop.
+  const uint32_t writesBefore = bus.writeCalls;
+  bus.failWriteOnCall = bus.writeCalls + 2u;
+  bus.writeError = TransportResult::Error(TransportErr::BUS, -47);
+
+  Status st = dev.setOversamplingH(Oversampling::X4);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesBefore + 2u, bus.writeCalls);
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-47, dev.hardwareConfigDirtyError().detail);
+
+  // The cache must not claim the change landed.
+  Oversampling osrsH = Oversampling::SKIP;
+  TEST_ASSERT_TRUE(dev.getOversamplingH(osrsH).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Oversampling::X1),
+                          static_cast<uint8_t>(osrsH));
+}
+
+void test_staged_apply_wait_after_sleep_times_out_on_poll_cap() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  // measuring never clears and the clock never advances, so only the poll cap
+  // can end the wait.
+  bus.measuringStatusReadsRemaining = 100000u;
+  bus.statusReadNowAdvanceMs = 0u;
+
+  TEST_ASSERT_TRUE(dev.startApplyConfigJob().inProgress());
+  JobPollResult result = pollUntilTerminal(dev, bus, 1, 400);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(result.status.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::APPLY_WAIT_AFTER_SLEEP),
+                          static_cast<uint8_t>(result.phase));
+}
+
+void test_staged_apply_wait_after_sleep_times_out_on_deadline() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  // measuring never clears, but each status read burns 50 ms, so the phase
+  // deadline is crossed long before the poll cap is reached.
+  bus.measuringStatusReadsRemaining = 100000u;
+  bus.statusReadNowAdvanceMs = 50u;
+
+  TEST_ASSERT_TRUE(dev.startApplyConfigJob().inProgress());
+  JobPollResult result = pollUntilTerminal(dev, bus, 1, 64);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::FAILED),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(result.status.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobPhase::APPLY_WAIT_AFTER_SLEEP),
+                          static_cast<uint8_t>(result.phase));
+  // Prove the deadline ended it, not the 255-poll cap.
+  TEST_ASSERT_GREATER_THAN_UINT32(99000u, bus.measuringStatusReadsRemaining);
 }
 
 void test_recover_apply_config_first_write_failure_marks_dirty() {
@@ -3889,6 +3970,63 @@ void test_soft_reset_success_reloads_calibration_and_clears_dirty() {
   TEST_ASSERT_EQUAL_UINT16(27504, calib.digT1);
   TEST_ASSERT_EQUAL_INT16(26435, calib.digT2);
   TEST_ASSERT_EQUAL_UINT16(36477, calib.digP1);
+}
+
+void test_soft_reset_reapplies_control_registers_the_device_cleared() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.osrsT = Oversampling::X2;
+  cfg.osrsP = Oversampling::X4;
+  cfg.osrsH = Oversampling::X8;
+  cfg.filter = Filter::X4;
+  cfg.standby = Standby::MS_250;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint8_t ctrlHumAfterBegin = bus.reg[cmd::REG_CTRL_HUM];
+  const uint8_t ctrlMeasAfterBegin = bus.reg[cmd::REG_CTRL_MEAS];
+  const uint8_t configAfterBegin = bus.reg[cmd::REG_CONFIG];
+  TEST_ASSERT_NOT_EQUAL_UINT8(0x00, ctrlHumAfterBegin);
+  TEST_ASSERT_NOT_EQUAL_UINT8(0x00, configAfterBegin);
+
+  // The fake models the power-on-reset: writing 0xB6 to 0xE0 clears the three
+  // control registers, so a driver that failed to re-apply them would leave
+  // the device at its reset defaults.
+  TEST_ASSERT_TRUE(dev.softReset().ok());
+  TEST_ASSERT_EQUAL_UINT32(1u, bus.softResetCount);
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+
+  TEST_ASSERT_EQUAL_HEX8(ctrlHumAfterBegin, bus.reg[cmd::REG_CTRL_HUM]);
+  TEST_ASSERT_EQUAL_HEX8(ctrlMeasAfterBegin, bus.reg[cmd::REG_CTRL_MEAS]);
+  TEST_ASSERT_EQUAL_HEX8(configAfterBegin, bus.reg[cmd::REG_CONFIG]);
+}
+
+void test_staged_soft_reset_reapplies_control_registers_and_verifies() {
+  FakeBus bus;
+  BME280::BME280 dev;
+  Config cfg = makeConfig(bus);
+  cfg.osrsT = Oversampling::X2;
+  cfg.osrsP = Oversampling::X4;
+  cfg.osrsH = Oversampling::X8;
+  cfg.filter = Filter::X4;
+  cfg.standby = Standby::MS_250;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint8_t ctrlHumAfterBegin = bus.reg[cmd::REG_CTRL_HUM];
+  const uint8_t ctrlMeasAfterBegin = bus.reg[cmd::REG_CTRL_MEAS];
+  const uint8_t configAfterBegin = bus.reg[cmd::REG_CONFIG];
+
+  TEST_ASSERT_TRUE(dev.startSoftResetJob().inProgress());
+  JobPollResult result = pollUntilTerminal(dev, bus, 1, 64);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobState::DONE),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT32(1u, bus.softResetCount);
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+
+  // APPLY_VERIFY must have seen the re-applied image, not the reset defaults.
+  TEST_ASSERT_EQUAL_HEX8(ctrlHumAfterBegin, bus.reg[cmd::REG_CTRL_HUM]);
+  TEST_ASSERT_EQUAL_HEX8(ctrlMeasAfterBegin, bus.reg[cmd::REG_CTRL_MEAS]);
+  TEST_ASSERT_EQUAL_HEX8(configAfterBegin, bus.reg[cmd::REG_CONFIG]);
 }
 
 void test_soft_reset_success_invalidates_cached_samples() {
@@ -4751,6 +4889,44 @@ void test_normal_mode_request_waits_for_fresh_cycle() {
   dev.tick(bus.nowMs);
   TEST_ASSERT_TRUE(dev.measurementReady());
   TEST_ASSERT_GREATER_THAN_UINT32(readsAfterRequest, bus.readCalls);
+}
+
+void test_normal_freshness_budget_covers_every_standby_tolerance() {
+  // Bosch specifies standby time accuracy as max +/-25%, so the private
+  // freshness budget must reserve the worst-case standby for every setting.
+  // Public accessors keep reporting the nominal value.
+  struct Case {
+    Standby standby;
+    uint32_t nominalMs;
+    uint32_t worstCaseMs;
+  };
+  const Case cases[] = {
+      {Standby::MS_0_5, 1u, 1u},        {Standby::MS_10, 10u, 13u},
+      {Standby::MS_20, 20u, 25u},       {Standby::MS_62_5, 63u, 79u},
+      {Standby::MS_125, 125u, 157u},    {Standby::MS_250, 250u, 313u},
+      {Standby::MS_500, 500u, 625u},    {Standby::MS_1000, 1000u, 1250u},
+  };
+
+  for (const Case& testCase : cases) {
+    FakeBus bus;
+    BME280::BME280 dev;
+    Config cfg = makeConfig(bus);
+    cfg.mode = Mode::NORMAL;
+    cfg.standby = testCase.standby;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    TEST_ASSERT_EQUAL_UINT32(testCase.nominalMs, dev.getStandbyTimeMs());
+
+    const uint32_t startMs = bus.nowMs;
+    TEST_ASSERT_TRUE(dev.requestMeasurement().inProgress());
+    const uint32_t readinessMs =
+        (2u * dev.estimateMeasurementTimeMs()) + testCase.worstCaseMs;
+
+    dev.tick(startMs + readinessMs - 1u);
+    TEST_ASSERT_FALSE(dev.measurementReady());
+
+    dev.tick(startMs + readinessMs);
+    TEST_ASSERT_TRUE(dev.measurementReady());
+  }
 }
 
 void test_high_osr_normal_freshness_deadline_is_wrap_safe() {
@@ -6953,7 +7129,10 @@ int main() {
   RUN_TEST(test_config_write_measuring_after_sleep_marks_dirty_without_config_write);
   RUN_TEST(test_config_change_failure_at_sleep_step_marks_dirty);
   RUN_TEST(test_config_change_failure_at_config_step_marks_dirty_after_restore);
-  RUN_TEST(test_humidity_ctrl_hum_failure_marks_dirty_and_preserves_error);
+  RUN_TEST(test_humidity_quiesce_write_failure_marks_dirty_and_preserves_error);
+  RUN_TEST(test_humidity_ctrl_hum_write_failure_marks_dirty_and_preserves_error);
+  RUN_TEST(test_staged_apply_wait_after_sleep_times_out_on_poll_cap);
+  RUN_TEST(test_staged_apply_wait_after_sleep_times_out_on_deadline);
   RUN_TEST(test_recover_apply_config_first_write_failure_marks_dirty);
   RUN_TEST(test_measurement_time_estimate_uses_oversampling_formula);
   RUN_TEST(test_config_readback_failure_marks_hardware_dirty);
@@ -6983,6 +7162,8 @@ int main() {
   RUN_TEST(test_soft_reset_invalid_calibration_marks_dirty_and_records_health_failure);
   RUN_TEST(test_soft_reset_apply_config_failure_marks_dirty_and_preserves_error);
   RUN_TEST(test_soft_reset_success_reloads_calibration_and_clears_dirty);
+  RUN_TEST(test_soft_reset_reapplies_control_registers_the_device_cleared);
+  RUN_TEST(test_staged_soft_reset_reapplies_control_registers_and_verifies);
   RUN_TEST(test_soft_reset_success_invalidates_cached_samples);
   RUN_TEST(test_recover_returns_busy_when_nvm_update_in_progress_without_calibration_read);
   RUN_TEST(test_recover_nvm_transport_error_updates_health_and_preserves_error);
@@ -7011,6 +7192,7 @@ int main() {
   RUN_TEST(test_sample_freshness_stale_when_hardware_config_dirty);
   RUN_TEST(test_sample_fresh_uses_wrap_safe_age_check);
   RUN_TEST(test_normal_mode_request_waits_for_fresh_cycle);
+  RUN_TEST(test_normal_freshness_budget_covers_every_standby_tolerance);
   RUN_TEST(test_high_osr_normal_freshness_deadline_is_wrap_safe);
   RUN_TEST(test_forced_measurement_request_while_busy_tracks_completion);
   RUN_TEST(test_ambiguous_high_osr_forced_request_reserves_full_wrap_safe_conversion);
