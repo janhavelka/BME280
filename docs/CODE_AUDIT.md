@@ -44,7 +44,7 @@ so the change history is not lost.
 | 3 | `im_update` polled outside reset | **DONE** (fixed differently — original proposal was unsafe) |
 | 4 | `_applyConfig()` fails `begin()` on a measuring device | **DONE** |
 | 5 | `ctrl_hum` write can be silently dropped | **DONE** (trigger condition was misstated) |
-| 6 | Config-write sequence implemented four times | **DONE**, with [one residual](#o2-staged-apply-is-not-selective) |
+| 6 | Config-write sequence implemented four times | **DONE** (staged path is always FULL, by design and now documented) |
 | 7 | Cached configuration never verified against the device | **DONE** |
 | 8 | Freshness budget ignores standby tolerance | **DONE** |
 | 9 | Diagnostic messages constructed and thrown away | **DONE** (count was wrong; overload kept for 2.x) |
@@ -68,75 +68,57 @@ so the change history is not lost.
 
 # Open work
 
-This is the only section that requires code changes.
+The test-coverage gaps (O1) and the staged-apply contract (O2) are closed.
+What remains is deliberately deferred, not pending.
 
-## O1. Four fixes have no test that would catch a regression
+## O1. Test-coverage gaps — CLOSED
 
-Proven by mutation: each fix was reverted in isolation and the suite re-run.
-All four mutants **survived** at 191/191 green.
+All four gaps are closed. Each new test was mutation-verified: the fix it
+covers was reverted and the suite confirmed to fail.
 
-**Important framing:** in every case the shipped code is *correct* — I verified
-each one by execution, not by reading. These are regression risks, not live
-defects. Do not "fix the code"; add the missing test.
+| Gap | Test added | Mutant that now dies |
+|---|---|---|
+| `APPLY_WAIT_AFTER_SLEEP` bounds | `test_staged_apply_wait_after_sleep_times_out_on_poll_cap`, `..._on_deadline` | replacing the guard with `if (false)` fails both |
+| Synchronous `ctrl_hum` write failure | `test_humidity_ctrl_hum_write_failure_marks_dirty_and_preserves_error` | swallowing the error fails it (write count 17 vs 16) |
+| Standby tolerance table | `test_normal_freshness_budget_covers_every_standby_tolerance` | zeroing six of the eight values fails it |
+| `FakeBus` soft reset | `test_soft_reset_reapplies_control_registers_the_device_cleared`, `test_staged_soft_reset_reapplies_control_registers_and_verifies` | skipping the config re-apply in `softReset()` fails it (0x00 vs 0x04) |
 
-1. **`APPLY_WAIT_AFTER_SLEEP` bounds.** Replacing the deadline and poll-cap
-   guard (`src/BME280.cpp:1546`) with `if (false)` keeps the suite green.
-   The guard does work — driving a staged apply against a device whose
-   `status.measuring` sticks high yields `TIMEOUT` in `APPLY_WAIT_AFTER_SLEEP`
-   after 256 polls with a frozen clock (poll cap) and after 2 polls with the
-   clock advancing 50 ms per poll (deadline). Add a test for **both** exits;
-   covering one leaves the other unpinned.
+Two supporting changes:
 
-2. **The synchronous `ctrl_hum` write-failure branch** (`src/BME280.cpp:2719`)
-   can swallow its error and its `_markHardwareConfigDirty()` call with the
-   suite still green. `test_humidity_ctrl_hum_failure_marks_dirty_and_preserves_error`
-   (`test/test_basic.cpp:3201`) is **misnamed** — it injects at
-   `failWriteOnCall = bus.writeCalls + 1u`, and the real write order for
-   `setOversamplingH()`, captured from a running driver, is:
+- `FakeBus` now models the power-on-reset: a `0xB6` write to `0xE0` clears
+  `ctrl_hum`, `ctrl_meas` and `config` to `0x00`, and optionally raises
+  `im_update` for a configurable number of status reads
+  (`softResetImUpdateReads`). All pre-existing tests passed unchanged against
+  the more honest device model, which is itself evidence the reset paths were
+  already correct.
+- `test_humidity_ctrl_hum_failure_marks_dirty_and_preserves_error` was renamed
+  to `test_humidity_quiesce_write_failure_marks_dirty_and_preserves_error`,
+  because it injects at write #1 — the quiesce `ctrl_meas`=SLEEP write — not at
+  the `ctrl_hum` write its old name claimed. It is still a useful test; it was
+  just misnamed.
 
-   ```
-   write #1 -> 0xF4 = 0x24   ctrl_meas SLEEP (quiesce)
-   write #2 -> 0xF2 = 0x03   ctrl_hum          <-- the intended target
-   write #3 -> 0xF4 = 0x24   ctrl_meas final
-   ```
+Suite: 191 -> 197 tests.
 
-   `_quiesceSettingsSynchronously()` writes unconditionally, so write #1 is
-   never `ctrl_hum`. Change the injection to `+ 2u`, and keep the existing test
-   too — it covers the quiesce write, which is also worth pinning. This is the
-   one register the datasheet (§3.3.1) says can be silently dropped.
+## O2. Staged apply always writes `config` — documented, by design
 
-3. **The standby tolerance table** (`src/BME280.cpp:184`) is executed at only
-   two of its eight values. Zeroing the other six plus the `default` keeps the
-   suite green. All eight values are arithmetically correct against
-   ceil(true nominal x 1.25) — `MS_0_5` 1, `MS_62_5` 79, `MS_125` 157,
-   `MS_250` 313, `MS_500` 625, `MS_1000` 1250, `MS_10` 13, `MS_20` 25. Add a
-   table-driven assertion over all eight.
+`SettingsWritePlan` (`include/BME280/BME280.h`) is consumed only by
+`_writeSettingsAfterQuiesceSynchronously()`. The staged `pollJob()` path has no
+plan parameter, so `APPLY_CONFIG` writes `0xF5` unconditionally and the staged
+path is permanently equivalent to `SettingsWritePlan::FULL`. Consequence:
+`startApplySettingsJob()` with a mode-only change rewrites `config` and so
+resets IIR filter history, while `setMode()` does not.
 
-4. **`FakeBus` does not model soft reset.** A `0xB6` write to `0xE0` is stored
-   like any other byte. Real silicon returns `ctrl_hum`, `ctrl_meas` and
-   `config` to `0x00` and raises `im_update`. Every `SOFT_RESET` job — including
-   the reworked `APPLY_CTRL_MEAS_SLEEP -> APPLY_WAIT_AFTER_SLEEP -> NVM ->
-   APPLY_VERIFY` path — therefore runs against a device that never resets.
-   Teach the fake the reset, then fix whatever legitimately breaks; expect
-   `APPLY_VERIFY` to have opinions about registers that reset underneath it.
+**Resolved as documentation rather than code.** On reflection the asymmetry is
+correct, not a defect: `startApplySettingsJob(settings)` means "make the device
+match this whole tuple", and a full write is the honest implementation of that,
+whereas the single-field synchronous setters are selective precisely because
+they change one field. Making the staged path diff against the cache would also
+be wrong whenever the cached image is already untrusted. What was missing was
+the contract, which is now stated on both staged entry points and in the README
+timing/configuration notes.
 
-## O2. Staged apply is not selective
-
-Finding 6 collapsed four copies of the config-write sequence into two, which
-was the goal. But `SettingsWritePlan` (`include/BME280/BME280.h:1042`) is
-consumed only by `_writeSettingsAfterQuiesceSynchronously()`
-(`src/BME280.cpp:2706`). The staged `pollJob()` path has no plan parameter:
-`APPLY_CONFIG` (`src/BME280.cpp:1572`) writes `0xF5` unconditionally, so the
-staged path is permanently equivalent to `SettingsWritePlan::FULL`.
-
-Observable consequence: `startApplySettingsJob()` with a mode-only change
-rewrites `config` and therefore **resets IIR filter history**; `setMode()` does
-not. The header documents the selective behaviour on the setters
-(`include/BME280/BME280.h:856-878`) and says nothing about this asymmetry.
-
-Either give the staged path the same selectivity, or document it on
-`startApplySettingsJob()` and `startApplyConfigJob()`. Prefer the former. Add a
-test asserting a mode-only staged apply does not write `0xF5`.
+If a future caller genuinely needs a staged partial apply, add a plan parameter
+to `startApplySettingsJob()` rather than inferring one from a diff.
 
 ## O3. Deferred to 3.x
 
