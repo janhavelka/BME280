@@ -133,7 +133,7 @@ constexpr const char* toString(ConversionState value) {
 
 /// Reason encoded in Status::detail when a job start or hardware operation is busy.
 enum class BusyReason : int32_t {
-  NONE = 0,
+  NONE = 0,                    ///< No busy reason; not produced by any BUSY status
   STAGED_JOB_ACTIVE = 1,      ///< A staged job currently owns hardware access
   TERMINAL_RESULT_PENDING = 2, ///< A cancellation result must be retrieved first
   MEASUREMENT_ACTIVE = 3,      ///< A measurement request is already active
@@ -186,7 +186,9 @@ enum class JobPhase : uint8_t {
   RESYNC_READ_CHIP_ID,     ///< Non-reset identity verification
   RESYNC_NVM_START,        ///< Resynchronization NVM deadline setup
   COMPLETE,                ///< Local-only successful terminal transition
-  APPLY_VERIFY             ///< Read back and verify all driver-owned settings
+  APPLY_VERIFY             ///< Read back 0xF2..0xF5 and verify all driver-owned
+                           ///< settings bits. A mismatch fails the job with
+                           ///< RESYNC_REQUIRED and a packed Status::detail.
 };
 
 /// Return the canonical string for a staged job phase.
@@ -247,17 +249,20 @@ struct Measurement {
   bool humidityValid = false;    ///< True when humidity was measured and compensated
 };
 
-/// Raw ADC values
+/// Raw ADC values. Validity derives from configured oversampling, never from
+/// the sample value: the Bosch skipped encodings are legitimate ADC results
+/// for an enabled channel and are not used as sentinels.
 struct RawSample {
-  int32_t adcT = 0; ///< Raw temperature ADC (20-bit; 0x80000 when skipped)
-  int32_t adcP = 0; ///< Raw pressure ADC (20-bit; 0x80000 when skipped)
-  int32_t adcH = 0; ///< Raw humidity ADC (16-bit; 0x8000 when skipped)
-  bool temperatureValid = false; ///< True when adcT is a measured value
-  bool pressureValid = false;    ///< True when adcP is a measured value
-  bool humidityValid = false;    ///< True when adcH is a measured value
+  int32_t adcT = 0; ///< Raw temperature ADC, 20-bit; unspecified when !temperatureValid
+  int32_t adcP = 0; ///< Raw pressure ADC, 20-bit; unspecified when !pressureValid
+  int32_t adcH = 0; ///< Raw humidity ADC, 16-bit; unspecified when !humidityValid
+  bool temperatureValid = false; ///< True when Config::osrsT != Oversampling::SKIP
+  bool pressureValid = false;    ///< True when Config::osrsP != Oversampling::SKIP
+  bool humidityValid = false;    ///< True when Config::osrsH != Oversampling::SKIP
 };
 
-/// Fixed-point compensated values (no float)
+/// Fixed-point compensated values (no float). Validity mirrors the matching
+/// RawSample flag, i.e. the configured oversampling.
 struct CompensatedSample {
   int32_t tempC_x100 = 0;        ///< Temperature * 100 (e.g., 2534 = 25.34 degC)
   uint32_t pressurePa = 0;       ///< Pressure in Pa
@@ -477,17 +482,20 @@ public:
   /// transition or NVM copy is still busy, returns BUSY or TIMEOUT instead of
   /// hiding a polling loop; use startInitJob()/pollJob() for staged waits.
   /// @param config Configuration including transport callbacks
-  /// @return Status::Ok() on success, error otherwise
+  /// @return Status::Ok() on success. INVALID_CONFIG for a rejected
+  ///         configuration; when the measurement settings are the cause,
+  ///         Status::detail carries the SettingsValidationReason of the first
+  ///         offending field. Other errors are preserved as reported.
   Status begin(const Config& config);
   
   /// Process pending measurement operations (call regularly from task context).
-  /// @param nowMs Current monotonic timestamp in milliseconds from the same
-  ///              timebase as Config::nowMs
   /// Measurement errors are retained in lastMeasurementStatus() and
   /// SettingsSnapshot::lastMeasurementStatus because tick() itself is void.
   /// A status-read, raw-read, or compensation failure terminates the current
   /// request; later tick() calls perform no I2C until requestMeasurement() is
   /// called again.
+  /// @param nowMs Current monotonic timestamp in milliseconds from the same
+  ///              timebase as Config::nowMs
   void tick(uint32_t nowMs);
   
   /// Unbind the driver and clear all cached state without performing I2C.
@@ -524,7 +532,10 @@ public:
   /// Successful completion starts a new health session and clears dirty config
   /// state after the cached configuration has been applied.
   /// @param config Configuration including transport callbacks
-  /// @return IN_PROGRESS when accepted, error otherwise
+  /// @return IN_PROGRESS when accepted. INVALID_CONFIG for a rejected
+  ///         configuration; when the measurement settings are the cause,
+  ///         Status::detail carries the SettingsValidationReason of the first
+  ///         offending field.
   Status startInitJob(const Config& config);
 
   /// Start a staged forced-mode measurement job.
@@ -535,6 +546,10 @@ public:
   /// Start a staged re-apply of the cached configuration.
   /// Partial write failures preserve dirty config diagnostics; successful
   /// completion clears dirty config state.
+  /// Unlike the selective synchronous setters, every staged apply writes
+  /// config (0xF5), ctrl_hum (0xF2) and ctrl_meas (0xF4) in that order, then
+  /// verifies them. Writing config resets the BME280 IIR filter history even
+  /// when the filter coefficient is unchanged.
   /// @return IN_PROGRESS when accepted, error otherwise
   Status startApplyConfigJob();
 
@@ -543,8 +558,14 @@ public:
   /// Before the first mutating or ambiguous write, failure or cancellation
   /// restores prior cached settings and sync state. Afterwards desired settings
   /// remain cached with RESYNC_REQUIRED until a successful full apply/resync.
+  /// This is a whole-tuple apply: it always writes config (0xF5), ctrl_hum
+  /// (0xF2) and ctrl_meas (0xF4), so it resets the BME280 IIR filter history
+  /// even for a mode-only change. Use setMode() or setOversamplingT/P() when
+  /// filter memory must be preserved.
   /// @param settings Desired sensor settings
-  /// @return IN_PROGRESS when accepted, validation/precondition error otherwise
+  /// @return IN_PROGRESS when accepted, otherwise a validation or precondition
+  ///         error; INVALID_PARAM carries the SettingsValidationReason of the
+  ///         first offending field in Status::detail
   Status startApplySettingsJob(const SensorSettings& settings);
 
   /// Start a staged non-reset resynchronization job. The job verifies identity,
@@ -571,10 +592,10 @@ public:
   Status cancelJob(CancelReason reason);
 
   /// Advance the active staged job.
-  /// @param nowMs Current timestamp in milliseconds
   /// A zero callback budget still permits bounded local-only phase transitions.
   /// Natural terminal results are returned only by the poll that reaches them;
   /// cancellation results are retained until exactly one poll retrieves them.
+  /// @param nowMs Current timestamp in milliseconds
   /// @param maxInstructions Maximum I2C callbacks to issue this poll; defaults to 1
   /// @return Identity, phase, state, status, deadline and callback usage
   JobPollResult pollJob(uint32_t nowMs, uint8_t maxInstructions = 1);
@@ -636,7 +657,11 @@ public:
             !_hardwareConfigDirtyError.ok());
   }
 
-  /// First transport/status error that made hardware config state uncertain.
+  /// First error that made hardware config state uncertain, retained until a
+  /// complete successful resync clears it. This is a transport error, a
+  /// BUSY/DEVICE_MEASURING status when measuring persisted after the sleep
+  /// request, or a RESYNC_REQUIRED carrying the packed register/expected/actual
+  /// detail when post-write settings readback did not match.
   /// @return Root-cause status for hardwareConfigDirty(), or Status::Ok()
   Status hardwareConfigDirtyError() const { return _hardwareConfigDirtyError; }
 
@@ -663,11 +688,16 @@ public:
   // Driver State
   // =========================================================================
   
-  /// Get current driver state
+  /// Get the observational driver-health classification.
+  /// This is derived from consecutive tracked I2C failures only. It does not
+  /// probe device reachability and does not imply synchronized configuration
+  /// or valid calibration; use configSyncState() and calibrationState() for
+  /// those. OFFLINE is diagnostic and does not block owner-directed operations.
   /// @return Current health/lifecycle state
   DriverState state() const { return _driverState; }
 
-  /// Alias for state() used by shared diagnostics.
+  /// Alias for state() used by shared diagnostics; see state() for the full
+  /// contract.
   /// @return Current health/lifecycle state
   DriverState driverState() const { return state(); }
   
@@ -798,17 +828,19 @@ public:
   Status getMeasurement(Measurement& out);
 
   /// Get raw ADC values.
+  /// Validity follows configured oversampling: each flag is true exactly when
+  /// the matching Config oversampling is not Oversampling::SKIP. The Bosch
+  /// skipped-output encoding is never used as a validity test, because it
+  /// remains a legitimate ADC result for an enabled channel.
   /// @param[out] out Last cached raw ADC sample
   /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
-  /// Validity follows configured oversampling. The Bosch skipped-output numeric
-  /// encoding remains a valid ADC result when that channel is enabled.
   Status getRawSample(RawSample& out) const;
 
   /// Get fixed-point compensated values.
-  /// @param[out] out Last cached fixed-point compensated sample
-  /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
   /// Numeric fields remain zero for skipped/invalid channels; check the
   /// matching validity flag before using a channel.
+  /// @param[out] out Last cached fixed-point compensated sample
+  /// @return Status::Ok() on success, MEASUREMENT_NOT_READY until a sample has been captured
   Status getCompensatedSample(CompensatedSample& out) const;
 
   /// Get the atomically committed sample and its provenance.
@@ -844,7 +876,10 @@ public:
   /// Set operating mode (SLEEP, FORCED, NORMAL).
   /// FORCED is an on-demand policy and does not trigger a conversion until
   /// requestMeasurement() is called. A successful mode change invalidates the
-  /// cached sample.
+  /// cached sample. Writes only ctrl_meas (0xF4) after the sleep/idle
+  /// sequence, so it does not reset the BME280 IIR filter history.
+  /// A post-write readback mismatch returns RESYNC_REQUIRED with the packed
+  /// register/expected/actual detail and is recorded as a health failure.
   /// @param mode New operating mode
   /// @return Status::Ok() on success, error otherwise
   Status setMode(Mode mode);
@@ -858,6 +893,8 @@ public:
   /// Temperature must be enabled when pressure or humidity is enabled. A
   /// successful change invalidates the cached sample. This setter does not
   /// write config, so it does not reset the BME280 IIR filter history.
+  /// A post-write readback mismatch returns RESYNC_REQUIRED with the packed
+  /// register/expected/actual detail and is recorded as a health failure.
   /// @param osrs New temperature oversampling
   /// @return Status::Ok() on success, error otherwise
   Status setOversamplingT(Oversampling osrs);
@@ -866,7 +903,9 @@ public:
   /// Temperature must be enabled when pressure is enabled. A successful change
   /// invalidates the cached sample. Skipping pressure retains the BME280 IIR
   /// filter's prior pressure history; call setFilter() to reset filter memory
-  /// before re-enabling when required.
+  /// before re-enabling when required. Writes only ctrl_meas (0xF4).
+  /// A post-write readback mismatch returns RESYNC_REQUIRED with the packed
+  /// register/expected/actual detail and is recorded as a health failure.
   /// @param osrs New pressure oversampling
   /// @return Status::Ok() on success, error otherwise
   Status setOversamplingP(Oversampling osrs);
@@ -874,7 +913,10 @@ public:
   /// Set oversampling for humidity.
   /// Temperature must be enabled when humidity is enabled. The hardware
   /// sequence writes ctrl_hum first, then ctrl_meas to latch the humidity
-  /// setting. A successful change invalidates the cached sample.
+  /// setting. A successful change invalidates the cached sample. It does not
+  /// write config, so the BME280 IIR filter history is preserved.
+  /// A post-write readback mismatch returns RESYNC_REQUIRED with the packed
+  /// register/expected/actual detail and is recorded as a health failure.
   /// @param osrs New humidity oversampling
   /// @return Status::Ok() on success, error otherwise
   Status setOversamplingH(Oversampling osrs);
@@ -885,6 +927,8 @@ public:
   /// BME280 IIR filter applies to pressure and temperature, not humidity, and
   /// changing it resets the hardware filter memory. If measuring persists
   /// after the sleep write, config is skipped and dirty state is set.
+  /// A post-write readback mismatch returns RESYNC_REQUIRED with the packed
+  /// register/expected/actual detail and is recorded as a health failure.
   /// @param filter New IIR filter coefficient
   /// @return Status::Ok() on success, error otherwise
   Status setFilter(Filter filter);
@@ -893,7 +937,11 @@ public:
   /// the device is no longer measuring, writes config, then restores normal
   /// mode when required. A successful change invalidates the cached sample. If
   /// measuring persists after the sleep write, config is skipped and dirty
-  /// state is set.
+  /// state is set. Standby lives in the shared config register (0xF5), so
+  /// writing it resets the BME280 IIR filter memory even though the filter
+  /// coefficient is unchanged.
+  /// A post-write readback mismatch returns RESYNC_REQUIRED with the packed
+  /// register/expected/actual detail and is recorded as a health failure.
   /// @param standby New normal-mode standby interval
   /// @return Status::Ok() on success, error otherwise
   Status setStandby(Standby standby);
@@ -1030,11 +1078,17 @@ public:
   /// @return Estimated measurement duration in milliseconds
   uint32_t estimateMeasurementTimeMs() const;
 
-  /// Get the configured standby interval in milliseconds (rounded up)
-  /// @return Standby interval in milliseconds
+  /// Get the configured standby interval in milliseconds (rounded up).
+  /// This is the datasheet nominal value. The driver's internal measurement
+  /// freshness budget instead reserves the worst-case standby (nominal +25%,
+  /// for example 1250 ms for Standby::MS_1000) plus two maximum conversions,
+  /// so this accessor is deliberately smaller than the scheduler's interval.
+  /// @return Nominal standby interval in milliseconds
   uint32_t getStandbyTimeMs() const;
 
-  /// Estimate full normal-mode cycle time (measurement + standby) in ms
+  /// Estimate full normal-mode cycle time (measurement + nominal standby) in ms.
+  /// Equals estimateMeasurementTimeMs() + getStandbyTimeMs(); it uses the
+  /// nominal standby and is not the driver's internal freshness budget.
   /// @return Estimated normal-mode cycle in milliseconds
   uint32_t estimateNormalCycleMs() const;
 

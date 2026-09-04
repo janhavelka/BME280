@@ -15,9 +15,11 @@ under `include/BME280/`; release history lives in `../CHANGELOG.md`.
   status, and qualification boundary.
 - `BME280_Register_Reference.md`: implementation-facing register, calibration,
   and timing notes.
-- `CODE_AUDIT.md`: the code audit, with each finding's verified status,
-  the remaining open work, and the corrections made to the audit itself.
-  Internal engineering record; not part of the distributed package.
+- `MIGRATION_3X.md`: the backlog of deliberate 3.x breaking changes, with the
+  coordinated edits each one needs.
+- `CODE_AUDIT.md`: the code audit, with each finding's verified status and the
+  corrections made to the audit itself. Internal engineering record; not part
+  of the distributed package.
 - `BME280_datasheet.pdf`: Bosch BME280 datasheet used as primary device
   evidence. Verify critical values against the PDF when changing protocol,
   compensation, timing, or electrical contracts.

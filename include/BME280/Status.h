@@ -28,7 +28,13 @@ enum class Err : uint8_t {
   I2C_NACK_DATA,             ///< I2C data byte not acknowledged
   I2C_TIMEOUT,               ///< I2C transaction timeout
   I2C_BUS,                   ///< I2C bus error (arbitration lost, etc.)
-  RESYNC_REQUIRED,           ///< Cached device state must be reconciled before use
+  RESYNC_REQUIRED,           ///< Cached device state must be reconciled before use.
+                             ///< From post-write settings readback, Status::detail
+                             ///< is packed as `0x00RREEAA`: register address in
+                             ///< bits 16-23 (0xF2 ctrl_hum, 0xF4 ctrl_meas, 0xF5
+                             ///< config), expected driver-owned bits in 8-15, and
+                             ///< actual driver-owned bits in 0-7. Always
+                             ///< non-negative. Other producers leave detail zero.
   CANCELLED,                 ///< Staged job cancelled by its owner
   DEADLINE_EXPIRED,          ///< Staged job cancelled because its owner deadline expired
   I2C_SHORT_TRANSFER         ///< Transport reported OK with incomplete byte counts
@@ -67,7 +73,14 @@ constexpr const char* toString(Err err) {
 /// Status structure returned by all fallible operations
 struct Status {
   Err code = Err::OK;          ///< Repository-standard error code.
-  int32_t detail = 0;        ///< Implementation-specific detail (e.g., I2C error code)
+  int32_t detail = 0;        ///< Code-dependent detail. BUSY carries a BusyReason.
+                             ///< INVALID_PARAM from validateSettings() and
+                             ///< INVALID_CONFIG from begin() carry a
+                             ///< SettingsValidationReason. CHIP_ID_MISMATCH carries
+                             ///< the observed chip-ID byte. RESYNC_REQUIRED from
+                             ///< settings readback carries the packed triple
+                             ///< documented on Err::RESYNC_REQUIRED. Transport
+                             ///< errors carry the adapter's TransportResult detail.
   const char* msg = toString(Err::OK); ///< Library-owned canonical error string
 
   /// Create an OK status.

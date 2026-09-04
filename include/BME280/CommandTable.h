@@ -40,9 +40,15 @@ static constexpr uint8_t REG_HUM_LSB = 0xFE;    ///< Humidity ADC LSB.
 
 static constexpr uint8_t REG_DATA_START = REG_PRESS_MSB; ///< First register in the 0xF7..0xFE burst.
 static constexpr uint8_t DATA_LEN = 8;                   ///< Length of the coherent data-register burst.
-static constexpr int32_t RAW_PRESSURE_SKIPPED = 0x80000;    ///< Bosch pressure skipped sentinel.
-static constexpr int32_t RAW_TEMPERATURE_SKIPPED = 0x80000; ///< Bosch temperature skipped sentinel.
-static constexpr int32_t RAW_HUMIDITY_SKIPPED = 0x8000;     ///< Bosch humidity skipped sentinel.
+static constexpr int32_t RAW_PRESSURE_SKIPPED = 0x80000;    ///< Pressure reset/skipped output.
+                                                            ///< Documentation only: the driver
+                                                            ///< never compares samples against it.
+static constexpr int32_t RAW_TEMPERATURE_SKIPPED = 0x80000; ///< Temperature reset/skipped output.
+                                                            ///< Documentation only; a valid ADC
+                                                            ///< result for an enabled channel.
+static constexpr int32_t RAW_HUMIDITY_SKIPPED = 0x8000;     ///< Humidity reset/skipped output.
+                                                            ///< Documentation only; validity comes
+                                                            ///< from configured oversampling.
 /// @}
 
 /// @name Calibration registers

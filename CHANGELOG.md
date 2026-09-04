@@ -14,6 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evidence in `Status::detail`.
 - Consolidated the code audit, its finding-by-finding resolution, and the
   follow-up verification into a single `docs/CODE_AUDIT.md` engineering record.
+- Added `docs/MIGRATION_3X.md` recording the deliberate 3.x breaking changes
+  and the coordinated edits each one needs.
+- Documented the packed `RESYNC_REQUIRED` readback detail
+  (`0x00RREEAA`: register, expected bits, actual bits) on `Err::RESYNC_REQUIRED`,
+  `Status::detail`, `JobPhase::APPLY_VERIFY` and in the README, so a caller can
+  decode a settings-verification mismatch.
+- Documented per-setter register write plans, the staged apply's whole-tuple
+  behaviour and its IIR-history consequence, and that `getStandbyTimeMs()`
+  reports nominal standby while the freshness budget reserves the worst case.
+- Added mutation-verified coverage for the staged quiesce timeout bounds, the
+  synchronous `ctrl_hum` write-failure path, all eight standby tolerance
+  values, and control-register re-application after a soft reset; the native
+  fake sensor now models the power-on-reset (191 -> 197 tests).
 
 ### Changed
 
