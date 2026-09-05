@@ -119,7 +119,7 @@ def package_file_map(tar: tarfile.TarFile) -> tuple[dict[str, str], set[str]]:
             continue
         if stripped in files:
             fail(f"duplicate packaged path after root normalization: {stripped}")
-        files[stripped] = normalized
+        files[stripped] = member.name
     return files, all_members
 
 

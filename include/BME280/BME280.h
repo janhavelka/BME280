@@ -19,7 +19,7 @@ namespace BME280 {
 /// Driver state for health monitoring
 enum class DriverState : uint8_t {
   UNINIT,    ///< No successful session, end(), or an admitted initialization failed
-  READY,     ///< Operational, consecutiveFailures == 0
+  READY,     ///< Initialized session with consecutiveFailures == 0; does not guarantee measurement readiness
   DEGRADED,  ///< 1 <= consecutiveFailures < offlineThreshold
   OFFLINE    ///< Diagnostic: consecutiveFailures >= offlineThreshold; does not block I2C
 };

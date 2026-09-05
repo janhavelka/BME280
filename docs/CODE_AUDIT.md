@@ -9,15 +9,105 @@ still read 1.23, which is Bosch's own stale footer).
 |---|---|
 | Audited baseline | `3b3fad1` (v2.1.0) |
 | Fixes landed in | `558a31f`, `184eee9`, `de39968`, `d4d491f`, `99a0af7` |
-| Re-verified at | `084b045`, 2026-09-04 |
+| Previous re-verification | `084b045`, 2026-09-04, with coverage/docs follow-ups through `5837d0b` |
+| Latest verification baseline | `5837d0b`, 2026-09-05; changes from this pass described below |
 | Items | 28 (A–G plus findings 1–21, with sub-items) |
 
-Every finding was re-verified independently: each factual claim was re-checked
-against the datasheet and against both code baselines, and several were checked
-by compiling and running the driver rather than by reading it. **The audit as
+Every finding was re-verified independently against the current source and
+the relevant historical source, datasheet clauses, and tests. Several were
+checked by compiling and running the driver. **The audit as
 originally written contained errors.** They are corrected in place below, and
 listed in full in [Corrections to this document](#corrections-to-this-document)
 so the change history is not lost.
+
+## 2026-09-05 verification report
+
+Fetched all remotes and fast-forwarded `main` to its upstream; the clean checkout
+was already at the newest remote commit, `5837d0b`. Reviewed every A–G and 1–21
+finding, all thirteen minor sub-items, the O1/O2 follow-ups, and the withdrawn
+and deferred proposals. Cross-checked the current source, original audit at
+`558a31f`, historical source where relevant, the local Bosch PDF, and regression
+tests. The summary and verification ledger below record each disposition.
+
+The implemented core fixes remain appropriate. No change to `src/BME280.cpp`,
+compensation math, public signatures, or release version was needed. Two small
+remaining defects were reproduced and fixed:
+
+- **G: bus initialization could still report false success.** The CLI already
+  printed help after a reported initialization failure, but `initWire()` threw
+  away the boolean results of `Wire.begin()` and `Wire.setClock()`. It now returns
+  `false` when either fails. The Wire stub models both results, and a regression
+  checks both failures and a subsequent successful retry. This extends the
+  existing helper and caller error path without adding a new abstraction.
+- **B: prefixed archive names could crash metadata validation.** Path comparison
+  correctly normalized `./library.json`, but the checker then used the normalized
+  name to look up the original tar member, raising `KeyError`. The map now keeps
+  the original member name for extraction and the normalized name for comparison.
+  Flat, `./`-prefixed, and directory-prefixed archives were exercised, along with
+  missing-header and forbidden-path cases. The normal PlatformIO archive was
+  unaffected by the defect.
+
+Other completed changes:
+
+- **9:** removed nine ignored message arguments from the Arduino/IDF examples,
+  preserving error codes and details. The compatibility overload and its native
+  test remain; their eventual removal is recorded in `MIGRATION_3X.md`.
+- **12:** made the README and `DriverState::READY` enum comment agree with the
+  existing `isOnline()` contract: health does not guarantee measurement readiness.
+- **13.1:** repaired the NVM timeout test's initial clock. The added quiesce read
+  had consumed its wrap before NVM polling began. The test now crosses wrap during
+  the NVM read itself. The implementation was already correct.
+- Corrected this report's false standby-symbol correction, unsupported sentinel
+  frequency estimates, unconditional SLEEP-on-failure claim, remaining message
+  count, callback-validator reach claim, and overly broad compensation wording.
+  Repaired the stale O1/O2 links and made all minor-item decisions explicit.
+
+**Simplest-solution decisions:** keep the common synchronous write helper and the
+separate staged state machine; both have actual callers and different callback
+budgets. Keep quiesce-then-NVM-gate, configuration readback, exact standby bounds,
+and configuration-derived channel validity. Keep whole-tuple staged applies
+explicit rather than deriving partial writes from an untrusted cache. Preserve
+2.x compatibility instead of deleting aliases, snapshot fields, or changing
+`getSettings()`'s return type. The large HIL module split remains a separate
+maintenance task: it does not fix a demonstrated behavior defect and would
+require coordinated source-contract checker changes.
+
+### Validation evidence
+
+Used the canonical [README validation gate](../README.md#validation), plus
+targeted negative cases. Results below are from this pass; hardware results from
+older campaigns are not results of this review.
+
+| Check | Result |
+|---|---|
+| Native Unity suite | 198/198 passed (197 at the starting commit) |
+| HIL parser/classifier suite | 87/87 passed |
+| Core timing, Arduino CLI, HIL, IDF example contracts | Passed |
+| Generated version and release metadata | Passed; version remains 2.1.0 |
+| Python compilation | Passed |
+| Core C++17 syntax with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` | Passed |
+| Arduino ESP32-S3 and ESP32-S2 builds | Passed using the repository wrapper and pinned platform |
+| Doxygen | Passed, version 1.13.2 |
+| Package and content checker | Passed; synthetic flat, `./`-prefixed and directory-prefixed layouts accepted; 12 forbidden-path and seven missing-header cases rejected |
+| HIL dry runs, default and with job API | Completed with `INCOMPLETE`, as required for runs without hardware |
+| Targeted mutations | Ignored begin/clock failures and unsigned NVM deadline comparison each fail the intended regression; controls pass |
+| O1 mutations repeated | Disabled post-sleep bounds, swallowed humidity-write error, shortened standby table and skipped reset reapply each fail the named test(s); six-test control passes |
+| Checker negative cases | Forbidden timing calls/includes and removed CLI dispatch comparisons rejected |
+| Checkout-name CMake evaluation | `BME280`, `renamed-driver`, and `renamed driver` derive the correct component dependency using host CMake with stubbed IDF registration |
+
+The initial embedded build attempts stopped before compilation because the
+existing `PLATFORMIO_CORE_DIR` selected `C:\pio`, whose Python environment was
+incomplete (`uv` setup exited 106). For the successful builds, a process-local
+override selected the already installed `%USERPROFILE%\.platformio`; all
+PlatformIO invocations still used `scripts\pio.cmd`. No other Core was installed
+and no persistent user configuration was changed.
+
+Native ASan/UBSan and full native ESP-IDF compilation are Linux CI checks; they
+were not run locally (`idf.py` is absent). Host CMake evaluation is not an
+ESP-IDF build. No board was flashed and no physical HIL, electrical fault
+injection, runtime ESP-IDF, or accuracy validation was performed. Temporary
+mutation builds and dry-run output remain ignored under `.pio/`; the generated
+package is removed after validation.
 
 ## Status legend
 
@@ -149,8 +239,8 @@ Also for 3.x: the six duplicated `SettingsSnapshot` fields (finding 11) and
 removed. The structural split is still open; the original proposal stands. It
 was correctly deferred to keep the correctness pass behaviour-neutral.
 
-Note the coupling that will fight any refactor: `check_hil_contract.py:413`
-asserts exactly 20 literal substrings against the runner's *source text*, and
+Note the coupling that will fight any refactor: `check_hil_contract.py`
+asserts 23 required literal substrings against the runner's *source text*, and
 the CLI/IDF contract checkers do the same to the two `main.cpp` files. Those
 checkers must be rewritten alongside.
 
@@ -176,7 +266,10 @@ first given: `pio pkg pack` emits flat, unprefixed members, and
 `library.json`'s `export.include` allowlist admits no root-level dot-entry, so
 no packaged name has ever begun with `.` or `/` and `lstrip` was a no-op on all
 32 of them. The guard was one `export.include` change away from silently
-passing. Now `removeprefix("./")` (`tools/check_package_contents.py:100`).
+passing. Now `removeprefix("./")` (`tools/check_package_contents.py`). The
+2026-09-05 follow-up also preserves each original tar member name for extraction;
+normalization is only for comparison. This prevents `KeyError` when an otherwise
+valid archive uses `./` prefixes.
 
 ## C. Package checker required-file list — DONE
 The Arduino example was required but none of the seven `examples/common/*.h`
@@ -220,6 +313,13 @@ immediately with the handle untouched (`tools/run_i2c_hil.py:3461`).
 `printPrompt()` never ran — with `scan`, `addr` and `begin` being exactly the
 recovery commands needed in that state. The ESP-IDF `app_main()` already did it
 correctly, so this was also a parity break. Success-path output is unchanged.
+The 2026-09-05 review additionally found that the Arduino helper always returned
+`true` even if `Wire.begin()` or `Wire.setClock()` failed. Both results are now
+checked and the native stub/test exercise both failures and retry. The Arduino
+`begin` command retries sensor initialization; it does not reinitialize the
+application-owned bus. The helper can be called again by the application, or
+startup rerun after correcting the bus setup; this change does not add an
+automatic bus recovery policy.
 
 ## 1. Skipped-channel sentinels — DONE
 `_readRawData()` marked a channel invalid when its raw ADC equalled the Bosch
@@ -227,26 +327,21 @@ skipped value, and `_compensate()` then failed the whole sample. `0x80000` and
 `0x8000` are the *reset and skipped* register values (Tables 18/20/23/24); the
 datasheet nowhere states they cannot occur as genuine output.
 
-Recomputed with the Bosch reference routines:
+For the test fixture's `dig_T1 = 27504`, `dig_T2 = 26435`, `dig_T3 = -1000`,
+`adc_T = 0x80000` gives `t_fine = 135479`, T = 26.46 C. The enabled-sentinel
+tests demonstrate successful temperature, pressure and humidity compensation
+and sample publication. Pressure and humidity values depend on their own
+calibration coefficients and on `t_fine`; the sentinel alone does not identify
+a pressure, altitude, or humidity.
 
-- **Temperature.** With `dig_T1 = 27504`, `dig_T2 = 26435`, `dig_T3 = -1000`,
-  `adc_T = 0x80000` gives `t_fine = 135479`, T = 26.46 C. The value is
-  insensitive to `dig_T3`, but part-to-part `dig_T1`/`dig_T2` spread moves it
-  across roughly 20–30 C — so *some* ordinary room temperature sits on the
-  sentinel for essentially any part. Gradient 31.9 counts per 0.01 C; Table 14
-  noise 0.005 C at x1 gives sigma ~16 counts. **With the IIR filter off** (the
-  driver default) §3.4.3 gives resolution `16 + (osrs_t - 1)` bit, so at x1 the
-  step is 16 counts — about one sigma, up to ~40 % of samples. With the filter
-  on, resolution is always 20 bit (§3.4.4, Table 17), the step is 1 count and
-  the rate falls to ~2.5 %.
-- **Pressure** is the strongest case and was missing from the original text.
-  `adc_P = 0x80000` compensates to ~81.9 kPa (~819 hPa, about 1750 m) — Denver,
-  Mexico City, Bogota. Gradient 0.172 Pa/count against Table 12 noise 3.3 Pa
-  (~19 counts) and a 16-count step: ~35 % of samples at a populated altitude.
-- **Humidity** is real but an order of magnitude rarer than temperature.
-  Humidity is always 16-bit, so there is no coarse bin. `adc_H = 0x8000` gives
-  ~72 %RH; Table 11 noise 0.07 %RH at x1 is ~13 counts against a 1-count step,
-  so ~3 % of samples.
+Earlier versions estimated rejection rates of ~40%, ~35%, ~3%, and ~2.5% from
+typical noise and quantization. Those are not measured device failure rates.
+They assume a distribution, its alignment with a quantization bin, particular
+calibration and environmental conditions, and filter behavior. The datasheet
+does not establish those assumptions or a 20–30 C sentinel temperature across
+all parts. The correctness finding needs none of those estimates. Bosch
+§3.4.2–3.4.4 do establish the oversampling-dependent unfiltered resolution and
+20-bit filtered T/P output; humidity output is 16-bit.
 
 **Shipped:** validity is derived from configuration alone
 (`src/BME280.cpp:2941-2946`); zero references to `0x80000`, `0x8000` or
@@ -305,15 +400,15 @@ device left in normal mode. Writing `ctrl_meas` to sleep is legal at any time �
 genuinely required (§5.4.6 for `config`, §3.3.1 for `ctrl_hum`), and the staged
 INIT path already got this right.
 
-Two corrections to the original text. The probability is **~7 %**, not 8 %: with
-the default x1/x1/x1, `t_measure` is 9.30 ms (§9.1 max, matching
-`estimateMeasurementTimeUs()` exactly) over a 134.3 ms cycle. And **deleting the
-first check does not by itself lower that probability** — the second check
-hard-fails on `BUSY` too, ~75 us later, when `measuring` is still set. The real
+Deleting the first check does not itself guarantee immediate success: the second
+check still returns `BUSY` when `measuring` remains set. The real
 benefit is convergence: the sleep write now reaches the device before the driver
 gives up, §3.3.1 guarantees it executes at the end of the running measurement,
 and the caller's retry then finds an idle device instead of re-rolling the same
-dice forever.
+dice forever. The previously quoted ~7% is only 9.30 / (125 + 9.30), using
+the maximum x1/x1/x1 conversion time and nominal standby. It is not an observed
+failure probability and additionally assumes request timing uniformly spans the
+cycle; the retry-convergence argument is independent of that estimate.
 
 **Shipped:** `_quiesceSettingsSynchronously()` (`src/BME280.cpp:2671`) writes
 sleep first with no pre-check, then the retained second check.
@@ -344,12 +439,14 @@ with no mode change outstanding — the hazard is structurally excluded.
 **Pinned by:** `test_humidity_oversampling_writes_ctrl_hum_then_ctrl_meas`
 (asserts the exact 3-write log).
 
-## 6. Four copies of the config-write sequence — DONE, see [O2](#o2-staged-apply-is-not-selective)
+## 6. Four copies of the config-write sequence — DONE, see [O2](#o2-staged-apply-always-writes-config--documented-by-design)
 The sequence existed in four places. Two corrections to the original text: the
 table claimed `pollJob()` restores mode on failure "via `_failJob()`" — **it
-issues no register write at all**, restoring only cached state and leaving the
-device in SLEEP, which is a fourth distinct failure behaviour rather than a
-shared one. And `setFilter()`/`setStandby()` were not "byte-for-byte identical
+issues no register write at all**, restoring only cached state. The hardware
+state depends on the phase and which writes reached the device; a failure after
+the final NORMAL-mode write can leave it in NORMAL, and an ambiguous sleep write
+does not prove SLEEP. Dirty-state diagnostics preserve that uncertainty. And
+`setFilter()`/`setStandby()` were not "byte-for-byte identical
 apart from one argument": they are 57-line functions differing in 5 lines
 (signature, validator, validator message, `buildConfig()` argument order, cache
 commit), with a 39-line identical write block.
@@ -382,10 +479,10 @@ detection is genuinely exercised, plus
 `test_settings_readback_ignores_status_and_reserved_bits`.
 
 ## 8. Standby tolerance — DONE
-Table 1 gives the standby time accuracy for `t_standby` as typ +/-5 %, max
-+/-25 % (condition: full VDD range). The datasheet uses the symbol `t_standby`
-and the name "Standby time accuracy"; the original text's `Δt_standby` notation
-appears nowhere in the datasheet. The worst case is
+Table 1 gives standby time accuracy as typ +/-5 %, max +/-25 %. It explicitly
+uses the symbol `Δt_standby`; §9.3 also distinguishes nominal `t_standby` from
+its accuracy parameter `Δt_standby`. The previous re-verification's claim that
+the delta symbol appeared nowhere was false. The worst case is
 `remainder of running conversion + t_standby + full next conversion`, so the old
 budget was short by up to 0.25 x standby — 250 ms at `MS_1000`, and 16 ms at
 `MS_62_5` (nominal 63 ms against a 78.1 ms worst case), which the original text
@@ -397,7 +494,9 @@ eight-entry table rather than the proposed arithmetic — which is strictly
 tighter, since `nominal + (nominal + 3) / 4` would have compounded the
 pre-rounded nominal and given 2 ms for `MS_0_5`. Public accessors still report
 nominal. **Pinned by:** `test_normal_mode_request_waits_for_fresh_cycle` and
-`test_high_osr_normal_freshness_deadline_is_wrap_safe` — but see [O1.3](#o1-four-fixes-have-no-test-that-would-catch-a-regression).
+`test_high_osr_normal_freshness_deadline_is_wrap_safe`, and the exhaustive
+`test_normal_freshness_budget_covers_every_standby_tolerance`; see
+[O1](#o1-test-coverage-gaps--closed).
 
 ## 9. Discarded diagnostic messages — DONE (count corrected)
 `Status(Err, int32_t, const char*)` initialises `msg` from `toString(c)` and
@@ -417,9 +516,11 @@ Verified by compiling it against both the old and current `Status.h` under
 ambiguous only where `int32_t` is a distinct type from `int` (e.g. AVR, where it
 is `long`).
 
-**Shipped:** 138 -> 0 literals in `src/`. The message-bearing overload is
-retained for 2.x source compatibility and is still used by 6 call sites in the
-examples and tests.
+**Shipped:** 138 -> 0 literals in `src/`. The 2026-09-05 pass also removed nine
+ignored message arguments from the examples; the previous count of six
+remaining example/test sites was wrong. The message-bearing overload remains
+for 2.x source compatibility and is deliberately exercised by the native
+canonical-message ownership test.
 
 ## 12. `isOnline()` overpromises — DONE as documentation
 `_updateHealth()` (`src/BME280.cpp:2617`) sets `READY` on any successful tracked
@@ -460,7 +561,7 @@ reclassifiers read it.
 **Every measured number in the original text was wrong**, because they were
 taken from the ANSI-coloured raw transcript plus ~42 characters of framing,
 while `output_excerpt` is built from `strip_ansi(output)`. Re-measured across
-all three retained transcripts: `recover` 459–620, `cfg` 347–353, `status`
+all three retained transcripts: `recover` 459–620, `cfg` 349–355, `status`
 85–86, `stress 50` 752, `stress_mix 70` 826–851, `selftest` 1007–1062, `help`
 2413–3381. Only `help` and `selftest` exceed 1000, and neither is read by a
 reclassifier. The reach claim was wrong too: `results.csv` has no
@@ -477,10 +578,12 @@ deliberately omit the evidence and asserts reclassification still succeeds.
 ## 15 / 16 / 18 / 19 — DONE
 - **15.** `job_command_budget()` returned 1 for `job start init` and
   `job cancel owner`, which consume zero callbacks (confirmed in the driver, the
-  CLI, and the retained transcripts: `Callbacks used: 0`). Now verb-aware. Worth
-  noting the original text omitted: no shipped spec carried the budget
-  validator, so the inflation was inert — reachable only through a `--commands`
-  file.
+  CLI, and the retained transcripts: `Callbacks used: 0`). Now verb-aware. The
+  inflated start/cancel values were latent because those shipped specs use
+  dedicated zero-callback validators. The previous verification's explanation
+  was false: twelve shipped `CommandSpec` construction sites use the generic
+  budget validator, both at the original and current baselines, while custom
+  `--commands` specs receive no validators.
 - **16.** The original title, "does not check `spec.expected`", was overstated:
   `completion_tokens_match()` falls back to `expected_tokens_match()` whenever
   `spec.completion` is empty, which is 164 of 191 specs. The defect was real for
@@ -505,22 +608,37 @@ deliberately omit the evidence and asserts reclassification still succeeds.
   `test_example_transport_honors_wire_128_byte_capacity_boundary` (128 accepted,
   129 rejected, distinguishing `detail == 129` from `detail == -4`).
 
-## 21. Minor items — 8 DONE
-Tombstone assertions removed; the tautological reconnect test replaced with
-checks of the real argparse default and override; `runSelfTest` no longer
-double-counts a failed baseline capture; the CRLF empty-line prompt suppression
-is now commented as deliberate; `HealthView` colours driver state by state
-rather than by failure count; the ESP-IDF CLI gained `printStressProgress` and
-the matching 127-character input limit; `platformio.ini` lost the redundant
-`extends = env` and the embedded-only keys moved out of `[env]`; the README
-include path was corrected.
+## 21. Minor items — all thirteen reviewed
+
+The original bullet order is retained here so every item has an explicit
+disposition, including the partial storage proposal omitted from the old ledger.
+
+| Original sub-item | Current verification and decision |
+|---|---|
+| Tombstone assertions | Removed; no further action |
+| Tautological reconnect check | Replaced by real argparse default/override checks |
+| `getSettings()` return type | Always returns OK; retain source compatibility and defer `void` return to 3.x |
+| Selftest double-count | Both CLIs skip restore after a failed baseline capture |
+| Raw mode bits `2` | Keep canonical typed input `0/1/3`; raw display correctly decodes both forced encodings |
+| CRLF prompt suppression | Deliberate and commented; no behavioral change needed |
+| Health state color | Uses `DriverState`; avoids disagreement between a hard-coded color threshold and configurable `offlineThreshold` |
+| IDF stress/input parity | Progress emitted in success/failure paths; both accept 127 characters |
+| Short-read transport OK | Correct in both short-read paths; counts let the core report `I2C_SHORT_TRANSFER`, already documented |
+| PlatformIO noise | Redundant `extends = env` removed; embedded-only settings moved out of shared defaults |
+| README include path | Already aligned with the example |
+| Packaged datasheet | Retain primary source evidence deliberately |
+| Tracked transcripts | Explicit three-run allowlist is implemented; retain existing evidence, defer external storage/LFS migration absent a current need |
+
+The original color example, READY with one consecutive failure, violated the
+health invariant. The state-based color solution is still appropriate, for
+example when `offlineThreshold` differs from the old color helper's constant.
 
 Two corrections to the original bullets: the short-read `OK` in
 `I2cTransport.h` occurs in **two** places (`:181` short `requestFrom`, `:188`
 drained `available()`), not one, and it was **already documented** in
 `docs/PRODUCTION_SHARED_BUS_GUIDE.md:152` at the baseline — no action was
 needed. And there are **three** tracked transcripts (5.05, 5.23 and 0.10 MB),
-not "two ... ~10.4 MB total"; the ~10.4 MB figure is the three-file total.
+not "two ... ~10.4 MB total"; the exact three-file total is 10,384,702 bytes.
 
 ---
 
@@ -538,16 +656,20 @@ later". It does not: between the two clock reads sits a **complete I2C status
 read through the application's transport callback**. That callback is bounded by
 `i2cTimeoutMs`, whose default (50 ms) is five times `nvmReadyTimeoutMs` (10 ms),
 and the driver only *passes* the timeout to the callback rather than enforcing
-it. A successful-but-slow read — clock stretching, or a shared-bus mutex wait,
-exactly what `docs/PRODUCTION_SHARED_BUS_GUIDE.md` exists for — crosses the
+it. A successful-but-slow read — for example a shared-bus mutex wait or task
+scheduling delay — can cross the
 deadline. All three call sites run outside any `ScopedTimeContext`, so both
-reads consult the caller's real clock.
+reads consult the caller's real clock. Bosch §6.2 explicitly says this sensor
+does not perform clock stretching; that was an incorrect device-specific
+example in the previous verification.
 
 Decisively: `test/test_basic.cpp` **already contained a registered, passing test
 that enters this branch** at the time the finding was written — it advances the
 fake bus clock 2 ms inside the status read against a 1 ms deadline, across a
 `uint32_t` wrap, and asserts `Err::TIMEOUT`. The claim was refutable against the
-repository's own green suite.
+repository's own green suite. A later quiesce status read shifted that test's
+wrap before the NVM check; this pass repaired the starting time so the NVM
+read again crosses the deadline through `uint32_t` wrap.
 
 ## 17. `final_verdict()` ignores `RESULT_SKIPPED_UNSAFE` — UNREACHABLE
 
@@ -567,24 +689,29 @@ accepts canonical `Mode` values, and raw register display still decodes both
 encodings.
 
 ## 21. Datasheet in the package — retained, deliberately
-The 1.6 MB PDF is 92.6 % of the exported tarball (1,755,009 bytes with it,
-130,671 without). Retained as primary source evidence. This was the explicit
+The 1.6 MB PDF dominates package size (the previous verification measured
+1,755,009 bytes with it and 130,671 without, about 92.6%). Exact archive size
+changes with source and metadata. Retained as primary source evidence. This was the explicit
 decision the finding asked for.
 
 ---
 
 # Verified correct — no change needed
 
-Checked line by line against the datasheet and recorded so it is not
-re-litigated: all four compensation routines match the Bosch reference exactly,
-including `t_fine`, the 64-bit pressure path with every shift constant, the
-humidity `>>15 / >>7 / >>4` correction chain and the `0 … 419430400` clamp; the
-`dig_H4`/`dig_H5` shared-nibble packing and 12-bit sign extension; the 26-byte
+The three channel formulas in `_compensate()` follow Bosch §4.2.3, including
+`t_fine`, the 64-bit pressure path with every shift constant, and the
+humidity `>>15 / >>7 / >>4` correction chain and the `0 … 419430400` clamp.
+Also verified: `dig_H4`/`dig_H5` shared-nibble packing and 12-bit sign extension; the 26-byte
 `0x88..0xA1` and 7-byte `0xE1..0xE7` calibration bursts including the `0xA0`
 gap; the coherent 8-byte `0xF7..0xFE` data burst; the `t_measure,max` formula;
 the BME280-specific `t_sb` `110 = 10 ms` / `111 = 20 ms` encoding; the
 config-apply write order; and the wrap-safe deadline arithmetic. The
-`INT64_MIN / -1` case is explicitly guarded.
+`INT64_MIN / -1` case is explicitly guarded. This is an arithmetic and contract
+review, not a claim of byte-identical source or exhaustive equality for arbitrary
+calibration bytes: the implementation widens intermediates, checks overflow,
+returns errors for undefined reference cases, and exposes integer pascals rather
+than Bosch's Q24.8 pressure value. The synthetic-vector, signed-calibration,
+overflow, zero-denominator, and humidity-clamp tests exercise those contracts.
 
 ---
 
@@ -601,34 +728,39 @@ re-verification. Listed so the record is honest.
 | E | tombstones for examples "deleted several releases ago" | Those paths appear nowhere in the repository's 128-commit history |
 | F | cleanup rows become `FINAL_CLEANUP_EXCEPTION` | They are `SERIAL_WRITE_EXCEPTION` / `FAIL`; `PortNotOpenError` is an `OSError` caught one level lower |
 | F | "under default flags" | Needs an opted-in duration soak first (`--soak-duration-s` defaults to 0) |
-| 1 | 16-count quantisation step stated unconditionally | Only with the IIR filter off; with it on the step is 1 count and the rate falls to ~2.5 % |
-| 1 | Humidity implied to have the same ~40 % rate as temperature | Humidity is always 16-bit; ~3 % |
-| 1 | Pressure omitted | It is the strongest case: `0x80000` ~= 819 hPa ~= 1750 m |
+| 1 | Quantization/noise estimates presented as rejection rates | Resolution depends on filtering/oversampling; rates need additional statistical and device assumptions and are not established by the datasheet |
+| 1 | Sentinel values treated as fixed physical conditions across devices | Compensation depends on calibration and `t_fine`; no universal pressure, altitude, humidity, or 20–30 C sentinel temperature follows |
 | 3 | "For `begin()` ... the device is in sleep and the reading is sound" | False; `begin()` did not reset or quiesce, and contradicted finding 4 |
 | 3 | "With a short standby ... this is not rare" | Not derivable; the datasheet gives no NVM-copy duration |
 | 3 | Proposal: skip the `im_update` gate for non-reset resync | **Unsafe.** Would risk committing torn calibration. Replaced with quiesce-then-gate |
-| 4 | "~8 % at 125 ms standby" | ~7 % (9.30 ms over 134.3 ms) |
+| 4 | "~8 % at 125 ms standby" | 9.30 / 134.3 is ~7%, but only under a simplified timing model; neither percentage is a measured failure probability |
 | 4 | Deleting the first check removes the failure probability | It does not; the benefit is convergence on retry |
 | 5 | Drop follows from the device measuring | §3.3.1 requires an outstanding delayed mode change; verified by execution |
-| 6 | `pollJob()` "restores mode on failure via `_failJob()`" | `_failJob()` issues no register write; the device is left in SLEEP |
+| 6 | `pollJob()` "restores mode on failure via `_failJob()`" | `_failJob()` issues no register write; hardware mode depends on the writes that reached the device, and is not guaranteed SLEEP |
 | 6 | `setFilter`/`setStandby` "byte-for-byte identical apart from one argument" | 5 differing lines of 57 |
 | 6 | "removes roughly 200 lines" | ~130 net after shared helpers |
 | 7 | Proposal prescribed masking the mode field | Unnecessary; `registerModeForConfig()` already maps FORCED -> SLEEP |
-| 8 | Symbol `Δt_standby` | The datasheet uses `t_standby` / "Standby time accuracy" |
+| 8 | Previous verification denied the symbol `Δt_standby` | That correction was false: Table 1 and §9.3 explicitly use it |
 | 8 | `MS_62_5` unmentioned | Also affected: 63 ms nominal against 78.1 ms worst case |
 | 9 | "102 diagnostic messages" | **138** call sites, 66 distinct strings; 102 was a naive one-line grep |
 | 9 | `Status::Error(Err::X, 0)` is ambiguous | **False**; verified by compiling. Only ambiguous where `int32_t != int` |
+| 9 | Six remaining example/test message sites | Nine example literal arguments removed in this pass; native compatibility test retained |
 | 10 | "Nothing in this repository or its history uses the older name" | **False**; 3 of 7 are used, 2 of them enforced by CI gates |
 | 11 | "five" duplicated fields | Six |
 | 12 | Proposed `canMeasure()` | Withdrawn; it omitted timebase, mode, job exclusivity and pending measurement |
 | 13.1 | TIMEOUT branch unreachable | **False**; a passing test already covered it |
+| 13.1 | BME280 clock stretching as the delay example | §6.2 says the sensor does not stretch the clock; scheduling/shared-bus waits can cross the deadline |
 | 14 | All four measured output sizes | All wrong — measured on the ANSI-coloured transcript, not `clean_output` |
 | 14 | Excerpt reaches `results.csv` and `manifest.json` | Neither; only `summary.json` |
+| 14 | Corrected `cfg` length of 347–353 | 349–355 when preserving serial CRLF like the runner; universal-newline translation lost two characters |
+| 15 | No shipped budget validators; reachable via `--commands` | Twelve shipped construction sites use them; start/cancel have separate zero-callback validators and custom commands have none |
 | 16 | Title "does not check `spec.expected`" | Overstated; true for 27 of 191 specs |
 | 17 | Whole finding | Withdrawn as unreachable |
 | 18 | Proposed CMake snippet | Contained a real bug; `NAME` does not normalise `..` |
 | 19 | "exercises the short-write branch at a threshold that cannot occur" | Neither threshold was exercised |
 | 20 | Two table rows and the flag count | Writers row conflated with the live driver; 52 flags, not 48 |
+| O4 | Exactly 20 runner source assertions | 23 required substrings in the current checker |
+| Verified correct | Four routines match Bosch exactly | Three channel formulas in one routine, with intentional checked arithmetic and pressure-unit conversion |
 | 21 | Short-read `OK` is "the one place" | Two places, and already documented at the baseline |
 | 21 | "Two 5 MB transcripts (~10.4 MB total)" | Three transcripts; ~10.4 MB is the three-file total |
 | various | Line citations | Drifted 7–18 lines; regenerate rather than spot-fix |

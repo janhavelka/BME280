@@ -199,7 +199,7 @@ inline BME280::TransportResult wireWriteRead(uint8_t addr, const uint8_t* tx,
  * @param scl SCL pin number
  * @param freq I2C clock frequency in Hz (default 400kHz)
  * @param timeoutMs I2C timeout in milliseconds (default 50ms)
- * @return true on success
+ * @return false if Wire.begin() or Wire.setClock() fails; true after timeout setup
  */
 inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50) {
 #if defined(ARDUINO_ARCH_ESP32)
@@ -224,8 +224,12 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
   delayMicroseconds(5);
 #endif
 
-  Wire.begin(sda, scl);
-  Wire.setClock(freq);
+  if (!Wire.begin(sda, scl)) {
+    return false;
+  }
+  if (!Wire.setClock(freq)) {
+    return false;
+  }
   Wire.setTimeOut(timeoutMs);
   return true;
 }

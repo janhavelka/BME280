@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Recorded the 2026-09-05 finding-by-finding audit verification, corrections,
+  simplest-solution decisions, and validation evidence in `docs/CODE_AUDIT.md`.
+- Added a native regression for Arduino bus/clock setup failures and retry;
+  repaired the NVM timeout test so its status read crosses the clock wrap.
 - Added deterministic settings-validation reason codes and post-apply register
   verification, including a distinct staged verification phase and mismatch
   evidence in `Status::detail`.
@@ -30,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Removed nine ignored `Status` message arguments from the examples while
+  preserving the 2.x overloads; clarified README and enum health/readiness wording.
 - Consolidated settings writes behind one selective sleep/apply/verify/cache
   sequence, preserving unrelated register groups and IIR history.
 - Made the native sensor and Wire stubs match BME280 address/value write pairs
@@ -45,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Propagated failed `Wire.begin()` and `Wire.setClock()` results from the
+  example bus helper, with the README checking initialization success.
+- Preserved original tar member names for package metadata lookup so valid
+  `./`-prefixed archives do not crash after path normalization.
 - Accepted legitimate enabled-channel ADC values that equal Bosch's skipped
   sentinel encodings while continuing to invalidate configured-off channels.
 - Encoded multi-register BME280 writes as repeated address/value pairs instead

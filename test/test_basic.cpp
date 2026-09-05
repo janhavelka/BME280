@@ -724,6 +724,8 @@ void assertAllHardwareApisBusy(BME280::BME280& dev, FakeBus& bus,
 
 void setUp() {
   setMillis(0);
+  Wire._clearBeginResult();
+  Wire._clearClockResult();
   Wire._clearEndTransmissionResult();
   Wire._clearRequestFromOverride();
 }
@@ -1817,7 +1819,9 @@ void test_begin_nvm_timeout_uses_wrap_safe_deadline_without_tight_poll_loop() {
   FakeBus bus;
   bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_IM_UPDATE;
   bus.statusReadNowAdvanceMs = 2;
-  bus.nowMs = 0xFFFFFFFEu;
+  // Quiescing reads status first and advances to 0xFFFFFFFE. The NVM
+  // deadline is then 0xFFFFFFFF, and its status read finishes at zero.
+  bus.nowMs = 0xFFFFFFFCu;
   BME280::BME280 dev;
   Config cfg = makeConfig(bus);
   cfg.nvmReadyTimeoutMs = 1;
@@ -4296,6 +4300,19 @@ void test_set_mode_forced_does_not_trigger_conversion() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SLEEP),
                           bus.reg[cmd::REG_CTRL_MEAS] & cmd::MASK_CTRL_MEAS_MODE);
   TEST_ASSERT_FALSE(dev.measurementReady());
+}
+
+void test_example_transport_reports_setup_failures_and_allows_retry() {
+  Wire._setBeginResult(false);
+  TEST_ASSERT_FALSE(transport::initWire(8, 9, 400000, 77));
+
+  Wire._clearBeginResult();
+  Wire._setClockResult(false);
+  TEST_ASSERT_FALSE(transport::initWire(8, 9, 400000, 77));
+
+  Wire._clearClockResult();
+  TEST_ASSERT_TRUE(transport::initWire(8, 9, 400000, 77));
+  TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
 }
 
 void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
@@ -7171,6 +7188,7 @@ int main() {
   RUN_TEST(test_recover_changed_tp_then_h_failure_invalidates_calibration);
   RUN_TEST(test_recover_changed_candidate_apply_failure_stays_private);
   RUN_TEST(test_set_mode_forced_does_not_trigger_conversion);
+  RUN_TEST(test_example_transport_reports_setup_failures_and_allows_retry);
   RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_example_transport_honors_wire_128_byte_capacity_boundary);

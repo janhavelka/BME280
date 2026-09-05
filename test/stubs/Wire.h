@@ -11,8 +11,8 @@
 
 class TwoWire {
 public:
-  void begin(int sda = -1, int scl = -1) { (void)sda; (void)scl; }
-  void setClock(uint32_t freq) { (void)freq; }
+  bool begin(int sda = -1, int scl = -1) { (void)sda; (void)scl; return _beginResult; }
+  bool setClock(uint32_t freq) { (void)freq; return _clockResult; }
   void setTimeOut(uint32_t timeoutMs) { _timeoutMs = timeoutMs; }
   uint32_t getTimeOut() const { return _timeoutMs; }
   
@@ -51,6 +51,10 @@ public:
     return -1;
   }
 
+  void _setBeginResult(bool result) { _beginResult = result; }
+  void _clearBeginResult() { _beginResult = true; }
+  void _setClockResult(bool result) { _clockResult = result; }
+  void _clearClockResult() { _clockResult = true; }
   void _setEndTransmissionResult(uint8_t result) { _endTransmissionResult = result; }
   void _clearEndTransmissionResult() { _endTransmissionResult = 0; }
   void _setRequestFromResult(size_t len) {
@@ -64,6 +68,8 @@ private:
   size_t _rxLen = 0;
   size_t _rxIdx = 0;
   uint32_t _timeoutMs = 0;
+  bool _beginResult = true;
+  bool _clockResult = true;
   uint8_t _endTransmissionResult = 0;
   bool _requestFromOverrideEnabled = false;
   size_t _requestFromOverride = 0;

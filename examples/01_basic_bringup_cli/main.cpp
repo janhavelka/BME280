@@ -871,7 +871,7 @@ BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t tim
   if (!cancelStatus.ok()) {
     return cancelStatus;
   }
-  return BME280::Status::Error(BME280::Err::TIMEOUT, "measurement timeout", timeoutMs);
+  return BME280::Status::Error(BME280::Err::TIMEOUT, timeoutMs);
 }
 
 BME280::Status captureSensorSettings(BME280::SensorSettings& settings) {
@@ -1004,7 +1004,7 @@ void runStressMix(int count) {
         uint8_t id = 0;
         st = device.readChipId(id);
         if (st.ok() && id != BME280::cmd::CHIP_ID_BME280) {
-          st = BME280::Status::Error(BME280::Err::CHIP_ID_MISMATCH, "unexpected chip id", id);
+          st = BME280::Status::Error(BME280::Err::CHIP_ID_MISMATCH, id);
         }
         break;
       }
@@ -1351,8 +1351,7 @@ BME280::Status scheduleMeasurement() {
     (void)device.getSettings(snapshot);
     pendingRead = true;
     pendingStartMs = snapshot.measurementStartMs;
-    st = BME280::Status::Error(BME280::Err::IN_PROGRESS,
-                               "Measurement already in progress");
+    st = BME280::Status::Error(BME280::Err::IN_PROGRESS);
   }
   return st;
 }
@@ -1655,7 +1654,7 @@ BME280::Status startJobByName(const String& action) {
   if (action == "recover") {
     return device.startRecoveryJob();
   }
-  return BME280::Status::Error(BME280::Err::INVALID_PARAM, "Unknown job command");
+  return BME280::Status::Error(BME280::Err::INVALID_PARAM);
 }
 
 void pollJobOnce(uint8_t budget) {
