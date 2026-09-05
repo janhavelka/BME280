@@ -34,6 +34,16 @@ struct duplicated, filled from the same members by `getSettings()`.
 They agree today and nothing enforces that they keep agreeing. Keep
 `SampleEnvelope sample` and delete the six flattened copies.
 
+## Remove ignored `Status` message parameters
+
+`Status(Err, int32_t, const char*)` and
+`Status::Error(Err, const char*, int32_t)` ignore the supplied message and use
+the library-owned canonical string for the error code. Keep both signatures in
+2.x for source compatibility. Core and examples already use code/detail-only
+construction; the native test deliberately retains a legacy call to verify
+canonical message ownership. Remove the message-bearing signatures and update
+that compatibility test in 3.x.
+
 ## Make `getSettings()` return `void`
 
 `BME280::getSettings(SettingsSnapshot&)` cannot fail — the implementation
@@ -48,7 +58,7 @@ Not an API break, but the same "wait for a natural boundary" situation. The
 runner is ~4700 lines doing six unrelated jobs; the proposed split is the
 command catalogue, the artifact writers, and the parsers into separate modules.
 
-The blocker is that `tools/check_hil_contract.py` asserts twenty literal
+The blocker is that `tools/check_hil_contract.py` asserts 23 literal
 substrings against the runner's *source text*, and the CLI/IDF contract checkers
 do the same to the two `main.cpp` files. Any refactor trips those for reasons
 unrelated to behaviour, so the checkers must be reworked in the same change.

@@ -72,7 +72,10 @@ uint32_t appNowMs(void*) {
 
 void setup() {
   Serial.begin(115200);
-  transport::initWire(8, 9, 400000, 50);
+  if (!transport::initWire(8, 9, 400000, 50)) {
+    Serial.println("I2C initialization failed");
+    return;
+  }
   
   BME280::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
@@ -188,9 +191,14 @@ tracked transfer success. The counters do not wrap.
 | State | Description |
 |-------|-------------|
 | `UNINIT` | No successful current session: never initialized, ended, or an admitted `begin()` / init job failed |
-| `READY` | Operational, no recent failures |
+| `READY` | Initialized session with zero consecutive tracked failures; does not imply measurement readiness |
 | `DEGRADED` | 1+ failures, below offline threshold |
 | `OFFLINE` | Failure threshold reached; diagnostic only and does not block an explicit owner-directed operation |
+
+These states describe tracked communication and semantic failures. A successful
+tracked transfer can return health to `READY` while configuration remains dirty
+or calibration remains invalid. Check the operation's returned `Status`;
+`isOnline()` does not guarantee that a measurement can be requested.
 
 ## API Reference
 
@@ -510,7 +518,7 @@ job to restore synchronization after manual register edits.
 ### State
 
 - `DriverState state()` - Current driver state
-- `bool isOnline()` - True if READY or DEGRADED
+- `bool isOnline()` - True if READY or DEGRADED; does not probe reachability or guarantee synchronized settings, valid calibration, or measurement readiness
 
 ### Health
 

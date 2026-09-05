@@ -430,7 +430,6 @@ BME280::Status initBusForActiveAddress() {
                         BME280_IDF_I2C_FREQ_HZ,
                         gActiveAddress)) {
     return BME280::Status::Error(BME280::Err::I2C_BUS,
-                                 "IDF I2C init failed",
                                  static_cast<int32_t>(bme280IdfI2cContext().lastError));
   }
   return BME280::Status::Ok();
@@ -683,7 +682,7 @@ BME280::Status startJobByName(const char* action) {
   if (std::strcmp(action, "recover") == 0) {
     return device.startRecoveryJob();
   }
-  return BME280::Status::Error(BME280::Err::INVALID_PARAM, "Unknown job command");
+  return BME280::Status::Error(BME280::Err::INVALID_PARAM);
 }
 
 void pollJobOnce(uint8_t budget) {
@@ -1404,8 +1403,7 @@ BME280::Status scheduleMeasurement() {
     (void)device.getSettings(snapshot);
     gPendingRead = true;
     gPendingStartMs = snapshot.measurementStartMs;
-    st = BME280::Status::Error(BME280::Err::IN_PROGRESS,
-                               "Measurement already in progress");
+    st = BME280::Status::Error(BME280::Err::IN_PROGRESS);
   }
   return st;
 }
@@ -1432,7 +1430,7 @@ BME280::Status performMeasurementBlocking(BME280::Measurement& out, uint32_t tim
       if (!cancelStatus.ok()) {
         return cancelStatus;
       }
-      return BME280::Status::Error(BME280::Err::TIMEOUT, "Measurement wait timeout");
+      return BME280::Status::Error(BME280::Err::TIMEOUT);
     }
     vTaskDelay(delayTicksAtLeastOne(1U));
   }
@@ -1705,8 +1703,7 @@ void runStressMix(int count) {
         uint8_t id = 0;
         st = device.readChipId(id);
         if (st.ok() && id != BME280::cmd::CHIP_ID_BME280) {
-          st = BME280::Status::Error(
-              BME280::Err::CHIP_ID_MISMATCH, "unexpected chip id", id);
+          st = BME280::Status::Error(BME280::Err::CHIP_ID_MISMATCH, id);
         }
         break;
       }
