@@ -40,9 +40,9 @@ They agree today and nothing enforces that they keep agreeing. Keep
 `Status::Error(Err, const char*, int32_t)` ignore the supplied message and use
 the library-owned canonical string for the error code. Keep both signatures in
 2.x for source compatibility. Core and examples already use code/detail-only
-construction; the native test deliberately retains a legacy call to verify
-canonical message ownership. Remove the message-bearing signatures and update
-that compatibility test in 3.x.
+construction; the native test deliberately retains three message-bearing legacy
+uses to verify canonical message ownership. Remove the message-bearing
+signatures and update those compatibility tests in 3.x.
 
 ## Make `getSettings()` return `void`
 
