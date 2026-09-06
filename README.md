@@ -662,6 +662,7 @@ python scripts/generate_version.py check
 python tools/check_release_metadata.py
 python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py tools/check_release_metadata.py
 python tools/test_run_i2c_hil_parser.py
+python tools/test_check_package_contents.py
 python tools/run_i2c_hil.py --dry-run --out .pio/hil_dry_runs
 python tools/run_i2c_hil.py --dry-run --include-job-api --out .pio/hil_dry_runs
 doxygen Doxyfile

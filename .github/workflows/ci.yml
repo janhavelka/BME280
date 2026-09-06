@@ -122,6 +122,9 @@ jobs:
       - name: Validate package contents
         run: python tools/check_package_contents.py
 
+      - name: Run package contents regression tests
+        run: python tools/test_check_package_contents.py
+
   esp-idf-build:
     runs-on: ubuntu-latest
     strategy:

@@ -579,11 +579,12 @@ deliberately omit the evidence and asserts reclassification still succeeds.
 - **15.** `job_command_budget()` returned 1 for `job start init` and
   `job cancel owner`, which consume zero callbacks (confirmed in the driver, the
   CLI, and the retained transcripts: `Callbacks used: 0`). Now verb-aware. The
-  inflated start/cancel values were latent because those shipped specs use
-  dedicated zero-callback validators. The previous verification's explanation
-  was false: twelve shipped `CommandSpec` construction sites use the generic
-  budget validator, both at the original and current baselines, while custom
-  `--commands` specs receive no validators.
+  inflated start/cancel values were latent because the shipped start and
+  deadline-cancel specs use dedicated zero-callback validators, while the
+  owner-cancel spec requires the `Callbacks used: 0` output token. The previous
+  verification's explanation was false: twelve shipped `CommandSpec`
+  construction sites use the generic budget validator, both at the original
+  and current baselines, while custom `--commands` specs receive no validators.
 - **16.** The original title, "does not check `spec.expected`", was overstated:
   `completion_tokens_match()` falls back to `expected_tokens_match()` whenever
   `spec.completion` is empty, which is 164 of 191 specs. The defect was real for
@@ -753,7 +754,7 @@ re-verification. Listed so the record is honest.
 | 14 | All four measured output sizes | All wrong — measured on the ANSI-coloured transcript, not `clean_output` |
 | 14 | Excerpt reaches `results.csv` and `manifest.json` | Neither; only `summary.json` |
 | 14 | Corrected `cfg` length of 347–353 | 349–355 when preserving serial CRLF like the runner; universal-newline translation lost two characters |
-| 15 | No shipped budget validators; reachable via `--commands` | Twelve shipped construction sites use them; start/cancel have separate zero-callback validators and custom commands have none |
+| 15 | No shipped budget validators; reachable via `--commands` | Twelve shipped construction sites use them; start and deadline-cancel have separate zero-callback validators, owner-cancel requires a zero-callback output token, and custom commands have none |
 | 16 | Title "does not check `spec.expected`" | Overstated; true for 27 of 191 specs |
 | 17 | Whole finding | Withdrawn as unreachable |
 | 18 | Proposed CMake snippet | Contained a real bug; `NAME` does not normalise `..` |
