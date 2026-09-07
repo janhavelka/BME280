@@ -125,6 +125,9 @@ jobs:
       - name: Run package contents regression tests
         run: python tools/test_check_package_contents.py
 
+      - name: Test checker rules and rejection behavior
+        run: python tools/test_checker_contracts.py
+
   esp-idf-build:
     runs-on: ubuntu-latest
     strategy:

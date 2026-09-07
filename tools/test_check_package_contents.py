@@ -22,8 +22,42 @@ import check_package_contents  # noqa: E402
 
 VERSION = "2.1.0"
 
+# Independent expectations: never build fixtures from the checker's rule list.
+EXPECTED_BASE_REQUIRED_PATHS = {
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "library.json",
+    "include/BME280/BME280.h",
+    "include/BME280/CommandTable.h",
+    "include/BME280/Config.h",
+    "include/BME280/Status.h",
+    "include/BME280/Version.h",
+    "CMakeLists.txt",
+    "idf_component.yml",
+    "examples/idf/basic/CMakeLists.txt",
+    "examples/idf/basic/main/CMakeLists.txt",
+    "examples/01_basic_bringup_cli/main.cpp",
+    "examples/common/BoardConfig.h",
+    "examples/common/BuildConfig.h",
+    "examples/common/CliStyle.h",
+    "examples/common/HealthView.h",
+    "examples/common/I2cScanner.h",
+    "examples/common/I2cTransport.h",
+    "examples/common/Log.h",
+    "docs/README.md",
+    "docs/IDF_PORT.md",
+    "docs/PRODUCTION_SHARED_BUS_GUIDE.md",
+    "docs/HARDWARE_VALIDATION.md",
+    "docs/BME280_Register_Reference.md",
+    "docs/BME280_datasheet.pdf",
+    "src/BME280.cpp",
+}
 
-class PackageContentsTest(unittest.TestCase):
+
+class PackageFixture(unittest.TestCase):
+    """Temporary archive shared by package behavior and rule-preservation tests."""
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp_dir.name)
@@ -41,7 +75,7 @@ class PackageContentsTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def archive_contents(self) -> dict[str, bytes]:
-        paths = set(check_package_contents.BASE_REQUIRED_PATHS)
+        paths = set(EXPECTED_BASE_REQUIRED_PATHS)
         paths.add("examples/idf/basic/main/main.cpp")
         contents = {path: b"test\n" for path in paths}
         contents["library.json"] = json.dumps({"version": VERSION}).encode()
@@ -82,6 +116,8 @@ class PackageContentsTest(unittest.TestCase):
         self.assertEqual(1, result, output)
         self.assertIn(expected, output)
 
+
+class PackageContentsTest(PackageFixture):
     def test_flat_members_pass(self) -> None:
         self.write_archive(self.archive_contents())
         self.assert_checker_passes()
@@ -100,6 +136,14 @@ class PackageContentsTest(unittest.TestCase):
             ".git/config",
             "tools/__pycache__/checker.pyc",
             "BME280-0.0.0.tar.gz",
+            "docs/doxygen/html/index.html",
+            "hil_logs/session/summary.json",
+            "nested/.pio/build/output.bin",
+            "nested/.git/config",
+            "__pycache__/checker.pyc",
+            "nested/docs/doxygen/html/index.html",
+            "nested/hil_logs/session/summary.json",
+            "nested/BME280-0.0.0.tar.gz",
         )
         for forbidden_path in forbidden_paths:
             with self.subTest(path=forbidden_path):
@@ -108,11 +152,14 @@ class PackageContentsTest(unittest.TestCase):
                 self.write_archive(contents)
                 self.assert_checker_rejects("forbidden build/internal paths")
 
-    def test_missing_common_header_is_rejected(self) -> None:
-        contents = self.archive_contents()
-        del contents["examples/common/BoardConfig.h"]
-        self.write_archive(contents)
-        self.assert_checker_rejects("missing required files: examples/common/BoardConfig.h")
+    def test_missing_common_headers_are_rejected(self) -> None:
+        for path in sorted(EXPECTED_BASE_REQUIRED_PATHS):
+            if path.startswith("examples/common/"):
+                with self.subTest(path=path):
+                    contents = self.archive_contents()
+                    del contents[path]
+                    self.write_archive(contents)
+                    self.assert_checker_rejects(f"missing required files: {path}")
 
     def test_prefixed_archive_reaches_and_passes_version_validation(self) -> None:
         self.write_archive(self.archive_contents(), f"BME280-{VERSION}/")

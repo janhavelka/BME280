@@ -88,7 +88,7 @@ older campaigns are not results of this review.
 | Core C++17 syntax with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` | Passed |
 | Arduino ESP32-S3 and ESP32-S2 builds | Passed using the repository wrapper and pinned platform |
 | Doxygen | Passed, version 1.13.2 |
-| Package and content checker | Passed; synthetic flat, `./`-prefixed and directory-prefixed layouts accepted; 12 forbidden-path and seven missing-header cases rejected |
+| Package and content checker | Passed; synthetic flat, `./`-prefixed and directory-prefixed layouts accepted; 12 forbidden-path and seven missing-header cases rejected manually in this pass (all now committed in `tools/test_check_package_contents.py`, expanded on 2026-09-07) |
 | HIL dry runs, default and with job API | Completed with `INCOMPLETE`, as required for runs without hardware |
 | Targeted mutations | Ignored begin/clock failures and unsigned NVM deadline comparison each fail the intended regression; controls pass |
 | O1 mutations repeated | Disabled post-sleep bounds, swallowed humidity-write error, shortened standby table and skipped reset reapply each fail the named test(s); six-test control passes |
@@ -108,6 +108,66 @@ ESP-IDF build. No board was flashed and no physical HIL, electrical fault
 injection, runtime ESP-IDF, or accuracy validation was performed. Temporary
 mutation builds and dry-run output remain ignored under `.pio/`; the generated
 package is removed after validation.
+
+## 2026-09-07 checker follow-up
+
+The three cleanup findings against `ee28733` were valid. Tracked files were
+clean and release metadata passed; the sole untracked file was
+`idf_component.yml.orig`, identical to the tracked manifest after line-ending
+normalization. Removed that backup and ignored `*.orig` alongside temporary
+files. No driver source, public header, version, or HIL tooling changes.
+
+**Manifest rewrite producer:** the installed, pinned pioarduino
+`platform-espressif32` 55.03.311 calls
+`ComponentManager.handle_component_settings()` from `builder/frameworks/arduino.py`.
+In `builder/frameworks/component_manager.py`,
+`ComponentHandler._get_or_create_component_yml()` falls back from the Arduino
+framework manifest to the project source manifest. This repository sets
+`src_dir = .`, so that fallback selects the root `idf_component.yml`.
+`_create_backup()` copies it to `.orig`; `_load_component_yml()` uses
+`yaml.load(..., Loader=SafeLoader)` and `_save_component_yml()` uses
+`yaml.dump(data, f)`, even when neither adding nor removing dependencies.
+This sorts keys, removes quotes, and changes list indentation. The Arduino
+post-action restores `pioarduino-build.py`, not the project manifest; the
+manifest restoration in `espidf.py` is conditional on ESP-IDF/custom-component
+paths. Thus a completed Arduino build can leave both files behind. The package
+test only writes metadata into temporary archives and is not this producer.
+Calling the installed `ComponentHandler.handle_component_settings()` on a
+temporary copy reproduced both a byte-identical backup and the reported YAML
+rewrite, with dependency additions/removals disabled.
+
+The README gate now rechecks release metadata and the tracked manifest after
+building. Inspect any rewrite before restoring it and repacking; ignoring the
+backup alone does not repair a rewritten manifest.
+
+**Committed coverage:** the package suite now contains twelve forbidden-path
+cases and seven missing-common-header cases. Its archive fixture uses an
+independent expected-path set. `tools/test_checker_contracts.py`, run by
+`validate-library` and the README gate, independently pins the seven forbidden
+timing calls, 43 CLI commands, seven common headers, and 28 base package paths.
+It also runs real checker entry points against synthetic forbidden calls and
+framework includes in both core directories, missing CLI handlers, and each
+missing package path. Positive controls verify accepted source, CLI, and
+archive fixtures. All filesystem mutations stay in temporary directories.
+
+**Mutation acceptance:** independently deleted `vTaskDelay` from
+`FORBIDDEN_CALLS`, `help` from `COMMANDS`, and each of the seven common headers
+from `BASE_REQUIRED_PATHS` in temporary checker copies. All nine runs exited 1
+and failed the corresponding rule-preservation test. The unmodified and
+restored controls each passed all nine checker self-tests. The package suite
+also passed all six tests, including the expanded subcases.
+
+Local validation passed: 198 native tests, 87 existing parser tests, all contract
+and metadata checks, the README dry runs, strict C++17 core syntax, and both
+Arduino targets. Doxygen 1.15.0 completed without warnings. The first Arduino
+attempt could not find the existing compiler; successful builds used a
+process-local `PATH` addition for
+`%USERPROFILE%/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/bin`
+through `scripts/pio.cmd`. The installed esptool setup also emitted editable-
+install warnings, but both builds subsequently generated their firmware images
+with esptool 5.3.0. No Core was installed or persistent tool configuration
+changed. Native sanitizers and full ESP-IDF builds remain CI checks because
+`idf.py` is absent locally; no physical HIL was performed.
 
 ## Status legend
 
