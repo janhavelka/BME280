@@ -55,6 +55,11 @@ EXPECTED_IDF_NATIVE = {
     "esp_timer_get_time", "vTaskDelay", "xTaskCreate", "QueueHandle_t",
     "LOG_COLOR_GREEN", "LOG_COLOR_YELLOW", "LOG_COLOR_RED",
 }
+EXPECTED_IDF_CMAKE_TOKENS = {
+    'get_filename_component(BME280_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)',
+    'get_filename_component(BME280_COMPONENT_NAME "${BME280_ROOT_DIR}" NAME)',
+    "REQUIRES ${BME280_COMPONENT_NAME} esp_driver_i2c esp_driver_gpio esp_timer freertos",
+}
 
 
 def run_checker(checker, root: pathlib.Path) -> tuple[int, str]:
@@ -175,10 +180,34 @@ class IdfRulesTest(TextContractTest):
         self.assertLessEqual(EXPECTED_IDF_FORBIDDEN, set(checker.FORBIDDEN_IDF_TOKENS))
         self.assertLessEqual(set(EXPECTED_IDF_PATTERNS), set(checker.FORBIDDEN_IDF_PATTERNS))
         self.assertLessEqual(EXPECTED_IDF_NATIVE, set(checker.REQUIRED_IDF_TOKENS))
+        self.assertLessEqual(EXPECTED_IDF_CMAKE_TOKENS, set(checker.REQUIRED_IDF_CMAKE_TOKENS))
         self.assertLessEqual(EXPECTED_COMMANDS | {"?", "ver"}, checker.MANDATORY_COMMANDS)
 
     def test_native_example_passes(self) -> None:
         self.assert_text_result(check_idf_example_contract, {})
+
+    def test_hard_coded_component_name_is_rejected(self) -> None:
+        checker = check_idf_example_contract
+        source = checker.IDF_CMAKE.read_text(encoding="utf-8")
+        dependency = "REQUIRES ${BME280_COMPONENT_NAME} esp_driver_i2c esp_driver_gpio esp_timer freertos"
+        self.assertIn(dependency, source)
+        for keyword in ("REQUIRES", "PRIV_REQUIRES"):
+            with self.subTest(keyword=keyword):
+                changed = source.replace("REQUIRES ${BME280_COMPONENT_NAME}", f"{keyword} BME280")
+                # Retain the positive token in a comment so only the negative
+                # guard can reject the actual hard-coded dependency above.
+                changed += f"\n# {dependency}\n"
+                self.assert_text_result(checker, {checker.IDF_CMAKE: changed},
+                                        "IDF main component must not hard-code the root component name")
+
+    def test_missing_component_name_derivation_tokens_are_rejected(self) -> None:
+        checker = check_idf_example_contract
+        source = checker.IDF_CMAKE.read_text(encoding="utf-8")
+        for token in sorted(EXPECTED_IDF_CMAKE_TOKENS):
+            with self.subTest(token=token):
+                self.assertIn(token, source)
+                self.assert_text_result(checker, {checker.IDF_CMAKE: source.replace(token, "")},
+                                        f"IDF main-component dependency contract missing: {token}")
 
     def test_arduino_tokens_and_calls_are_rejected(self) -> None:
         checker = check_idf_example_contract

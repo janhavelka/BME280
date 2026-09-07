@@ -46,6 +46,12 @@ REQUIRED_IDF_TOKENS = [
     "LOG_COLOR_RED",
 ]
 
+REQUIRED_IDF_CMAKE_TOKENS = (
+    'get_filename_component(BME280_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)',
+    'get_filename_component(BME280_COMPONENT_NAME "${BME280_ROOT_DIR}" NAME)',
+    "REQUIRES ${BME280_COMPONENT_NAME} esp_driver_i2c esp_driver_gpio esp_timer freertos",
+)
+
 MANDATORY_COMMANDS = {
     "?",
     "help",
@@ -174,16 +180,12 @@ def main() -> int:
     # component must derive it rather than hard-coding "BME280"; hard-coding
     # breaks any clone or extracted tarball with a different directory name.
     if re.search(
-        r"(?:PRIV_REQUIRES|REQUIRES)[^)]*BME280(?!_COMPONENT_NAME)",
+        r"\b(?:PRIV_REQUIRES|REQUIRES)\b[^)]*\bBME280\b(?!_COMPONENT_NAME)",
         idf_cmake,
         re.DOTALL,
     ):
         fail("IDF main component must not hard-code the root component name")
-    for token in (
-        'get_filename_component(BME280_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)',
-        'get_filename_component(BME280_COMPONENT_NAME "${BME280_ROOT_DIR}" NAME)',
-        "REQUIRES ${BME280_COMPONENT_NAME} esp_driver_i2c esp_driver_gpio esp_timer freertos",
-    ):
+    for token in REQUIRED_IDF_CMAKE_TOKENS:
         if token not in idf_cmake:
             fail(f"IDF main-component dependency contract missing: {token}")
 
