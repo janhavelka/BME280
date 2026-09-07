@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added independent checker-rule expectations and synthetic rejection tests for
+  core timing, CLI commands, and required package paths, enforced in CI.
+- Expanded package regressions to twelve forbidden paths and all seven common
+  headers; archive fixtures no longer derive from the checker's required list.
 - Recorded the 2026-09-05 finding-by-finding audit verification, corrections,
   simplest-solution decisions, and validation evidence in `docs/CODE_AUDIT.md`.
 - Added a native regression for Arduino bus/clock setup failures and retry;
@@ -51,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ignore disposable `.orig` backups; documented the pinned pioarduino manifest
+  rewrite and added post-build manifest checks to the local validation gate.
 - Propagated failed `Wire.begin()` and `Wire.setClock()` results from the
   example bus helper, with the README checking initialization success.
 - Preserved original tar member names for package metadata lookup so valid

@@ -663,6 +663,7 @@ python tools/check_release_metadata.py
 python -m py_compile tools/run_i2c_hil.py tools/check_hil_contract.py tools/check_release_metadata.py
 python tools/test_run_i2c_hil_parser.py
 python tools/test_check_package_contents.py
+python tools/test_checker_contracts.py
 python tools/run_i2c_hil.py --dry-run --out .pio/hil_dry_runs
 python tools/run_i2c_hil.py --dry-run --include-job-api --out .pio/hil_dry_runs
 doxygen Doxyfile
@@ -686,8 +687,18 @@ Then validate the generated archive and final diff:
 
 ```text
 python tools/check_package_contents.py
+python tools/check_release_metadata.py
+git diff -- idf_component.yml
 git diff --check
 ```
+
+The pinned pioarduino component manager can back up `idf_component.yml` to
+`.orig` and rewrite its YAML formatting during Arduino builds. The post-build
+metadata check and manifest diff above expose this. Inspect any manifest
+diff and restore only the build-generated changes before packing again; keep
+any intentional edits. The backup is ignored, but the tracked manifest still
+needs verification. See [the audit follow-up](docs/CODE_AUDIT.md#2026-09-07-checker-follow-up)
+for the producer and reproduction evidence.
 
 Remove the generated package tarball after local validation unless you are
 preparing a release artifact.

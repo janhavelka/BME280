@@ -36,6 +36,7 @@ wifi_credentials.h
 # Temporary files
 *.tmp
 *.bak
+*.orig
 *.log
 
 # HIL output artifacts. Keep selected raw transcripts; derived reports remain
