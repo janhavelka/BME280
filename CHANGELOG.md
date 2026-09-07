@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Pinned ESP-IDF component-name derivation rules with independent CMake token
+  expectations and synthetic missing-token/hard-coded-name rejection tests.
 - Extended checker self-tests to the IDF example, release metadata, and HIL
   contract guards; clarified the manifest-rewrite reproduction's evidence limits.
 - Added independent checker-rule expectations and synthetic rejection tests for
@@ -57,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Replaced literal backspaces with regex word boundaries in the IDF checker's
+  hard-coded component-name guard so it rejects `REQUIRES BME280`.
 - Ignore disposable `.orig` backups; documented the pinned pioarduino manifest
   rewrite and added post-build manifest checks to the local validation gate.
 - Propagated failed `Wire.begin()` and `Wire.setClock()` results from the

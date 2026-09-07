@@ -206,6 +206,16 @@ still active; only the follow-up process was stopped. This follow-up does not
 claim fresh local Arduino build results; embedded builds and sanitizers are
 verified separately in CI.
 
+**Component-name guard follow-up:** the three IDF CMake derivation literals now
+have a module-level rule tuple and an independent test expectation. Synthetic
+CMake tests reject each missing token and both `REQUIRES BME280` and
+`PRIV_REQUIRES BME280`, retaining the positive token in a comment to isolate the
+negative guard. This exposed literal backspace bytes in that guard's regex;
+replacing them with `\b` word boundaries restored the intended rejection.
+All 23 checker tests pass. Deleting the negative guard, the positive token loop,
+or both produces three parseable checkers that still print `PASSED` against the
+real repository, while each mutation fails the new regression suite.
+
 ## Status legend
 
 | Mark | Meaning |
