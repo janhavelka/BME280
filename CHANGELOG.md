@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extended checker self-tests to the IDF example, release metadata, and HIL
+  contract guards; clarified the manifest-rewrite reproduction's evidence limits.
 - Added independent checker-rule expectations and synthetic rejection tests for
   core timing, CLI commands, and required package paths, enforced in CI.
 - Expanded package regressions to twelve forbidden paths and all seven common

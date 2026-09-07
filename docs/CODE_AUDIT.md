@@ -117,7 +117,7 @@ clean and release metadata passed; the sole untracked file was
 normalization. Removed that backup and ignored `*.orig` alongside temporary
 files. No driver source, public header, version, or HIL tooling changes.
 
-**Manifest rewrite producer:** the installed, pinned pioarduino
+**Reproduced manifest rewrite mechanism:** the installed, pinned pioarduino
 `platform-espressif32` 55.03.311 calls
 `ComponentManager.handle_component_settings()` from `builder/frameworks/arduino.py`.
 In `builder/frameworks/component_manager.py`,
@@ -135,6 +135,13 @@ test only writes metadata into temporary archives and is not this producer.
 Calling the installed `ComponentHandler.handle_component_settings()` on a
 temporary copy reproduced both a byte-identical backup and the reported YAML
 rewrite, with dependency additions/removals disabled.
+
+This was a direct component-manager reproduction, not a reproduction through
+a complete Arduino build. Both successful Arduino builds in this pass left the
+repository manifest unchanged. The mechanism matches the discovered backup
+and formatting, but the historical invocation that created them was not captured.
+An independent follow-up build stopped earlier in its local tool setup, so it
+neither confirmed nor disproved the mechanism.
 
 The README gate now rechecks release metadata and the tracked manifest after
 building. Inspect any rewrite before restoring it and repacking; ignoring the
@@ -168,6 +175,36 @@ install warnings, but both builds subsequently generated their firmware images
 with esptool 5.3.0. No Core was installed or persistent tool configuration
 changed. Native sanitizers and full ESP-IDF builds remain CI checks because
 `idf.py` is absent locally; no physical HIL was performed.
+
+### Remaining checker self-tests
+
+The follow-up correctly identified that the IDF example, release metadata, and
+HIL contract checkers had no self-tests. Extended the existing
+`tools/test_checker_contracts.py` CI entry point with positive controls and
+synthetic violations for all three. IDF tests independently pin required native
+tokens, forbidden Arduino tokens/patterns, and command names. Release tests
+reject mismatched header fields, component/Doxygen versions, malformed SemVer,
+and missing changelog metadata, including the unquoted component-version case.
+HIL checker tests reject changed documented sequences, missing documentation
+requirements, unsupported hardware claims, and missing final recovery.
+
+These are representative contract regressions, not exhaustive tests of every
+branch in the larger checkers. Text substitutions are confined to the checker
+read boundary and release fixtures to temporary files. No checker implementation,
+runner, driver source, public header, or release version changed; no physical
+HIL is involved.
+
+All 21 checker tests passed. On temporary checker copies, deleting the IDF
+`Arduino.h` rule, disabling component-version validation, and deleting the HIL
+`--require-pass` documentation requirement each made the new tests exit 1.
+Unmodified and restored controls both passed all 21 tests.
+
+The follow-up local gate passed 198 native tests, 87 parser tests, six package
+tests, all contract/metadata checks, Doxygen, dry runs, and archive validation.
+The Arduino rerun remained in tool setup while an older PlatformIO build was
+still active; only the follow-up process was stopped. This follow-up does not
+claim fresh local Arduino build results; embedded builds and sanitizers are
+verified separately in CI.
 
 ## Status legend
 
