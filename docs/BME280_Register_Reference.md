@@ -148,8 +148,10 @@ only; SPI and BMP280 compatibility are outside its public contract.
 | 100, others | 16 |
 
 > Datasheet behavior: a `config` write in **normal** mode may be ignored. This
-> driver therefore requests sleep, confirms `status.measuring` is clear, writes
-> `config`, and restores normal mode when required.
+> driver therefore requests sleep, confirms both `status.measuring` is clear
+> and `ctrl_meas.mode` is SLEEP in one `0xF3..0xF4` read, writes `config`, and
+> restores normal mode when required. An idle device still in another mode
+> returns `RESYNC_REQUIRED` before further settings or calibration access.
 
 When temperature or pressure acquisition is skipped, its IIR filter memory is
 retained rather than reset. The first sample after re-enabling that channel can
@@ -191,7 +193,9 @@ Practical driver guidance:
 ## 7) Driver "gotchas" worth encoding as tests
 - Changing `ctrl_hum` requires a subsequent write to `ctrl_meas`.
 - Normal-mode `config` writes may be ignored; this driver applies them only
-  after requesting sleep and confirming measurement has stopped.
+  after requesting sleep and confirming both measurement has stopped and the
+  mode readback is SLEEP. A clear `measuring` bit alone also occurs in normal
+  standby and cannot prove that the sleep request took effect.
 - Always burst-read `0xF7..0xFE` to keep pressure/temp/humidity coherent.
 - Verify chip_id before trusting calibration data.
 

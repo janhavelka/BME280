@@ -30,15 +30,16 @@ FORBIDDEN_INCLUDE_RE = re.compile(
     r'^\s*#\s*include\s*[<"](?:Arduino\.h|Wire\.h|driver/[^>"]+|esp_[^>"]+|freertos/[^>"]+)[>"]',
     re.MULTILINE,
 )
-BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
-LINE_COMMENT_RE = re.compile(r"//[^\n]*")
-STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+NON_CODE_RE = re.compile(
+    r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*',
+    re.DOTALL,
+)
 
 
 def strip_non_code(text: str) -> str:
-    text = BLOCK_COMMENT_RE.sub("", text)
-    text = LINE_COMMENT_RE.sub("", text)
-    return STRING_RE.sub('""', text)
+    # Match literals and comments together: comment markers inside a string
+    # must not hide real calls later on the same line.
+    return NON_CODE_RE.sub(" ", text)
 
 
 def collect_sources() -> list[pathlib.Path]:

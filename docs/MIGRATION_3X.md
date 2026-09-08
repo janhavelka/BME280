@@ -20,7 +20,7 @@ that is the reason they survived 2.x, not oversight.
 | `JobKind::RECOVERY` (`BME280.h`) | `JobKind::RESYNC` | nothing |
 | `BME280::driverState()` (`BME280.h`) | `BME280::state()` | nothing |
 | `cmd::REG_DIG_H5_LSB` (`CommandTable.h`) | `cmd::REG_DIG_H5_MSB` | nothing. **Also misnamed**: `0xE6` holds `dig_H5[11:4]`, the *high* bits (datasheet Table 16). The low nibble is in `0xE5[7:4]`, correctly named `REG_DIG_H4_H5`. |
-| `BME280::startRecoveryJob()` | `BME280::startResyncJob()` | both shipped examples, 11 tests, and the mandatory-token lists in `tools/check_cli_contract.py` and `tools/check_idf_example_contract.py` |
+| `BME280::startRecoveryJob()` | `BME280::startResyncJob()` | both shipped examples, native tests, and the mandatory-token lists in `tools/check_cli_contract.py` and `tools/check_idf_example_contract.py` |
 | `JobPollResult::instructionsUsed` | `JobPollResult::callbacksUsed` | both shipped examples print it; the `"Instructions:"` output token is required by `tools/check_idf_example_contract.py` |
 | `VERSION_INT` (`Version.h`) | `VERSION_CODE` | emitted by `scripts/generate_version.py` and asserted verbatim by `tools/check_release_metadata.py` |
 
@@ -40,7 +40,7 @@ They agree today and nothing enforces that they keep agreeing. Keep
 `Status::Error(Err, const char*, int32_t)` ignore the supplied message and use
 the library-owned canonical string for the error code. Keep both signatures in
 2.x for source compatibility. Core and examples already use code/detail-only
-construction; the native test deliberately retains three message-bearing legacy
+construction; the native suite deliberately retains three message-bearing legacy
 uses to verify canonical message ownership. Remove the message-bearing
 signatures and update those compatibility tests in 3.x.
 
@@ -48,9 +48,10 @@ signatures and update those compatibility tests in 3.x.
 
 `BME280::getSettings(SettingsSnapshot&)` cannot fail — the implementation
 unconditionally returns `Status::Ok()` and the header documents
-"`Status::Ok()` always". The four call sites in the examples correctly write
-`(void)device.getSettings(...)`, but the signature invites the reader to think a
-failure is possible. Change it to `void`.
+"`Status::Ok()` always". Some example callers explicitly discard this status;
+others retain redundant failure branches. The signature invites the reader to
+think a failure is possible. Change it to `void` and update every caller together
+in 3.x.
 
 ## Consider: split `tools/run_i2c_hil.py`
 

@@ -123,17 +123,6 @@ def help_entries(text: str) -> list[tuple[str, str]]:
     )
 
 
-def aliases_from_help(items: list[str]) -> set[str]:
-    aliases: set[str] = set()
-    for item in items:
-        command_part = item.split(" ", 1)[0]
-        for alias in command_part.split("/"):
-            alias = alias.strip()
-            if alias:
-                aliases.add(alias)
-    return aliases
-
-
 def dispatched_commands(text: str) -> set[str]:
     return set(re.findall(r'std::strcmp\(head,\s*"([^"]+)"\)\s*==\s*0', text))
 
@@ -198,7 +187,7 @@ def main() -> int:
     if help_entries(arduino) != help_entries(idf):
         fail("Arduino and IDF help descriptions/order differ")
 
-    idf_commands = dispatched_commands(idf) | aliases_from_help(idf_help)
+    idf_commands = dispatched_commands(idf)
     missing_commands = sorted(MANDATORY_COMMANDS - idf_commands)
     if missing_commands:
         fail(f"IDF CLI missing mandatory commands: {missing_commands}")

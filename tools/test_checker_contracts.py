@@ -98,6 +98,25 @@ class CoreTimingRulesTest(unittest.TestCase):
             with self.subTest(call=call):
                 self.check_source(f"void work() {{ {call}(1); }}\n", f": {call} x1")
 
+    def test_string_comment_markers_do_not_hide_platform_calls(self) -> None:
+        for body in (
+            'const char* url = "https://example.com"; delay(1);',
+            'const char* start = "/*"; delay(1); const char* end = "*/";',
+        ):
+            with self.subTest(body=body):
+                self.check_source(
+                    f"void work() {{ {body} }}\n",
+                    ": delay x1",
+                )
+
+    def test_literals_and_comments_with_timing_text_pass(self) -> None:
+        self.check_source(
+            'const char* text = "https://example.com/delay(1)";\n'
+            '// "unclosed quote: delay(1)\n'
+            '/* "another unclosed quote: millis() */\n'
+            'void work() {}\n'
+        )
+
     def test_each_framework_include_is_rejected(self) -> None:
         for header in ("Arduino.h", "Wire.h", "driver/i2c_master.h",
                        "esp_timer.h", "freertos/task.h"):
@@ -231,17 +250,16 @@ class IdfRulesTest(TextContractTest):
                 self.assert_text_result(checker, changes,
                                         f"IDF example missing required native token: {token}")
 
-    def test_missing_help_command_is_rejected(self) -> None:
+    def test_each_missing_command_handler_is_rejected(self) -> None:
         checker = check_idf_example_contract
-        changes = {}
-        for path in (checker.ARDUINO_MAIN, checker.IDF_MAIN):
-            source = path.read_text(encoding="utf-8")
-            self.assertIn('printHelpItem("help / ?",', source)
-            changes[path] = source.replace('printHelpItem("help / ?",', 'printHelpItem("?",')
-        changes[checker.IDF_MAIN] = changes[checker.IDF_MAIN].replace(
-            'std::strcmp(head, "help")', 'std::strcmp(head, "removed_help")'
-        )
-        self.assert_text_result(checker, changes, "IDF CLI missing mandatory commands: ['help']")
+        source = checker.IDF_MAIN.read_text(encoding="utf-8")
+        for command in sorted(EXPECTED_COMMANDS | {"?", "ver"}):
+            with self.subTest(command=command):
+                comparison = f'std::strcmp(head, "{command}") == 0'
+                self.assertIn(comparison, source, "fixture mutation did not apply")
+                changed = source.replace(comparison, "false")
+                self.assert_text_result(checker, {checker.IDF_MAIN: changed},
+                                        f"IDF CLI missing mandatory commands: ['{command}']")
 
 
 class ReleaseMetadataTest(unittest.TestCase):

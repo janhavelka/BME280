@@ -10,7 +10,7 @@ still read 1.23, which is Bosch's own stale footer).
 | Audited baseline | `3b3fad1` (v2.1.0) |
 | Fixes landed in | `558a31f`, `184eee9`, `de39968`, `d4d491f`, `99a0af7` |
 | Previous re-verification | `084b045`, 2026-09-04, with coverage/docs follow-ups through `5837d0b` |
-| Latest verification baseline | `5837d0b`, 2026-09-05; changes from this pass described below |
+| Latest verification baseline | `30ad987`, 2026-09-08; changes from this pass described below |
 | Items | 28 (A–G plus findings 1–21, with sub-items) |
 
 Every finding was re-verified independently against the current source and
@@ -19,6 +19,180 @@ checked by compiling and running the driver. **The audit as
 originally written contained errors.** They are corrected in place below, and
 listed in full in [Corrections to this document](#corrections-to-this-document)
 so the change history is not lost.
+
+## 2026-09-08 verification report
+
+Fetched all remotes with pruning and ran `git merge --ff-only origin/main`.
+The working tree was clean; `main` at `30ad987` was already the newest remote
+branch tip. Reviewed every A–G and 1–21 finding, all thirteen minor sub-items,
+O1–O4, the withdrawn proposals, and the September 7 checker follow-ups. Three
+parallel reviews covered core behavior, tooling, and examples/API contracts;
+the integration review checked the diffs, compensation formulas against the
+local Bosch PDF, and the validation results.
+
+**Result:** the existing fixes use appropriate designs, but sleep verification,
+two source checkers, and IDF health coloring still had gaps. These were reproduced
+and fixed. An existing native regression was also strengthened to test the actual
+failure contract. Public signatures, compensation math, and the release version
+remain unchanged. This section records this pass; earlier dated sections retain
+their historical results.
+
+### Changes and simplest-solution decisions
+
+- **3/5/7 — an idle status did not prove SLEEP.** Bosch §3.3.1 allows a pending
+  mode transition to ignore a subsequent sleep request. Once the prior command
+  completes into NORMAL, `measuring` can be clear during standby. The old
+  readiness check accepted that state; a synthetic reproduction made `begin()`
+  return OK after reading calibration in NORMAL mode. Final settings readback
+  is too late to protect those earlier calibration reads. The existing readiness
+  callback now burst-reads `status` and `ctrl_meas` together, requiring both idle
+  and SLEEP before proceeding. A non-SLEEP idle mode returns the existing
+  `RESYNC_REQUIRED` with packed `0xF4`/expected-zero/actual-mode evidence, marks
+  dirty state, and leaves recovery to the caller. The staged path reuses the
+  same helper, keeping callback caps, phases, and bounded BUSY waits intact.
+  This extends the existing quiesce owner rather than adding a retry or a second
+  callback. The fake sensor now exposes the ignored-write scenario and returns
+  both bytes of the status/mode burst; regression evidence is listed below.
+- **D — timing calls hidden by string contents.** The checker removed comments
+  before recognizing strings. A line such as
+  `const char* url = "https://example.com"; delay(1);` therefore passed the old
+  checker: `//` inside the literal swallowed the real call. Paired `"/*"` and
+  `"*/"` literals could similarly hide intervening code. A single combined regex
+  now consumes strings, character literals, and comments in source order,
+  replacing each with whitespace. This keeps the existing lightweight guard
+  and avoids a parser dependency. Tests exercise the real checker entry point
+  in both core directories, including legitimate timing text inside literals
+  and comments as positive controls.
+- **E/18 — help text masked missing IDF handlers.** The IDF checker unioned
+  dispatch commands with aliases extracted from help text. Removing a handler
+  while retaining its help entry could still pass. Removed the union and its
+  now-unused helper; mandatory commands must appear in dispatch comparisons.
+  Help parity remains separately checked. The regression removes each of the
+  45 required IDF dispatch comparisons while leaving help intact. It replaces
+  a test that removed both help and the handler, which concealed the defect.
+- **6/O1 — inaccurate configuration-failure evidence.** Two native test names
+  still described a sleep-write failure and mode restoration, although both
+  injected at the subsequent `config` write. Renamed the timeout case and
+  changed the data-NACK case to start in NORMAL mode, then verify exactly two
+  attempted writes, only the successful sleep write in the device log, hardware
+  SLEEP, unchanged cached settings, and the original error in both the return
+  value and dirty-state diagnostic. This strengthens an existing test instead
+  of adding another overlapping case. It proves this specific failure path;
+  it does not promise hardware SLEEP after every possible failure.
+- **10/21/O3 — stale migration claims.** `startRecoveryJob()` currently appears
+  in 13 distinct native tests, not 11. The examples have 14 `getSettings()` calls,
+  of which four explicitly discard the status. Updated the migration notes and
+  O3 to describe the coordinated callers without fragile counts, and corrected
+  the stale `_updateHealth()` source reference.
+- **21 — IDF health color was still inconsistent.** Its `drv` output selected
+  green for zero failures and yellow otherwise, displaying UNINIT as green and
+  OFFLINE as yellow. A small local `stateColor(DriverState)` switch now matches
+  the state: reset/green/yellow/red. No suitable IDF helper already existed;
+  sharing Arduino glue would violate the native-IDF boundary. Existing output
+  labels and formatting are preserved.
+
+The source guards remain lightweight repository contract checks, not full C++
+or CMake parsers. Their regression tests establish the concrete behavior above;
+they do not establish exhaustive detection of every possible source spelling.
+
+### Finding-by-finding disposition
+
+Evidence below names current functions and tests rather than drifting line
+numbers. **Retain** means the diagnosis and shipped resolution were checked
+and no additional implementation change was justified.
+
+| Finding | Current verification and decision |
+|---|---|
+| A | Retain range-safe subtraction in `signExtend12()`; signed calibration/nibble tests and strict conversion-warning compilation pass. |
+| B | Retain exact `./` prefix removal and original tar-member lookup; flat, dot-prefixed, directory-prefixed, and forbidden-path archive regressions pass. |
+| C | Retain all seven required example headers and independently specified package fixtures; missing-path tests pass. |
+| D | Retain the simplified zero-platform-call rule; fix literal/comment tokenization as described above. |
+| E | Retain the single Arduino command list and handler checks; close the equivalent remaining IDF help/dispatch gap. |
+| F | Retain the zero-retry early return before `ser.close()`; parser-suite tests pin the untouched handle and cleanup behavior. |
+| G | Retain unconditional help/prompt after bring-up and checked `Wire.begin()`/`setClock()` results; setup-failure/retry regression passes. Bus recovery remains application-owned. |
+| 1 | Retain configuration-derived validity; enabled ADC sentinel values publish samples, configured-off channels remain invalid. |
+| 2 | Retain bounded register/address pairs and range checks; exact-payload and malformed-range tests match Bosch §6.2.1. |
+| 3 | Retain quiesce before NVM gating and add actual SLEEP readback before calibration. Skipping the gate remains an unsafe proposal. |
+| 4 | Retain sleep write before the readiness check; the busy-device test proves caller retry can converge without an internal wait loop. |
+| 5 | Retain `ctrl_hum` then `ctrl_meas` latching; now require verified SLEEP as well as idle first, including when a preceding mode command ignored the sleep write. |
+| 6 | Retain one synchronous write owner plus the separately budgeted staged phases. Strengthen evidence that a failed config write stops without a mode-restoration write. |
+| 7 | Retain final owned-bit readback and packed mismatch evidence; also check mode before protected accesses, because final verification cannot protect earlier calibration reads. |
+| 8 | Retain the exact eight-entry +25% standby table; the all-standby and wraparound tests pass. Nominal public timing remains distinct from the freshness bound. |
+| 9 | Retain code/detail-only construction and canonical static messages; keep legacy message signatures for 2.x compatibility. Ownership/copy tests pass. |
+| 10 | Keep the seven compatibility aliases for 2.x; three have repository consumers. Deletion belongs in a coordinated major-version change. |
+| 11 | Keep the six duplicate snapshot fields for compatibility; their later removal remains in `MIGRATION_3X.md`. |
+| 12 | Retain the explicit health/readiness distinction in headers and README. The proposed partial `canMeasure()` predicate still overpromises and remains withdrawn. |
+| 13.1 | Remains withdrawn: a transport callback can cross the NVM deadline. The existing wraparound regression exercises the reachable TIMEOUT branch. |
+| 13.2 | Retain seven ordered validation reasons and propagation through `begin()`; exhaustive settings validation passes. |
+| 13.3 | Retain the documented IIR history after skipping/re-enabling T/P, consistent with Bosch §3.4.4. |
+| 13.4 | Retain normal-mode writes “may be ignored” wording and the explicit calibration-map discrepancy; do not resolve contradictory datasheet tables by assumption. |
+| 14 | Retain full-output structured evidence for reclassification. Tests deliberately omit evidence from excerpts and still classify correctly. Historical output-size corrections are not new hardware measurements. |
+| 15 | Retain verb-aware zero start/cancel budgets and poll/run budgets; parser-suite callback validators pass. |
+| 16 | Retain separate completion and expected-result checks, `MATCHED_COMPLETION`, and the widened idle guard. Completion does not assert success. |
+| 17 | Remains withdrawn: unsafe skips originate only in dry runs, whose verdict is already INCOMPLETE. No unreachable verdict branch added. |
+| 18 | Retain absolute-path normalization before deriving the component name. Host CMake evaluation passes under `BME280`, `renamed-driver`, and `renamed driver`; existing positive/negative name guards remain pinned. |
+| 19 | Retain pair-aware FakeBus writes, reset-register clearing, and the 128-byte Wire boundary; malformed writes, reset reapply, and 128/129-byte tests pass. |
+| 20 | Retain dead-code removal; defer the multi-module HIL split. It fixes no demonstrated behavior defect and would require coordinated source-checker changes. |
+| 21 | All thirteen sub-items verified separately below. |
+| O1 | Existing post-sleep poll/deadline bounds, humidity failure, standby table, and reset-reapply tests remain valid; strengthen the separate no-restore regression. |
+| O2 | Retain/document full-tuple staged applies and their IIR-history consequence; deriving partial writes from an untrusted cache would weaken resynchronization. |
+| O3 | Keep the major-version backlog; correct its caller claims without removing compatible APIs. |
+| O4 | Same disposition as 20; source-text coupling is a real maintenance constraint, not a reason for a speculative split in this pass. |
+
+| Finding 21 sub-item | Verified decision |
+|---|---|
+| Tombstone assertions | Remain removed. |
+| Tautological reconnect check | Actual argparse default/override tests remain. |
+| `getSettings()` return type | Keep `Status` in 2.x; document all caller categories for the later `void` migration. |
+| Selftest double-count | Both CLIs restore only after a successful baseline capture. |
+| Raw mode bits `2` | Keep canonical typed input and decode both hardware FORCED encodings. |
+| CRLF prompt suppression | Keep intentional one-prompt behavior. |
+| Health state color | Common/Arduino behavior remains correct; fix the IDF `drv` output to distinguish UNINIT and OFFLINE correctly. |
+| IDF stress/input parity | Progress exists on success and failure paths; both command buffers accept 127 characters. |
+| Short-read transport OK | Keep both documented count-reporting paths; core converts insufficient counts to `I2C_SHORT_TRANSFER`. |
+| PlatformIO noise | Redundant inheritance remains removed; native flags remain separate from embedded flags. |
+| README include path | Matches the example helper include path. |
+| Packaged datasheet | Retain as primary source evidence. |
+| Tracked transcripts | Three explicit allowlisted files total 10,384,702 bytes; retain evidence and defer storage migration absent a concrete need. |
+
+### Validation evidence for this pass
+
+The canonical command list remains the [README validation gate](../README.md#validation).
+
+| Check | Result from this pass |
+|---|---|
+| Native Unity through `scripts/pio.cmd` | 199/199 passed; 198 at the starting commit. |
+| Python regression suites | 87 parser, six package, and 25 checker tests passed (118 total); includes all 45 IDF handler-removal subcases. |
+| Timing, Arduino CLI, IDF, HIL, version and release checks | Passed; version remains 2.1.0. |
+| Python compilation | `python -m compileall -q tools scripts` passed. |
+| Strict core C++17 syntax | Passed with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror`. |
+| Arduino ESP32-S3 and ESP32-S2 | Both final-source builds passed through the repository wrapper and pinned platform; final retry log is `.pio/audit_embedded_retry.log`. |
+| Doxygen | 1.13.2 completed without warnings. |
+| Package and final metadata | `pio.cmd pkg pack` and the archive checker passed; tracked `idf_component.yml` remained unchanged. Generated archive removed after checking. |
+| HIL dry runs | Default and job-API plans completed with INCOMPLETE, correctly making no hardware claim. |
+| Ignored-SLEEP mutation | Disabling mode verification fails six independent one-operation tests; unmodified 20-test focused controls pass. |
+| Existing core-fix mutations | Removing post-sleep bounds, swallowing the humidity-write error, shortening standby maxima, skipping reset reapply, rejecting enabled sentinels, and enabling a skipped channel each fail the relevant regression. |
+| No-restore evidence | An erroneous restoration write passes the old regression and fails the strengthened one. |
+| Checker mutations | Restoring comment-first stripping fails four directory/scenario subcases; disabling IDF dispatch validation fails 45 handler-removal subcases. Restored controls pass. |
+| IDF color check | Extracted old/new output expressions compiled with strict C++17 flags: six fixtures produce three baseline mismatches and zero after the fix. |
+| CMake checkout-name check | Actual example CMake evaluated with stubbed IDF registration under three checkout names, including spaces; all dependencies derive correctly. This is not an IDF build. |
+
+Local build setup required only process-local environment changes. An initial
+attempt using `%USERPROFILE%/.platformio` stopped during dependency extraction
+at a long Windows path. The existing default `C:\pio` worked for the baseline
+builds. During final rebuilding, shared tool setup changed the compiler location
+and reported file contention; selecting the then-existing
+`C:\pio\tools\toolchain-xtensa-esp-elf\bin` on process `PATH` allowed both final
+builds to finish. Every invocation used `scripts/pio.cmd`; no additional Core
+or persistent user configuration was installed or changed.
+
+Native ASan/UBSan and full ESP-IDF builds were not run locally (`idf.py` is
+absent); those remain Linux CI checks. No sensor was flashed or physically
+tested. There is no new electrical fault-injection, runtime ESP-IDF, or accuracy
+result in this report. Synthetic tests establish behavior at the transport
+callback boundary. Disposable logs, mutation copies, and dry-run artifacts are
+ignored under `.pio/`; committed regressions carry the reproducible acceptance
+checks.
 
 ## 2026-09-05 verification report
 
@@ -332,7 +506,7 @@ header edit alone:
 | `JobKind::RECOVERY` (`BME280.h:48`) | none — definition only |
 | `driverState()` (`BME280.h:672`) | none — definition only |
 | `cmd::REG_DIG_H5_LSB` (`CommandTable.h:89`) | none — definition only, and **misnamed**: `0xE6` holds `dig_H5[11:4]`, the high bits (datasheet Table 16) |
-| `startRecoveryJob()` (`BME280.h:559`) | both shipped examples, 11 tests, and required tokens in `check_cli_contract.py:159` and `check_idf_example_contract.py:219` |
+| `startRecoveryJob()` (`BME280.h`) | both shipped examples, native tests, and required tokens in `check_cli_contract.py` and `check_idf_example_contract.py` |
 | `JobPollResult::instructionsUsed` (`BME280.h:237`) | both shipped examples print it; the `"Instructions:"` token is required by `check_idf_example_contract.py:206` |
 | `VERSION_INT` (`Version.h:67`) | emitted by `scripts/generate_version.py:235`, asserted verbatim by `check_release_metadata.py:41` |
 
@@ -343,8 +517,8 @@ Also for 3.x: the six duplicated `SettingsSnapshot` fields (finding 11) and
 
 `tools/run_i2c_hil.py` is 4717 lines, down from 4884 after the dead
 `duration_command_fits()` and the 172-line embedded `parser_self_test()` were
-removed. The structural split is still open; the original proposal stands. It
-was correctly deferred to keep the correctness pass behaviour-neutral.
+removed. The structural split remains deferred: no current behavior defect
+requires it, and the extraction would need coordinated checker changes.
 
 Note the coupling that will fight any refactor: `check_hil_contract.py`
 asserts 23 required literal substrings against the runner's *source text*, and
@@ -498,7 +672,10 @@ trades a loud, retryable `BUSY` for a silent, permanent calibration corruption.
 failures go away and the coherence guarantee is kept. It is free, because both
 paths re-apply configuration afterwards and §5.4.6/§3.3.1 require sleep for that
 anyway. **Pinned by:** `test_init_and_resync_quiesce_normal_mode_before_calibration_reads`;
-removing the quiesce kills 6 tests (sync) and 5 (staged).
+removing the quiesce kills 6 tests (sync) and 5 (staged). The 2026-09-08 pass
+closed a remaining gap: the post-write status check now also reads and verifies
+SLEEP mode, since an ignored sleep request followed by normal standby can have
+`measuring == 0`. See the latest report above for the reproduction and fix.
 
 ## 4. `_applyConfig()` failed `begin()` on a measuring device — DONE
 The first `_ensureConfigWriteReady()` hard-failed `begin()` with `BUSY` on a
@@ -630,7 +807,7 @@ for 2.x source compatibility and is deliberately exercised by the native
 canonical-message ownership test.
 
 ## 12. `isOnline()` overpromises — DONE as documentation
-`_updateHealth()` (`src/BME280.cpp:2617`) sets `READY` on any successful tracked
+`_updateHealth()` (`src/BME280.cpp`) sets `READY` on any successful tracked
 transfer without consulting `_configSyncState` or `_calibrationState`, and
 `isOnline()` returns true for `READY || DEGRADED`. The trap is real.
 
@@ -729,7 +906,7 @@ disposition, including the partial storage proposal omitted from the old ledger.
 | Selftest double-count | Both CLIs skip restore after a failed baseline capture |
 | Raw mode bits `2` | Keep canonical typed input `0/1/3`; raw display correctly decodes both forced encodings |
 | CRLF prompt suppression | Deliberate and commented; no behavioral change needed |
-| Health state color | Uses `DriverState`; avoids disagreement between a hard-coded color threshold and configurable `offlineThreshold` |
+| Health state color | Common health output uses `DriverState`; the remaining IDF `drv` color error was corrected on 2026-09-08 with the same state-based decision |
 | IDF stress/input parity | Progress emitted in success/failure paths; both accept 127 characters |
 | Short-read transport OK | Correct in both short-read paths; counts let the core report `I2C_SHORT_TRANSFER`, already documented |
 | PlatformIO noise | Redundant `extends = env` removed; embedded-only settings moved out of shared defaults |
@@ -830,6 +1007,9 @@ re-verification. Listed so the record is honest.
 
 | Where | Error | Correction |
 |---|---|---|
+| 3/5/7, September verification | Quiesce was treated as proven by `measuring == 0` after a sleep write | An ignored sleep request can leave NORMAL standby; September 8 adds mode readback before calibration/settings access |
+| 21, health color | State-based coloring was treated as complete for both CLIs | IDF `drv` still used a zero/nonzero failure ternary; fixed September 8 |
+| O3 / migration notes | 11 recovery-alias tests; four example settings callers | Baseline has 13 distinct tests and 14 callers, of which four discard status; replace drifting counts with caller categories |
 | B | "real archive members carry a `BME280/` prefix" | False; `pio pkg pack` emits flat, unprefixed members. Still latent, but because `export.include` admits no dot-entry |
 | C | "the seven headers it includes" | Six are included directly; `BuildConfig.h` arrives via `Log.h` |
 | D | "122 to 84 lines" | 122 to **83** |

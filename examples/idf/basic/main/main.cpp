@@ -177,6 +177,16 @@ const char* stateToStr(BME280::DriverState state) {
   }
 }
 
+const char* stateColor(BME280::DriverState state) {
+  switch (state) {
+    case BME280::DriverState::UNINIT: return LOG_COLOR_RESET;
+    case BME280::DriverState::READY: return LOG_COLOR_GREEN;
+    case BME280::DriverState::DEGRADED: return LOG_COLOR_YELLOW;
+    case BME280::DriverState::OFFLINE: return LOG_COLOR_RED;
+    default: return LOG_COLOR_RED;
+  }
+}
+
 const char* modeToStr(BME280::Mode mode) {
   switch (mode) {
     case BME280::Mode::SLEEP: return "SLEEP";
@@ -572,7 +582,7 @@ void printDriverHealth() {
 
   std::printf("=== Driver Health ===\n");
   std::printf("  State: %s%s%s\n",
-              device.consecutiveFailures() == 0 ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW,
+              stateColor(device.state()),
               stateToStr(device.state()),
               LOG_COLOR_RESET);
   std::printf("  Online: %s%s%s\n",

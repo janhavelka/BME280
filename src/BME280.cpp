@@ -1523,13 +1523,12 @@ JobPollResult BME280::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
         if (instructionsUsed >= maxInstructions) {
           return _jobResult(instructionsUsed);
         }
-        uint8_t status = 0;
-        const Status st = readRegs(cmd::REG_STATUS, &status, 1);
+        const Status st = _ensureConfigWriteReady();
         ++instructionsUsed;
-        if (!st.ok()) {
+        if (!st.ok() && st.code != Err::BUSY) {
           return _failJob(st, instructionsUsed);
         }
-        if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+        if (st.code == Err::BUSY) {
           if (_jobWaitPolls == 0) {
             uint32_t waitEstimateMs = estimateMeasurementTimeMs();
             if (_jobSettingsStaged) {
@@ -2589,16 +2588,27 @@ void BME280::_clearHardwareConfigDirty() {
 }
 
 Status BME280::_ensureConfigWriteReady() {
-  uint8_t status = 0;
+  uint8_t values[2] = {};
+  const uint8_t startReg = cmd::REG_STATUS;
   const Status st = _initialized
-      ? readRegister(cmd::REG_STATUS, status)
-      : _readRegisterRaw(cmd::REG_STATUS, status);
+      ? readRegs(startReg, values, sizeof(values))
+      : _i2cWriteReadRaw(&startReg, 1, values, sizeof(values));
   if (!st.ok()) {
     return st;
   }
-  if ((status & cmd::MASK_STATUS_MEASURING) != 0) {
+  if ((values[0] & cmd::MASK_STATUS_MEASURING) != 0) {
     return Status::Error(
         Err::BUSY, static_cast<int32_t>(BusyReason::DEVICE_MEASURING));
+  }
+  // A previously queued mode change can make the sleep command get ignored
+  // (Bosch section 3.3.1). Idle alone also describes normal-mode standby, so
+  // prove SLEEP before calibration reads or configuration writes are admitted.
+  const uint8_t mode = values[1] & cmd::MASK_CTRL_MEAS_MODE;
+  if (mode != static_cast<uint8_t>(Mode::SLEEP)) {
+    return Status::Error(
+        Err::RESYNC_REQUIRED,
+        packSettingsMismatchDetail(cmd::REG_CTRL_MEAS,
+                                   static_cast<uint8_t>(Mode::SLEEP), mode));
   }
   return Status::Ok();
 }
@@ -2686,6 +2696,9 @@ Status BME280::_quiesceSettingsSynchronously(
 
   st = _ensureConfigWriteReady();
   if (!st.ok()) {
+    if (st.code == Err::RESYNC_REQUIRED && _initialized) {
+      st = _recordFailure(st);
+    }
     _markHardwareConfigDirty(st);
     return st;
   }
