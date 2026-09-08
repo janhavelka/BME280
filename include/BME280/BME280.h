@@ -172,7 +172,7 @@ enum class JobPhase : uint8_t {
   VALIDATE_CALIBRATION,    ///< Local-only calibration validation and commit
   APPLY_WAIT_IDLE,         ///< Legacy pre-wait phase retained for numeric compatibility
   APPLY_CTRL_MEAS_SLEEP,   ///< Request sleep before changing configuration
-  APPLY_WAIT_AFTER_SLEEP,  ///< Verify the device is idle after the sleep request
+  APPLY_WAIT_AFTER_SLEEP,  ///< Verify measuring is clear and mode is SLEEP
   APPLY_CONFIG,            ///< Write filter and standby settings
   APPLY_CTRL_HUM,          ///< Write humidity oversampling
   APPLY_CTRL_MEAS,         ///< Latch oversampling and configured operating mode
@@ -481,6 +481,8 @@ public:
   /// Starts a new health session and resets tracked I2C counters. If the sleep
   /// transition or NVM copy is still busy, returns BUSY or TIMEOUT instead of
   /// hiding a polling loop; use startInitJob()/pollJob() for staged waits.
+  /// An idle device whose mode readback is not SLEEP returns RESYNC_REQUIRED
+  /// before calibration reads, with packed mode mismatch evidence in detail.
   /// @param config Configuration including transport callbacks
   /// @return Status::Ok() on success. INVALID_CONFIG for a rejected
   ///         configuration; when the measurement settings are the cause,
@@ -661,7 +663,7 @@ public:
   /// complete successful resync clears it. This is a transport error, a
   /// BUSY/DEVICE_MEASURING status when measuring persisted after the sleep
   /// request, or a RESYNC_REQUIRED carrying the packed register/expected/actual
-  /// detail when post-write settings readback did not match.
+  /// detail when settings or sleep-mode readback did not match.
   /// @return Root-cause status for hardwareConfigDirty(), or Status::Ok()
   Status hardwareConfigDirtyError() const { return _hardwareConfigDirtyError; }
 

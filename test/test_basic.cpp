@@ -30,6 +30,7 @@ struct FakeBus {
   uint32_t imUpdateStatusReadsRemaining = 0;
   bool calibrationReadWhileImUpdate = false;
   bool calibrationReadWhileNormal = false;
+  bool completePendingNormalBeforeIgnoredSleep = false;
   uint32_t softResetImUpdateReads = 0;
   uint32_t softResetCount = 0;
   bool settingsReadbackOverrideEnabled = false;
@@ -131,7 +132,21 @@ TransportResult fakeWrite(uint8_t addr, const uint8_t* data, size_t len,
   for (size_t i = 0; i < len; i += 2U) {
     const uint8_t reg = data[i];
     const uint8_t value = data[i + 1U];
-    bus->reg[reg] = value;
+    if (reg == cmd::REG_CTRL_MEAS &&
+        (value & cmd::MASK_CTRL_MEAS_MODE) == 0 &&
+        bus->completePendingNormalBeforeIgnoredSleep) {
+      // Bosch section 3.3.1: a pending NORMAL transition blocks this SLEEP
+      // command. The running measurement then ends before the status read,
+      // executing NORMAL and leaving the device in its idle standby interval.
+      bus->completePendingNormalBeforeIgnoredSleep = false;
+      bus->reg[reg] = static_cast<uint8_t>(
+          (bus->reg[reg] & ~cmd::MASK_CTRL_MEAS_MODE) |
+          static_cast<uint8_t>(Mode::NORMAL));
+      bus->reg[cmd::REG_STATUS] &=
+          static_cast<uint8_t>(~cmd::MASK_STATUS_MEASURING);
+    } else {
+      bus->reg[reg] = value;
+    }
     if (reg == cmd::REG_RESET && value == cmd::RESET_VALUE) {
       // A soft reset runs the complete power-on-reset procedure, so the
       // control registers return to their reset value. Modelling this keeps
@@ -241,6 +256,9 @@ TransportResult fakeWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
     }
     bus->nowMs += bus->statusReadNowAdvanceMs;
     rxData[0] = status;
+    for (size_t i = 1; i < rxLen; ++i) {
+      rxData[i] = bus->reg[static_cast<uint8_t>(reg + i)];
+    }
   } else {
     for (size_t i = 0; i < rxLen; ++i) {
       rxData[i] = bus->reg[static_cast<uint8_t>(reg + static_cast<uint8_t>(i))];
@@ -433,7 +451,7 @@ void advanceJobPastCalibrationValidation(BME280::BME280& dev, FakeBus& bus,
   };
   const size_t expectedLengths[] = {
       1u,
-      1u,
+      2u,
       1u,
       cmd::REG_CALIB_TP_LEN,
       cmd::REG_CALIB_H_LEN,
@@ -2102,6 +2120,74 @@ void test_init_and_resync_quiesce_normal_mode_before_calibration_reads() {
   }
 }
 
+void test_ignored_sleep_blocks_calibration_and_config_until_caller_retries() {
+  enum class Operation { BEGIN, RECOVER, INIT_JOB, RESYNC_JOB, FILTER, APPLY_JOB };
+  const Operation operations[] = {
+      Operation::BEGIN, Operation::RECOVER, Operation::INIT_JOB,
+      Operation::RESYNC_JOB, Operation::FILTER, Operation::APPLY_JOB,
+  };
+  for (const Operation operation : operations) {
+    FakeBus bus;
+    BME280::BME280 dev;
+    Config cfg = makeConfig(bus);
+    cfg.mode = Mode::NORMAL;
+    cfg.standby = Standby::MS_0_5;
+    const bool initializing = operation == Operation::BEGIN ||
+                              operation == Operation::INIT_JOB;
+    if (!initializing) {
+      TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    }
+    const uint32_t failuresBefore = dev.totalFailures();
+    const uint32_t writesBefore = bus.writeCalls;
+    const uint8_t writeLogStart = bus.writeLogLen;
+
+    // A diagnostic writer left a NORMAL transition pending during a forced
+    // conversion. Its completion races this operation's ignored SLEEP write.
+    bus.reg[cmd::REG_CTRL_MEAS] = 0x25;  // x1 temperature/pressure, FORCED
+    bus.reg[cmd::REG_STATUS] = cmd::MASK_STATUS_MEASURING;
+    bus.completePendingNormalBeforeIgnoredSleep = true;
+
+    auto runOperation = [&]() -> Status {
+      switch (operation) {
+        case Operation::BEGIN: return dev.begin(cfg);
+        case Operation::RECOVER: return dev.recover();
+        case Operation::FILTER: return dev.setFilter(Filter::X4);
+        case Operation::INIT_JOB:
+          TEST_ASSERT_TRUE(dev.startInitJob(cfg).inProgress());
+          break;
+        case Operation::RESYNC_JOB:
+          TEST_ASSERT_TRUE(dev.startResyncJob().inProgress());
+          break;
+        case Operation::APPLY_JOB:
+          TEST_ASSERT_TRUE(dev.startApplyConfigJob().inProgress());
+          break;
+      }
+      return pollUntilTerminal(dev, bus, 1).status;
+    };
+
+    const Status st = runOperation();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::RESYNC_REQUIRED),
+                            static_cast<uint8_t>(st.code));
+    TEST_ASSERT_EQUAL_HEX32(0x00F40003, st.detail);  // mode: expected 0, actual 3
+    TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+    TEST_ASSERT_EQUAL_INT32(st.detail, dev.hardwareConfigDirtyError().detail);
+    TEST_ASSERT_EQUAL_UINT32(failuresBefore + (initializing ? 0u : 1u),
+                             dev.totalFailures());
+    TEST_ASSERT_FALSE(bus.calibrationReadWhileNormal);
+    TEST_ASSERT_EQUAL_UINT32(writesBefore + 1u, bus.writeCalls);
+    TEST_ASSERT_EQUAL_UINT32(0u, countWritesToRegSince(
+        bus, cmd::REG_CONFIG, writeLogStart));
+    TEST_ASSERT_EQUAL_UINT8(cmd::REG_STATUS, bus.lastReadReg);
+    TEST_ASSERT_EQUAL_UINT32(2u, static_cast<uint32_t>(bus.lastReadLen));
+
+    // Once the old transition is complete, an explicit retry can enter SLEEP,
+    // verify it, and safely finish the originally requested operation.
+    TEST_ASSERT_TRUE(runOperation().ok());
+    TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+    TEST_ASSERT_FALSE(bus.calibrationReadWhileNormal);
+  }
+}
+
 void test_staged_successful_path_callback_caps_include_settings_readback() {
   {
     FakeBus bus;
@@ -3184,7 +3270,7 @@ void test_config_write_measuring_after_sleep_marks_dirty_without_config_write() 
   TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.writeRegLog[writesBefore]);
 }
 
-void test_config_change_failure_at_sleep_step_marks_dirty() {
+void test_config_write_timeout_marks_dirty() {
   FakeBus bus;
   BME280::BME280 dev;
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
@@ -3198,21 +3284,33 @@ void test_config_change_failure_at_sleep_step_marks_dirty() {
   TEST_ASSERT_EQUAL_INT32(-41, dev.hardwareConfigDirtyError().detail);
 }
 
-void test_config_change_failure_at_config_step_marks_dirty_after_restore() {
+void test_config_write_data_nack_marks_dirty_without_restore() {
   FakeBus bus;
   BME280::BME280 dev;
-  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::NORMAL;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  const SensorSettings prior = dev.sensorSettings();
+  const uint32_t writesBefore = bus.writeCalls;
+  const uint8_t writeLogStart = bus.writeLogLen;
 
-  bus.failWriteOnCall = bus.writeCalls + 2u;
+  bus.failWriteOnCall = writesBefore + 2u;  // sleep succeeds, config fails
   bus.writeError = TransportResult::Error(TransportErr::NACK_DATA, -42);
   Status st = dev.setStandby(Standby::MS_250);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-42, st.detail);
   TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
                           static_cast<uint8_t>(dev.hardwareConfigDirtyError().code));
   TEST_ASSERT_EQUAL_INT32(-42, dev.hardwareConfigDirtyError().detail);
-  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.lastWriteReg);
+  // Failure stops the sequence: no write restores NORMAL or commits settings.
+  TEST_ASSERT_EQUAL_UINT32(writesBefore + 2u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT8(writeLogStart + 1u, bus.writeLogLen);
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CTRL_MEAS, bus.writeRegLog[writeLogStart]);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SLEEP),
+                          bus.reg[cmd::REG_CTRL_MEAS] & cmd::MASK_CTRL_MEAS_MODE);
+  assertSensorSettingsEqual(prior, dev.sensorSettings());
 }
 
 void test_humidity_quiesce_write_failure_marks_dirty_and_preserves_error() {
@@ -7103,6 +7201,7 @@ int main() {
   RUN_TEST(test_begin_rejects_invalid_pressure_calibration);
   RUN_TEST(test_begin_forced_mode_keeps_hardware_sleep_until_requested);
   RUN_TEST(test_init_and_resync_quiesce_normal_mode_before_calibration_reads);
+  RUN_TEST(test_ignored_sleep_blocks_calibration_and_config_until_caller_retries);
   RUN_TEST(test_init_job_budget_one_instruction_per_poll);
   RUN_TEST(test_init_job_nvm_busy_reads_status_one_poll_at_a_time);
   RUN_TEST(test_init_job_stuck_nvm_no_spin_when_time_static);
@@ -7144,8 +7243,8 @@ int main() {
   RUN_TEST(test_config_change_in_normal_mode_sleeps_writes_config_and_restores);
   RUN_TEST(test_config_write_queues_sleep_then_busy_marks_dirty);
   RUN_TEST(test_config_write_measuring_after_sleep_marks_dirty_without_config_write);
-  RUN_TEST(test_config_change_failure_at_sleep_step_marks_dirty);
-  RUN_TEST(test_config_change_failure_at_config_step_marks_dirty_after_restore);
+  RUN_TEST(test_config_write_timeout_marks_dirty);
+  RUN_TEST(test_config_write_data_nack_marks_dirty_without_restore);
   RUN_TEST(test_humidity_quiesce_write_failure_marks_dirty_and_preserves_error);
   RUN_TEST(test_humidity_ctrl_hum_write_failure_marks_dirty_and_preserves_error);
   RUN_TEST(test_staged_apply_wait_after_sleep_times_out_on_poll_cap);

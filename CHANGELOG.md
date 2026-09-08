@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Recorded the 2026-09-08 verification of every audit finding, including
+  remaining defects, retained/deferred solutions, and validation evidence.
+- Added regressions for ignored sleep requests, timing calls hidden by literal
+  comment markers, and all 45 IDF handlers removed independently of help text;
+  strengthened the existing config-write failure test to prove no mode restore.
 - Pinned ESP-IDF component-name derivation rules with independent CMake token
   expectations and synthetic missing-token/hard-coded-name rejection tests.
 - Extended checker self-tests to the IDF example, release metadata, and HIL
@@ -59,6 +64,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Verify actual SLEEP mode as well as idle status before calibration or settings
+  access, using one status/mode burst without increasing staged callback caps.
+- Prevent string comment markers from hiding timing calls in the core guard,
+  and prevent help text from masking missing IDF command handlers.
+- Color IDF driver-health output from `DriverState`, including UNINIT/OFFLINE;
+  corrected stale audit and migration caller/evidence claims.
 - Replaced literal backspaces with regex word boundaries in the IDF checker's
   hard-coded component-name guard so it rejects `REQUIRES BME280`.
 - Ignore disposable `.orig` backups; documented the pinned pioarduino manifest

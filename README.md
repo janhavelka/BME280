@@ -355,8 +355,9 @@ write only `ctrl_meas`, `setOversamplingH()` writes `ctrl_hum` then `ctrl_meas`,
 and only `setFilter()`/`setStandby()` touch `config`. Use a setter when filter
 memory must be preserved.
 
-Every typed settings change first queues `ctrl_meas` sleep, then confirms that
-`status.measuring` is clear before writing any sleep-only register. Humidity
+Every typed settings change first queues `ctrl_meas` sleep, then reads
+`0xF3..0xF4` in one callback to confirm both `status.measuring` is clear and
+`ctrl_meas.mode` is SLEEP before writing any sleep-only register. Humidity
 oversampling follows the Bosch latch rule: `setOversamplingH()` then writes
 `ctrl_hum` followed by `ctrl_meas`. Filter and standby changes write `config`,
 then restore normal mode when required. If the post-sleep status check remains
@@ -366,8 +367,12 @@ match all driver-owned settings bits before the cache is committed. A mismatch
 returns `RESYNC_REQUIRED` without committing the cache, and packs the evidence
 into `Status::detail` as `0x00RREEAA` - register address in bits 16-23 (`0xF2`
 ctrl_hum, `0xF4` ctrl_meas, `0xF5` config), expected driver-owned bits in 8-15,
-actual driver-owned bits in 0-7. The same status is retained in
-`hardwareConfigDirtyError()`. Successful typed configuration changes invalidate
+actual driver-owned bits in 0-7. An idle device that ignored the sleep request
+also returns `RESYNC_REQUIRED` before further settings or calibration access;
+that mismatch compares only the `0xF4` mode bits against zero (SLEEP), using the
+same packed format. Both mismatch paths mark hardware state dirty. The first
+dirty-state error is retained in `hardwareConfigDirtyError()` until a complete
+successful resync. Successful typed configuration changes invalidate
 cached samples so callers cannot read a sample captured under old settings.
 
 If a multi-register configuration sequence touches hardware and then fails, the
@@ -393,7 +398,7 @@ counters or clear an `OFFLINE` latch. It maps only definite address NACK to
 `DEVICE_NOT_FOUND`; other transport errors and chip-ID mismatch are returned
 unchanged.
 
-`begin()` and `recover()` request sleep and confirm the device is idle before
+`begin()` and `recover()` request sleep and confirm both idle and SLEEP mode before
 checking status bit `im_update`, so a normal-mode conversion cannot start a new
 calibration-image copy between readiness and the calibration bursts.
 `softReset()` checks the same bit after reset, when the device is already
@@ -618,7 +623,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 7. Measurement scheduling requires `Config::nowMs`. `begin()` does not fail without it, but `requestMeasurement()` returns `INVALID_CONFIG` if no monotonic clock is injected.
 8. Multi-register configuration failures and successful diagnostic raw writes to config/control/reset registers set `hardwareConfigDirty()` and expose the dirty-state cause in `hardwareConfigDirtyError()` and `SettingsSnapshot`.
 9. Driver instances are not thread-safe and public APIs are not ISR-safe. Shared-bus users must serialize access externally.
-10. Typed setters first queue sleep without a status pre-read. If the single post-sleep status read still reports `measuring`, later settings writes are skipped and dirty state is set.
+10. Typed setters first queue sleep without a status pre-read. The single post-sleep `0xF3..0xF4` read checks both `measuring` and mode; a busy or non-SLEEP device prevents later settings writes and sets dirty state.
 11. `probe()` is diagnostic-only and preserves timeout, bus, data-NACK, and generic I2C errors. `DEVICE_NOT_FOUND` is reserved for definite address NACK.
 12. A running staged job exclusively owns hardware access. Cancellation is zero-I2C and its terminal result must be retrieved once before later hardware work.
 13. Synchronous reset/resync NVM readiness checks perform one status read and return visible `BUSY`, `TIMEOUT`, or the original transport error. Bounded repeated NVM polling belongs to staged jobs advanced by `pollJob()`.
