@@ -766,6 +766,8 @@ void test_example_bus_clear_releases_lines_and_bounds_stuck_clock() {
   gStubPins[9].lowReadsRemaining = 2;
   TEST_ASSERT_TRUE(transport::initWire(8, 9, 400000, 3));
   TEST_ASSERT_GREATER_OR_EQUAL_UINT32(2000U, gMicrosValue);
+  TEST_ASSERT_EQUAL_UINT32(400000, Wire._beginFrequency);
+  TEST_ASSERT_EQUAL_UINT32(0, Wire._clockCalls);
   TEST_ASSERT_EQUAL_UINT32(0, gActiveHighWrites);
   resetStubPins();
   Wire = TwoWire{};
@@ -4437,7 +4439,10 @@ void test_example_transport_reports_setup_failures_and_allows_retry() {
 
   Wire._clearBeginResult();
   Wire._setClockResult(false);
-  TEST_ASSERT_FALSE(transport::initWire(8, 9, 400000, 77));
+  const uint32_t clockCallsBefore = Wire._clockCalls;
+  TEST_ASSERT_TRUE(transport::initWire(8, 9, 400000, 77));
+  TEST_ASSERT_EQUAL_UINT32(clockCallsBefore, Wire._clockCalls);
+  TEST_ASSERT_EQUAL_UINT32(400000, Wire._beginFrequency);
 
   Wire._clearClockResult();
   TEST_ASSERT_TRUE(transport::initWire(8, 9, 400000, 77));

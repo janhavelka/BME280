@@ -244,12 +244,20 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
 
 #endif
 
+#if defined(ARDUINO_ARCH_ESP32)
+  // Set the desired clock during initialization. Arduino-ESP32 3.3.11's
+  // separate setClock() reports failure before any device handle exists.
+  if (!Wire.begin(sda, scl, freq)) {
+    return false;
+  }
+#else
   if (!Wire.begin(sda, scl)) {
     return false;
   }
   if (!Wire.setClock(freq)) {
     return false;
   }
+#endif
   Wire.setTimeOut(timeoutMs);
   return true;
 }
