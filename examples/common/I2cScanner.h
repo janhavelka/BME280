@@ -20,20 +20,18 @@ namespace i2c_scanner {
  * @param timeoutMs Timeout per address probe in milliseconds (default 50ms).
  */
 inline void scan(TwoWire& wire, uint16_t timeoutMs = 50) {
+  // Do not force a console flush: native USB may discard queued text.
   LOGI("Scanning I2C bus (timeout=%dms)...", timeoutMs);
-  LOG_SERIAL.flush();
 
 #if defined(ARDUINO_ARCH_ESP32)
   wire.setTimeOut(timeoutMs);
 #endif
 
   LOGI("     0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F");
-  LOG_SERIAL.flush();
 
   uint8_t count = 0;
   for (uint8_t row = 0; row < 8; row++) {
     LOG_SERIAL.printf("%02X: ", row * 16);
-    LOG_SERIAL.flush();
 
     for (uint8_t col = 0; col < 16; col++) {
       uint8_t addr = row * 16 + col;
@@ -58,11 +56,9 @@ inline void scan(TwoWire& wire, uint16_t timeoutMs = 50) {
       delay(1);
     }
     LOG_SERIAL.println();
-    LOG_SERIAL.flush();
   }
 
   LOGI("Scan complete. Found %d device(s).", count);
-  LOG_SERIAL.flush();
 
   if (count > 0) {
     LOGI("Common addresses: 0x3C/0x3D=OLED, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280");
