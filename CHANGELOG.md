@@ -64,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ESP32 example Wire callbacks now apply each supplied timeout to the selected
+  bus instead of silently retaining the startup timeout. Values wider than
+  Wire's 16-bit timeout are clamped without wrapping. Native regressions cover
+  read/write calls, changing budgets, and an independently supplied bus.
+
 - ESP32 example startup supplies the desired frequency directly to `Wire.begin`.
   This avoids Arduino-ESP32 3.3.11's false `setClock` failure on a newly opened
   bus with no device handles, which previously stopped initialization before
