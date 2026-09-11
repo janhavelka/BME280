@@ -203,25 +203,45 @@ inline BME280::TransportResult wireWriteRead(uint8_t addr, const uint8_t* tx,
  */
 inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50) {
 #if defined(ARDUINO_ARCH_ESP32)
-  // Bus recovery belongs to explicit application setup. Transport callbacks
-  // above never invoke this procedure or retry a transaction.
-  // Toggle SCL to release any stuck slave.
-  pinMode(scl, OUTPUT);
-  pinMode(sda, INPUT_PULLUP);
+  // Application-owned bus clear (UM10204 3.1.16). Release, never drive HIGH
+  // against a target holding SDA or stretching SCL. One deadline bounds all
+  // clock waits; an uncleared bus must not be reported as initialized.
+  const uint32_t startedUs = micros();
+  const uint32_t timeoutUs = static_cast<uint32_t>(timeoutMs) * 1000U;
+  pinMode(scl, OUTPUT_OPEN_DRAIN);
+  pinMode(sda, OUTPUT_OPEN_DRAIN);
+  digitalWrite(sda, HIGH);
+  const auto releaseClock = [&]() {
+    digitalWrite(scl, HIGH);
+    while (digitalRead(scl) == LOW) {
+      if (static_cast<uint32_t>(micros() - startedUs) >= timeoutUs) {
+        digitalWrite(sda, HIGH);
+        return false;
+      }
+      delay(1);
+    }
+    if (static_cast<uint32_t>(micros() - startedUs) >= timeoutUs) {
+      digitalWrite(sda, HIGH);
+      return false;
+    }
+    return true;
+  };
+  if (!releaseClock()) return false;
   for (int i = 0; i < 9; i++) {
     digitalWrite(scl, LOW);
     delayMicroseconds(5);
-    digitalWrite(scl, HIGH);
+    if (!releaseClock()) return false;
     delayMicroseconds(5);
   }
-  // Generate STOP condition
-  pinMode(sda, OUTPUT);
+  digitalWrite(scl, LOW);
   digitalWrite(sda, LOW);
   delayMicroseconds(5);
-  digitalWrite(scl, HIGH);
+  if (!releaseClock()) return false;
   delayMicroseconds(5);
   digitalWrite(sda, HIGH);
   delayMicroseconds(5);
+  if (digitalRead(sda) == LOW || digitalRead(scl) == LOW) return false;
+
 #endif
 
   if (!Wire.begin(sda, scl)) {

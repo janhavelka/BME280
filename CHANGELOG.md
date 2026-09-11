@@ -64,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Example startup bus clear now releases SDA/SCL with open-drain outputs,
+  bounds all SCL-release waits with one timeout, and rejects either held-low
+  line before Wire initialization. Native GPIO regressions reproduce the old
+  active-HIGH drive and verify held lines, transient stretch, and clock wrap.
+
 - Verify actual SLEEP mode as well as idle status before calibration or settings
   access, using one status/mode burst without increasing staged callback caps.
 - Prevent string comment markers from hiding timing calls in the core guard,
