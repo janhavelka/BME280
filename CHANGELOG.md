@@ -64,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Removed unnecessary scanner console flushes. The native USB flush API can
+  discard queued text on a transient disconnected observation; normal queued
+  writes retain ordering. This is the same audited console hazard as the
+  reproduced INA228 HIL trailer loss, not a claimed scanner hardware failure.
+
 - ESP32 example Wire callbacks now apply each supplied timeout to the selected
   bus instead of silently retaining the startup timeout. Values wider than
   Wire's 16-bit timeout are clamped without wrapping. Native regressions cover
