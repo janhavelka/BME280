@@ -18,6 +18,17 @@
 
 namespace transport {
 
+/// Apply the supplied callback timeout to the selected ESP32 Wire instance.
+inline void applyWireTimeout(TwoWire* wire, uint32_t timeoutMs) {
+#if defined(ARDUINO_ARCH_ESP32)
+  const uint32_t clamped = timeoutMs > 0xFFFFU ? 0xFFFFU : timeoutMs;
+  wire->setTimeOut(static_cast<uint16_t>(clamped));
+#else
+  (void)wire;
+  (void)timeoutMs;
+#endif
+}
+
 /// Example-only transport callback counters used by CLI/HIL diagnostics.
 struct TransferStats {
   uint32_t read = 0;   ///< Combined write/read callback attempts
@@ -74,12 +85,13 @@ inline BME280::TransportResult mapWireResult(uint8_t result,
  * @brief Wire-based I2C write implementation.
  *
  * Pass to Config::i2cWrite, and pass &Wire (or a custom TwoWire*) to i2cUser.
- * The timeout parameter is advisory; bus timeout ownership stays with initWire().
+ * The supplied timeout is applied to this callback on ESP32. Other platforms
+ * retain their externally configured bus timeout.
  *
  * @param addr I2C 7-bit address
  * @param data Data buffer to send
  * @param len Number of bytes
- * @param timeoutMs Timeout requested by the driver (advisory only)
+ * @param timeoutMs Timeout requested by the driver
  * @param user Pointer to TwoWire instance
  * This callback performs exactly one physical transaction and never retries or
  * recovers the bus.
@@ -89,8 +101,6 @@ inline BME280::TransportResult mapWireResult(uint8_t result,
 inline BME280::TransportResult wireWrite(uint8_t addr, const uint8_t* data,
                                          size_t len, uint32_t timeoutMs,
                                          void* user) {
-  (void)timeoutMs;
-
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
     return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -1);
@@ -107,6 +117,7 @@ inline BME280::TransportResult wireWrite(uint8_t addr, const uint8_t* data,
 
   incrementSaturating(transferStatsStorage().write);
   incrementSaturating(transferStatsStorage().total);
+  applyWireTimeout(wire, timeoutMs);
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
@@ -123,14 +134,15 @@ inline BME280::TransportResult wireWrite(uint8_t addr, const uint8_t* data,
  * @brief Wire-based I2C write-read implementation.
  *
  * Pass to Config::i2cWriteRead, and pass &Wire (or a custom TwoWire*) to i2cUser.
- * The timeout parameter is advisory; bus timeout ownership stays with initWire().
+ * The supplied timeout is applied to this callback on ESP32. Other platforms
+ * retain their externally configured bus timeout.
  *
  * @param addr I2C 7-bit address
  * @param tx TX buffer to send
  * @param txLen TX length
  * @param rx RX buffer for readback
  * @param rxLen RX length
- * @param timeoutMs Timeout requested by the driver (advisory only)
+ * @param timeoutMs Timeout requested by the driver
  * @param user Pointer to TwoWire instance
  * `endTransmission(false)` retains the pointer write without a STOP and the
  * following `requestFrom()` completes one combined repeated-start transaction.
@@ -142,8 +154,6 @@ inline BME280::TransportResult wireWriteRead(uint8_t addr, const uint8_t* tx,
                                              size_t txLen, uint8_t* rx,
                                              size_t rxLen, uint32_t timeoutMs,
                                              void* user) {
-  (void)timeoutMs;
-
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
     return BME280::TransportResult::Error(BME280::TransportErr::OTHER, -1);
@@ -160,6 +170,7 @@ inline BME280::TransportResult wireWriteRead(uint8_t addr, const uint8_t* tx,
 
   incrementSaturating(transferStatsStorage().read);
   incrementSaturating(transferStatsStorage().total);
+  applyWireTimeout(wire, timeoutMs);
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {

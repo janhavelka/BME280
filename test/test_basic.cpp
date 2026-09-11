@@ -4449,7 +4449,24 @@ void test_example_transport_reports_setup_failures_and_allows_retry() {
   TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
 }
 
-void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
+void test_example_transport_applies_read_timeout_to_supplied_bus() {
+  TwoWire selected;
+  selected.setTimeOut(77);
+  Wire.setTimeOut(88);
+  const uint8_t tx = 0;
+  uint8_t rx = 0;
+  TEST_ASSERT_TRUE(transport::wireWriteRead(0x76, &tx, 1, &rx, 1, 3, &selected).ok());
+  TEST_ASSERT_EQUAL_UINT32(3u, selected.getTimeOut());
+  TEST_ASSERT_EQUAL_UINT32(88u, Wire.getTimeOut());
+  TEST_ASSERT_TRUE(transport::wireWriteRead(0x76, &tx, 1, &rx, 1, 70000, &selected).ok());
+  TEST_ASSERT_EQUAL_UINT32(65535u, selected.getTimeOut());
+  TEST_ASSERT_TRUE(transport::wireWrite(0x76, &tx, 1, 2, &selected).ok());
+  TEST_ASSERT_EQUAL_UINT32(2u, selected.getTimeOut());
+  TEST_ASSERT_TRUE(transport::wireWrite(0x76, &tx, 1, 70000, &selected).ok());
+  TEST_ASSERT_EQUAL_UINT32(65535u, selected.getTimeOut());
+}
+
+void test_example_transport_maps_wire_errors_and_applies_callback_timeout() {
   transport::resetTransferStats();
   Wire._clearEndTransmissionResult();
   Wire._clearRequestFromOverride();
@@ -4464,14 +4481,14 @@ void test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::NACK_ADDRESS),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_INT32(2, st.detail);
-  TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
+  TEST_ASSERT_EQUAL_UINT32(123u, Wire.getTimeOut());
 
   Wire._setEndTransmissionResult(3);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(TransportErr::NACK_DATA),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_INT32(3, st.detail);
-  TEST_ASSERT_EQUAL_UINT32(77u, Wire.getTimeOut());
+  TEST_ASSERT_EQUAL_UINT32(999u, Wire.getTimeOut());
 
   Wire._setEndTransmissionResult(4);
   st = transport::wireWrite(0x76, &byte, 1, 999, &Wire);
@@ -7325,7 +7342,8 @@ int main() {
   RUN_TEST(test_recover_changed_candidate_apply_failure_stays_private);
   RUN_TEST(test_set_mode_forced_does_not_trigger_conversion);
   RUN_TEST(test_example_transport_reports_setup_failures_and_allows_retry);
-  RUN_TEST(test_example_transport_maps_wire_errors_and_keeps_timeout_owned_by_init);
+  RUN_TEST(test_example_transport_applies_read_timeout_to_supplied_bus);
+  RUN_TEST(test_example_transport_maps_wire_errors_and_applies_callback_timeout);
   RUN_TEST(test_example_transport_validates_params_and_handles_write_read);
   RUN_TEST(test_example_transport_honors_wire_128_byte_capacity_boundary);
   RUN_TEST(test_example_transport_counters_saturate_without_wrapping);
