@@ -81,7 +81,7 @@ template <typename DriverT>
 inline void printHealthView(const DriverT& driver) {
   Snapshot<DriverT> snap;
   snap.capture(driver);
-  const uint32_t total = snap.totalSuccess + snap.totalFailures;
+  const uint64_t total = static_cast<uint64_t>(snap.totalSuccess) + snap.totalFailures;
   const float pct = (total > 0U)
                         ? (100.0f * static_cast<float>(snap.totalSuccess) /
                            static_cast<float>(total))

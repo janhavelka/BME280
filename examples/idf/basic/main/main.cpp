@@ -559,7 +559,7 @@ void printHealthDiff(const HealthSnapshot& before, const HealthSnapshot& after) 
 void printCompactHealth() {
   const uint32_t totalOk = device.totalSuccess();
   const uint32_t totalFail = device.totalFailures();
-  const uint32_t total = totalOk + totalFail;
+  const uint64_t total = static_cast<uint64_t>(totalOk) + totalFail;
   const float pct = (total > 0U) ? (100.0f * static_cast<float>(totalOk) / total) : 0.0f;
   std::printf("Health: state=%s online=%s dirty=%s consec=%u ok=%lu fail=%lu rate=%.1f%%\n",
               stateToStr(device.state()),
@@ -575,7 +575,7 @@ void printDriverHealth() {
   const uint32_t now = currentMs();
   const uint32_t totalOk = device.totalSuccess();
   const uint32_t totalFail = device.totalFailures();
-  const uint32_t total = totalOk + totalFail;
+  const uint64_t total = static_cast<uint64_t>(totalOk) + totalFail;
   const float successRate =
       (total > 0U) ? (100.0f * static_cast<float>(totalOk) / static_cast<float>(total)) : 0.0f;
   const BME280::Status lastErr = device.lastError();
