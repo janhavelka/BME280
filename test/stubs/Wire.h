@@ -11,7 +11,8 @@
 
 class TwoWire {
 public:
-  bool begin(int sda = -1, int scl = -1) { (void)sda; (void)scl; return _beginResult; }
+  uint32_t _beginCalls = 0;
+  bool begin(int sda = -1, int scl = -1) { (void)sda; (void)scl; ++_beginCalls; return _beginResult; }
   bool setClock(uint32_t freq) { (void)freq; return _clockResult; }
   void setTimeOut(uint32_t timeoutMs) { _timeoutMs = timeoutMs; }
   uint32_t getTimeOut() const { return _timeoutMs; }
