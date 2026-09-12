@@ -22,6 +22,10 @@ serial interruptions. Final cleanup proved sleep mode, `measuring=0`,
 `im_update=0`, clean hardware configuration, `READY`, and zero consecutive
 failures.
 
+The `v2.2.0` driver and example implementations are unchanged from that tested
+source except for generated version metadata. Release documentation and
+metadata changes do not alter the exercised runtime paths.
+
 A separate opt-in raw `ctrl_meas` write and explicit resynchronization passed,
 including final safe-state cleanup. A targeted check selected the absent
 `0x77` address, observed the expected short transfer and uninitialized state,
@@ -128,9 +132,9 @@ comparisons are not release requirements and are not claimed by this ledger.
   against a calibrated reference. Electrical qualification and additional
   target/application campaigns are outside this release scope.
 
-### Post-Correction Flashed Follow-up: `i2c_20260804_171428`
+### Final Flashed Follow-up: `i2c_20260804_171428`
 
-- The post-audit firmware build reported `2026-08-04 17:11:23`, library
+- The follow-up firmware build reported `2026-08-04 17:11:23`, library
   version `2.0.0`, commit `f87b80a`, and dirty worktree provenance.
 - The comprehensive fixed gate included the exhaustive setting matrix, strict
   invalid input, benchmarks, staged jobs, lifecycle/register/callback checks,

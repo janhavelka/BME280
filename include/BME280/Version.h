@@ -13,7 +13,7 @@
 
 #ifndef BME280_VERSION_STRING
 /// Semantic version from library.json.
-#define BME280_VERSION_STRING "2.1.0"
+#define BME280_VERSION_STRING "2.2.0"
 #endif
 
 #ifndef BME280_BUILD_DATE
@@ -52,7 +52,7 @@ namespace BME280 {
 static constexpr uint16_t VERSION_MAJOR = 2;
 
 /// @brief Minor version (backward-compatible features).
-static constexpr uint16_t VERSION_MINOR = 1;
+static constexpr uint16_t VERSION_MINOR = 2;
 
 /// @brief Patch version (backward-compatible fixes).
 static constexpr uint16_t VERSION_PATCH = 0;
@@ -61,10 +61,10 @@ static constexpr uint16_t VERSION_PATCH = 0;
 static constexpr const char* VERSION = BME280_VERSION_STRING;
 
 /// @brief Encoded version for numeric comparison: MAJOR*10000 + MINOR*100 + PATCH.
-static constexpr uint32_t VERSION_CODE = 20100;
+static constexpr uint32_t VERSION_CODE = 20200;
 
 /// @brief Backward-compatible alias used by older repositories.
-static constexpr int VERSION_INT = 20100;
+static constexpr int VERSION_INT = 20200;
 
 /// @brief Build date string.
 static constexpr const char* BUILD_DATE = BME280_BUILD_DATE;
