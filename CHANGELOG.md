@@ -607,14 +607,16 @@ for all changes accumulated since `v1.5.0`.
 ### Fixed
 - `BME280::_nowMs()` now falls back to `millis()` when `Config::nowMs` is not injected, matching the documented behavior.
 
-## [1.2.2] - 2026-04-03
+### Earlier development work
 
-### Added
+Includes earlier development work that had no separate published release.
+
+#### Added
 - `inProgress()` convenience method on `Status` struct.
 - `CommandHandler.h` example helper for serial command parsing (`cmd::readLine`, `cmd::match`, `cmd::parseInt`).
 - `HealthDiag.h` example helper with verbose health diagnostics, color-coded output, snapshots, diffs, and `HealthMonitor` class for continuous monitoring.
 
-### Changed
+#### Changed
 - `I2cScanner.h` upgraded: advanced table-format scan, bus recovery via `recoverBus()`, timeout support, yield() calls, common address hints, `LOG_SERIAL` macro usage.
 - `I2cTransport.h` upgraded: `TwoWire*` via user pointer (no global Wire), null pointer checks, 128-byte buffer validation, detailed per-error-code mapping, `ARDUINO_ARCH_ESP32` guards.
 - `BusDiag.h` updated to use `i2c_scanner::scan(Wire)` and include `<Wire.h>`.
@@ -690,9 +692,11 @@ for all changes accumulated since `v1.5.0`.
 - Comprehensive Doxygen documentation in public headers
 - MIT License
 
-## [0.1.0] - 2026-01-19
+### Earlier development work
 
-### Added
+Includes earlier development work that had no separate published release.
+
+#### Added
 - Initial development version
 - Production BME280 driver with injected I2C transport
 - Health monitoring and tracked transport wrappers
@@ -706,11 +710,9 @@ for all changes accumulated since `v1.5.0`.
 [1.6.0]: https://github.com/janhavelka/BME280/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/janhavelka/BME280/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/janhavelka/BME280/compare/v1.3.0...v1.4.0
-[1.3.0]: https://github.com/janhavelka/BME280/compare/v1.2.2...v1.3.0
-[1.2.2]: https://github.com/janhavelka/BME280/compare/v1.2.1...v1.2.2
+[1.3.0]: https://github.com/janhavelka/BME280/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/janhavelka/BME280/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/janhavelka/BME280/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/janhavelka/BME280/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/janhavelka/BME280/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/janhavelka/BME280/releases/tag/v1.0.0
-[0.1.0]: https://github.com/janhavelka/BME280/releases/tag/v0.1.0
