@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Recorded positive ESP32-S3 HIL on TunnelMonitor HW2.1 at address `0x76` for
+  clean source `0c83e03`: the exhaustive gate, 29-minute bounded mixed soak,
+  destructive configuration-resync check, and wrong-address recovery passed.
+  Environmental accuracy and electrical fault injection remain unqualified.
 - Recorded the 2026-09-08 verification of every audit finding, including
   remaining defects, retained/deferred solutions, and validation evidence.
 - Added regressions for ignored sleep requests, timing calls hidden by literal
