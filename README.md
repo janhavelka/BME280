@@ -3,14 +3,20 @@
 Production-oriented BME280 I2C driver for ESP32 systems using
 Arduino/PlatformIO or ESP-IDF.
 
+The latest published release is
+[v2.1.0](https://github.com/janhavelka/BME280/releases/tag/v2.1.0). This README
+describes current development, including [Unreleased changes](CHANGELOG.md#unreleased).
+Use the documentation at that tag for the released behavior.
+
 Validation status: native tests, sanitizers, contract guards, package checks,
 Arduino/PlatformIO builds, and native ESP-IDF builds run in CI. Retained
 ESP32-S2/Arduino HIL includes a clean-source 61-minute campaign and an expanded
 60-minute campaign plus post-correction gate; all completed with zero
 classified `FAIL` or `TIMEOUT` rows and a verified final safe state. The driver
-implementation and public contracts, excluding generated version metadata, are
-byte-identical to the clean HIL commit. These results are functional evidence
-for the release scope, not electrical or calibrated hardware qualification.
+implementation and public contracts in published `v2.1.0`, excluding generated
+version metadata, are byte-identical to the clean HIL commit. These results
+cover that release scope; they do not qualify later Unreleased changes or
+establish electrical or calibrated hardware qualification.
 See `docs/HARDWARE_VALIDATION.md` for provenance, totals, and evidence
 boundaries.
 
@@ -629,7 +635,16 @@ Not part of the library. These simulate project-level glue and keep examples sel
 13. Synchronous reset/resync NVM readiness checks perform one status read and return visible `BUSY`, `TIMEOUT`, or the original transport error. Bounded repeated NVM polling belongs to staged jobs advanced by `pollJob()`.
 14. Health timestamp values are meaningful only when `lastOkTimeValid()` / `lastErrorTimeValid()` (or the snapshot flags) are true.
 
-## Migration From 1.x to 2.x
+## Migration From v2.1.0 To Unreleased
+
+Current development retains the published transport and staged-job API while
+correcting configuration, readiness, sample validity and recovery behavior.
+Keep handling returned statuses and dirty/resync diagnostics; do not infer
+success from an idle device alone. Review the
+[Unreleased changes](CHANGELOG.md#unreleased) and rebuild against the selected
+source commit. The older major-version migration follows for existing 1.x users.
+
+## Earlier Migration From 1.x to 2.x
 
 These are the breaking changes introduced at the `2.0.0` boundary; they still
 apply when upgrading from any `1.7.x` release.
