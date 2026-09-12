@@ -7,14 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-12
+
 ### Added
 
 - Recorded positive ESP32-S3 HIL on TunnelMonitor HW2.1 at address `0x76` for
   clean source `0c83e03`: the exhaustive gate, 29-minute bounded mixed soak,
   destructive configuration-resync check, and wrong-address recovery passed.
   Environmental accuracy and electrical fault injection remain unqualified.
-- Recorded the 2026-09-08 verification of every audit finding, including
-  remaining defects, retained/deferred solutions, and validation evidence.
 - Added regressions for ignored sleep requests, timing calls hidden by literal
   comment markers, and all 45 IDF handlers removed independently of help text;
   strengthened the existing config-write failure test to prove no mode restore.
@@ -26,15 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   core timing, CLI commands, and required package paths, enforced in CI.
 - Expanded package regressions to twelve forbidden paths and all seven common
   headers; archive fixtures no longer derive from the checker's required list.
-- Recorded the 2026-09-05 finding-by-finding audit verification, corrections,
-  simplest-solution decisions, and validation evidence in `docs/CODE_AUDIT.md`.
 - Added a native regression for Arduino bus/clock setup failures and retry;
   repaired the NVM timeout test so its status read crosses the clock wrap.
 - Added deterministic settings-validation reason codes and post-apply register
   verification, including a distinct staged verification phase and mismatch
   evidence in `Status::detail`.
-- Consolidated the code audit, its finding-by-finding resolution, and the
-  follow-up verification into a single `docs/CODE_AUDIT.md` engineering record.
 - Added `docs/MIGRATION_3X.md` recording the deliberate 3.x breaking changes
   and the coordinated edits each one needs.
 - Documented the packed `RESYNC_REQUIRED` readback detail
@@ -68,33 +64,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevented overflow in Arduino and ESP-IDF diagnostic health-rate calculations
+  when the two saturating 32-bit success/failure counters are added.
 - Removed unnecessary scanner console flushes. The native USB flush API can
-  discard queued text on a transient disconnected observation; normal queued
-  writes retain ordering. This is the same audited console hazard as the
-  reproduced INA228 HIL trailer loss, not a claimed scanner hardware failure.
-
+  discard queued text on a transient disconnected observation; ordinary queued
+  writes retain ordering.
 - ESP32 example Wire callbacks now apply each supplied timeout to the selected
   bus instead of silently retaining the startup timeout. Values wider than
   Wire's 16-bit timeout are clamped without wrapping. Native regressions cover
   read/write calls, changing budgets, and an independently supplied bus.
-
 - ESP32 example startup supplies the desired frequency directly to `Wire.begin`.
   This avoids Arduino-ESP32 3.3.11's false `setClock` failure on a newly opened
   bus with no device handles, which previously stopped initialization before
   any sensor transfer. Native coverage verifies the initialization frequency.
-
-
 - Example startup bus clear now releases SDA/SCL with open-drain outputs,
   bounds all SCL-release waits with one timeout, and rejects either held-low
   line before Wire initialization. Native GPIO regressions reproduce the old
   active-HIGH drive and verify held lines, transient stretch, and clock wrap.
-
 - Verify actual SLEEP mode as well as idle status before calibration or settings
   access, using one status/mode burst without increasing staged callback caps.
 - Prevent string comment markers from hiding timing calls in the core guard,
   and prevent help text from masking missing IDF command handlers.
-- Color IDF driver-health output from `DriverState`, including UNINIT/OFFLINE;
-  corrected stale audit and migration caller/evidence claims.
+- Color IDF driver-health output from `DriverState`, including UNINIT/OFFLINE.
 - Replaced literal backspaces with regex word boundaries in the IDF checker's
   hard-coded component-name guard so it rejects `REQUIRES BME280`.
 - Ignore disposable `.orig` backups; documented the pinned pioarduino manifest
@@ -129,6 +120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Removed the completed internal code-audit dossier after moving its durable
+  contracts to maintained API, integration, validation, and migration docs.
 - Removed an accidentally tracked generated top-level CMake `build/` tree and
   now ignore that reproducible output.
 - Removed the redundant in-runner parser self-test and its command-line flag;
@@ -703,7 +696,8 @@ Includes earlier development work that had no separate published release.
 - Basic CLI example (`01_basic_bringup_cli`)
 - Doxygen-style documentation in public headers
 
-[Unreleased]: https://github.com/janhavelka/BME280/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/janhavelka/BME280/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/janhavelka/BME280/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/janhavelka/BME280/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/janhavelka/BME280/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/janhavelka/BME280/compare/v1.6.0...v1.7.0

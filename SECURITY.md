@@ -4,9 +4,9 @@
 
 | Version | Security support |
 | --- | --- |
-| 2.1.x | Supported |
-| 2.0.x | Critical fixes only |
-| 1.x and older | Best effort only |
+| 2.2.x | Supported |
+| 2.1.x | Critical fixes only |
+| 2.0.x and older | Best effort only |
 
 ## Reporting a Vulnerability
 

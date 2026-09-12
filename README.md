@@ -3,20 +3,22 @@
 Production-oriented BME280 I2C driver for ESP32 systems using
 Arduino/PlatformIO or ESP-IDF.
 
-The latest published release is
-[v2.1.0](https://github.com/janhavelka/BME280/releases/tag/v2.1.0). This README
-describes current development, including [Unreleased changes](CHANGELOG.md#unreleased).
-Use the documentation at that tag for the released behavior.
+The latest tagged version is
+[v2.2.0](https://github.com/janhavelka/BME280/releases/tag/v2.2.0). This README
+describes that version; later development is recorded under
+[Unreleased](CHANGELOG.md#unreleased).
 
 Validation status: native tests, sanitizers, contract guards, package checks,
 Arduino/PlatformIO builds, and native ESP-IDF builds run in CI. Retained
 ESP32-S2/Arduino HIL includes a clean-source 61-minute campaign and an expanded
-60-minute campaign plus post-correction gate; all completed with zero
-classified `FAIL` or `TIMEOUT` rows and a verified final safe state. The driver
-implementation and public contracts in published `v2.1.0`, excluding generated
-version metadata, are byte-identical to the clean HIL commit. These results
-cover that release scope; they do not qualify later Unreleased changes or
-establish electrical or calibrated hardware qualification.
+60-minute campaign plus final flashed gate. The `v2.2.0` driver and example
+implementations, excluding generated version metadata, are unchanged from
+clean commit `0c83e03`, which completed an
+ESP32-S3/Arduino gate, a 29-minute bounded mixed soak, destructive
+configuration-resynchronization coverage, and wrong-address recovery. These
+runs finished with no classified `FAIL` or `TIMEOUT` rows and a verified safe
+state. They are functional evidence, not electrical, environmental-accuracy,
+or every-target qualification.
 See `docs/HARDWARE_VALIDATION.md` for provenance, totals, and evidence
 boundaries.
 
@@ -37,7 +39,7 @@ Add to `platformio.ini`:
 
 ```ini
 lib_deps = 
-  https://github.com/janhavelka/BME280.git#v2.1.0
+  https://github.com/janhavelka/BME280.git#v2.2.0
 ```
 
 Production consumers should pin an exact tag or commit. Do not use an unpinned
@@ -117,11 +119,12 @@ counts. Adapters must not retry, recover the bus, or return driver-level
 `Status` values. The core maps results to canonical `I2C_*` status codes and
 retains only numeric adapter detail, never adapter-owned message storage.
 
-Bus timeout ownership in the Arduino example remains in
-`transport::initWire()`: its callbacks do not reconfigure `Wire` from the
-per-call `timeoutMs` argument. Keep `Config::i2cTimeoutMs` equal to that fixed
-Wire timeout, as the quick start does. A production shared-bus callback must
-treat `i2cTimeoutMs` as one end-to-end budget covering lock acquisition and the
+`transport::initWire()` establishes the Arduino example's startup timeout. On
+ESP32, each example callback then applies its supplied `timeoutMs` to the
+selected `TwoWire` instance before the transaction, clamping values above the
+16-bit Wire limit to 65,535 ms; other Wire platforms retain their externally
+configured timeout. A production shared-bus callback must treat
+`i2cTimeoutMs` as one end-to-end budget covering lock acquisition and the
 transfer. The separate `conversionReadyTimeoutMs` is chip-level grace after the
 estimated conversion or idle time. Inject `Config::nowMs` for synchronous
 scheduling and meaningful timestamps; absent an injected or explicit poll/tick
@@ -613,7 +616,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 | `BoardConfig.h` | Pin definitions and Wire init for supported boards |
 | `BuildConfig.h` | Compile-time `LOG_LEVEL` configuration |
 | `Log.h` | Serial logging macros (`LOGE`/`LOGW`/`LOGI`) |
-| `I2cTransport.h` | Wire-based I2C adapter plus example-only saturating callback counters |
+| `I2cTransport.h` | Wire-based I2C adapter with ESP32 callback timeout handling and example-only saturating counters |
 | `I2cScanner.h` | I2C bus scanner with table output |
 | `CliStyle.h` | Shared ANSI colors and CLI formatting helpers |
 | `HealthView.h` | Compact health status display |
@@ -635,14 +638,14 @@ Not part of the library. These simulate project-level glue and keep examples sel
 13. Synchronous reset/resync NVM readiness checks perform one status read and return visible `BUSY`, `TIMEOUT`, or the original transport error. Bounded repeated NVM polling belongs to staged jobs advanced by `pollJob()`.
 14. Health timestamp values are meaningful only when `lastOkTimeValid()` / `lastErrorTimeValid()` (or the snapshot flags) are true.
 
-## Migration From v2.1.0 To Unreleased
+## Migration From v2.1.0 To v2.2.0
 
-Current development retains the published transport and staged-job API while
+Version 2.2.0 retains the published transport and staged-job API while
 correcting configuration, readiness, sample validity and recovery behavior.
 Keep handling returned statuses and dirty/resync diagnostics; do not infer
 success from an idle device alone. Review the
-[Unreleased changes](CHANGELOG.md#unreleased) and rebuild against the selected
-source commit. The older major-version migration follows for existing 1.x users.
+[2.2.0 changes](CHANGELOG.md#220---2026-09-12) and rebuild dependent firmware.
+The older major-version migration follows for existing 1.x users.
 
 ## Earlier Migration From 1.x to 2.x
 
@@ -717,8 +720,7 @@ The pinned pioarduino component manager can back up `idf_component.yml` to
 metadata check and manifest diff above expose this. Inspect any manifest
 diff and restore only the build-generated changes before packing again; keep
 any intentional edits. The backup is ignored, but the tracked manifest still
-needs verification. See [the audit follow-up](docs/CODE_AUDIT.md#2026-09-07-checker-follow-up)
-for the producer and reproduction evidence.
+needs verification.
 
 Remove the generated package tarball after local validation unless you are
 preparing a release artifact.
@@ -755,18 +757,19 @@ Generated docs under `docs/doxygen/` are local artifacts and are not committed.
 - `docs/PRODUCTION_SHARED_BUS_GUIDE.md` - production shared-bus integration guidance
 - `docs/HARDWARE_VALIDATION.md` - consolidated HIL procedure, evidence schema,
   current status, and qualification boundary
+- `docs/MIGRATION_3X.md` - active backlog for deliberate 3.x breaking changes
 - `docs/BME280_datasheet.pdf` - Bosch datasheet copy used for verification
 
-The `2.1.0` changelog entry records the typed-settings and staged-job expansion,
-state/cache integrity fixes, example parity, HIL hardening, and release evidence.
-The `v2.1.0` tag identifies the exact released commit; `2.0.0` remains the
-baseline for the current major transport contract.
+The `2.2.0` changelog entry records configuration/readiness corrections,
+validation and example hardening, current HIL evidence, and documentation
+cleanup. The `v2.2.0` tag identifies the exact release commit; `2.0.0` remains
+the baseline for the current major transport contract.
 
 ## Known Limitations
 
-- The retained ESP32-S2/Arduino HIL is functional release evidence, not a claim
-  of electrical, environmental, or every-target hardware qualification. Those
-  activities are outside this release's acceptance scope.
+- The retained ESP32-S2 and current ESP32-S3 Arduino HIL are functional
+  evidence, not claims of electrical, environmental, or every-target hardware
+  qualification. Those activities are outside the current acceptance scope.
 - The shipped examples are diagnostic bring-up CLIs. Production shared-bus firmware should follow `docs/PRODUCTION_SHARED_BUS_GUIDE.md` and add application-owned locking, scheduling, timeout, and recovery policy around the injected transport.
 - Generated Doxygen HTML, dry-run HIL plans, derived HIL reports, PlatformIO
   build output, and package tarballs are disposable local artifacts. Retain the

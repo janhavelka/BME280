@@ -17,9 +17,6 @@ under `include/BME280/`; release history lives in `../CHANGELOG.md`.
   and timing notes.
 - `MIGRATION_3X.md`: the backlog of deliberate 3.x breaking changes, with the
   coordinated edits each one needs.
-- `CODE_AUDIT.md`: the code audit, with each finding's verified status and the
-  corrections made to the audit itself. Internal engineering record; not part
-  of the distributed package.
 - `BME280_datasheet.pdf`: Bosch BME280 datasheet used as primary device
   evidence. Verify critical values against the PDF when changing protocol,
   compensation, timing, or electrical contracts.
@@ -30,8 +27,9 @@ These paths are generated or local and are not release evidence by default:
 
 - `docs/doxygen/` - generated HTML API documentation;
 - `hil_logs/<run>/serial_transcript.txt` - selected raw hardware evidence,
-  retained when the corresponding ledger row is maintained; the release set is
-  the clean-source campaign, expanded long campaign, and final flashed gate;
+  retained when the corresponding ledger row is maintained; this repository's
+  retained set is the clean-source campaign, expanded long campaign, and final
+  flashed gate;
 - other files under `hil_logs/` - generated plans, summaries, matrices, CSVs,
   manifests, and checklists;
 - `.pio/` - PlatformIO builds, dependencies, and disposable dry-run plans;
@@ -44,6 +42,11 @@ the complete package, including its manifest and supporting artifacts, in
 durable tracked storage or an immutable release asset. The tracked Bosch
 datasheet and maintained register reference are source evidence and must not
 be treated as generated documentation.
+
+Keep durable contracts and unresolved migration work in the maintained files
+above. One-off prompts, completed review dossiers, implementation plans, and
+derived reports should be removed once their useful conclusions have been
+integrated.
 
 Software fault injection proves driver behavior at the transport callback
 boundary; it does not prove electrical bus behavior. Generated serial summaries
