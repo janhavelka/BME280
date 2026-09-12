@@ -10,6 +10,34 @@ corresponding physical evidence is absent.
 
 ## Current Validation Status
 
+On 2026-09-12, clean source commit
+`0c83e030f25c244dc5c5f4fb3d52af31bbc74381` completed positive-device
+ESP32-S3/Arduino HIL on TunnelMonitor HW2.1 at address `0x76`. The maintained
+runner recorded chip ID `0x60`, 2,374 deterministic `PASS` rows, 1,248
+environmental `OPERATOR_CHECK_REQUIRED` rows, and 114 bounded
+`PASS_WITH_RESET_BUSY_RECOVERED` rows. The duration phase completed 567 safe
+cycles over 1,742.234 seconds with 28,400 forced samples and 39,690 mixed
+operations, all without measurement or mixed-operation errors. There were no
+serial interruptions. Final cleanup proved sleep mode, `measuring=0`,
+`im_update=0`, clean hardware configuration, `READY`, and zero consecutive
+failures.
+
+A separate opt-in raw `ctrl_meas` write and explicit resynchronization passed,
+including final safe-state cleanup. A targeted check selected the absent
+`0x77` address, observed the expected short transfer and uninitialized state,
+then returned to `0x76`, re-read chip ID `0x60` and a valid three-channel
+sample, and finished `READY` with zero consecutive failures. The board's exact
+saved production image was subsequently restored and verified; its product
+firmware reported the environmental device present and healthy through a
+124.234-second smoke check.
+
+The result remains `OPERATOR_REVIEW_REQUIRED` because no calibrated reference,
+recorded module marking, measured rail, pull-up characterization, physical
+disconnect fixture, oscilloscope, or logic analyzer was available. It is
+positive functional and stress evidence for this ESP32-S3 board, not an
+environmental-accuracy or electrical qualification claim. The complete
+manifest-backed artifacts are retained in the consuming firmware repository.
+
 The flashed expanded-CLI dirty-tree snapshot completed a physical Arduino HIL
 campaign on an ESP32-S2 at address `0x76`. Run `i2c_20260804_155442` recorded
 3,642.719 seconds (60m42.719s) of accepted active soak with no serial
@@ -53,6 +81,7 @@ snapshots are not current evidence and are not retained.
 | --- | --- | --- |
 | ESP32-S2, Arduino/PlatformIO, address `0x76` | FUNCTIONAL SERIAL PASS / OPERATOR REVIEW REQUIRED | Clean source commit `dc5df8e`; 61-minute COM10 campaign; raw transcript retained. No calibrated accuracy or complete electrical qualification claim. |
 | ESP32-S2, Arduino/PlatformIO, expanded `2.1.0` development CLI | FUNCTIONAL SERIAL PASS / OPERATOR REVIEW REQUIRED | Dirty-tree run `i2c_20260804_155442`: 60m42.719s active soak, 7,115 rows, zero FAIL/TIMEOUT, no reconnect. Exact final flashed CLI follow-up `i2c_20260804_171428`: 271 rows, zero FAIL/TIMEOUT, final safe state proved. Dirty provenance and incomplete physical metadata prevent an immutable-release qualification claim. |
+| ESP32-S3, Arduino/PlatformIO, TunnelMonitor HW2.1, address `0x76` | FUNCTIONAL SERIAL PASS / OPERATOR REVIEW REQUIRED | Clean source `0c83e03`; 1,742.234-second active soak, 3,736 classified rows, zero FAIL/TIMEOUT, zero reconnect, destructive resync and wrong-address recovery passed. No calibrated accuracy or electrical qualification claim. |
 
 Other MCU/framework combinations, address straps, electrical fault campaigns,
 shared-bus systems, logic-analyzer captures, and calibrated environmental
