@@ -1,5 +1,7 @@
 # AGENTS.md - BME280 Production Embedded Guidelines
 
+Always synchronize Git with the intended upstream branch before starting work by fetching and fast-forwarding safely, preserving existing local changes and reporting any divergence, conflict, or synchronization failure.
+
 ## Scope and Target
 
 This repository is a production-grade BME280 environmental sensor library.
