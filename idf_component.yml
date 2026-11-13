@@ -1,6 +1,8 @@
 version: "2.2.0"
 description: "Production-oriented BME280 environmental sensor driver"
 license: "MIT"
+maintainers:
+  - "Jan Havelka (THYMOS Solution s.r.o.) <info@thymos.cz>"
 targets:
   - esp32s2
   - esp32s3
