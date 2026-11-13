@@ -1,6 +1,8 @@
 version: "2.2.0"
 description: "Production-oriented BME280 environmental sensor driver"
 license: "MIT"
+url: "https://github.com/janhavelka/BME280"
+repository: "https://github.com/janhavelka/BME280.git"
 maintainers:
   - "Jan Havelka (THYMOS Solution s.r.o.) <info@thymos.cz>"
 targets:

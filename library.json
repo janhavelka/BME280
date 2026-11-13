@@ -33,7 +33,7 @@
     "url": "https://github.com/janhavelka/BME280.git"
   },
   "license": "MIT",
-  "homepage": "https://www.thymos.cz",
+  "homepage": "https://github.com/janhavelka/BME280",
   "frameworks": [
     "arduino",
     "espidf"
